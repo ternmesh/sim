@@ -31,9 +31,18 @@
  * A radio that starts listening part-way through a matching frame - after a transmission, a
  * retune or another reception - can still catch it if enough of the preamble is left to lock on.
  *
- * Not modelled yet: fading that varies per frame; frames of different bandwidths sharing a
- * channel, whose interference is counted as if it were the wanted SF's (the pessimistic case);
- * the time CAD takes, which the MAC charges itself; sleep. */
+ * Fading, if `fading_db` is set, varies every link's loss afresh for each frame and each receiver.
+ *
+ * Three switches trade this model for the simpler one LoRaSim and Meshtasticator use, so their
+ * results can be reproduced: `pairwise` judges each interferer on its own, at full weight, and
+ * only one the receiver could itself decode; `capture_anytime` lets a louder frame take the
+ * receiver at any point of a reception, not only during the preamble; and CAD can be given a
+ * margin below the demodulation floor and a delay before it notices a frame. They are off by
+ * default, and the comparison runs with them off.
+ *
+ * Not modelled yet: frames of different bandwidths sharing a channel, whose interference is
+ * counted as if it were the wanted SF's (the pessimistic case); the time CAD takes, which the
+ * MAC charges itself; sleep. */
 
 #define TSIM_SF_MIN 7
 #define TSIM_SF_COUNT 6
@@ -51,12 +60,30 @@ struct tsim_phy_params {
     uint16_t lock_symbols;
     /* Time a radio is deaf after changing channel, SF or bandwidth. */
     tsim_time retune;
+
+    /* A Gaussian of this standard deviation, in dB, added to a link's loss for each frame at each
+     * receiver, drawn afresh every time: 0 for none. Drawn from fading_seed, the frame and the
+     * receiver, so a run repeats. */
+    double fading_db;
+    uint64_t fading_seed;
+    /* Judge interference one frame at a time, LoRaSim's way: a frame is lost if any one
+     * interferer the receiver could decode leaves less than the pair's isolation threshold,
+     * however little of it overlapped - except one that overlaps only the first
+     * (preamble - lock_symbols) symbols of the later frame's preamble. Off: summed and weighted. */
+    bool pairwise;
+    /* Let a frame capture_db louder take the receiver at any point of a reception. */
+    bool capture_anytime;
+    /* CAD notices a frame down to this many dB below the demodulation floor ... */
+    double cad_margin_db;
+    /* ... once it has been on the air this long. */
+    tsim_time cad_delay;
 };
 
 /* Datasheet noise figure and demodulation floors (6 dB; -7.5 dB at SF7 down to -20 dB at SF12),
  * the isolation matrix of Goursaud and Gorce, "Dedicated networks for IoT: PHY/MAC state of the
  * art and challenges" (EAI 2015), a 6 dB capture threshold, a 5-symbol lock and a 1 ms retune.
- * The last three, and the matrix, are placeholders until the bench rig (MSH-32) measures them. */
+ * The last three, and the matrix, are placeholders until the bench rig (MSH-32) measures them.
+ * No fading, and the three LoRaSim switches off. */
 struct tsim_phy_params tsim_phy_defaults(void);
 
 struct tsim_frame {
@@ -130,8 +157,8 @@ bool tsim_phy_transmitting(const struct tsim_phy *phy, uint32_t node);
 bool tsim_phy_receiving(const struct tsim_phy *phy, uint32_t node);
 
 /* Channel activity detection, as answered at this instant: whether a frame the node could decode
- * - its tuning, loud enough - is on the air. Frames on other SFs are invisible to it, however
- * loud. False while transmitting or retuning. */
+ * - its tuning, loud enough, give or take cad_margin_db - has been on the air for cad_delay.
+ * Frames on other SFs are invisible to it, however loud. False while transmitting or retuning. */
 bool tsim_phy_cad(const struct tsim_phy *phy, uint32_t node);
 
 const struct tsim_phy_stats *tsim_phy_stats(const struct tsim_phy *phy, uint32_t node);
