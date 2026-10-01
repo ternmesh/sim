@@ -356,6 +356,44 @@ static void send_returns_its_own_handle_when_the_mac_sends_at_once(void) {
     rig_close(&r);
 }
 
+static void head_handle_names_the_frame_at_the_head(void) {
+    struct rig r;
+    rig_open(&r, tsim_net_defaults(1), 2);
+    struct tsim_node *n0 = tsim_net_node(r.net, 0);
+    CHECK_EQ_U64(tsim_node_head_handle(n0), 0);
+    struct tsim_tx low = frame(TSIM_PURPOSE_DATA, 0, 10);
+    struct tsim_tx high = frame(TSIM_PURPOSE_CONTROL, 1, 20);
+    uint64_t first = tsim_node_send(n0, &low);
+    CHECK_EQ_U64(tsim_node_head_handle(n0), first);
+    uint64_t jumped = tsim_node_send(n0, &high);
+    CHECK_EQ_U64(tsim_node_head_handle(n0), jumped);
+    CHECK(tsim_node_cancel(n0, jumped));
+    CHECK_EQ_U64(tsim_node_head_handle(n0), first);
+    CHECK(tsim_node_transmit(n0));
+    CHECK_EQ_U64(tsim_node_head_handle(n0), 0);
+    rig_close(&r);
+}
+
+/* A node's own view of its channel: what it has sent and heard, a frame in flight counting for
+ * the part gone by. */
+static void a_node_knows_its_own_airtime(void) {
+    struct rig r;
+    rig_open(&r, tsim_net_defaults(1), 2);
+    struct tsim_node *n0 = tsim_net_node(r.net, 0);
+    struct tsim_node *n1 = tsim_net_node(r.net, 1);
+    struct tsim_tx tx = frame(TSIM_PURPOSE_DATA, 0, 16);
+    tsim_node_send(n0, &tx);
+    CHECK(tsim_node_transmit(n0));
+    run_for(&r, TSIM_MS(10));
+    CHECK_EQ_I64(tsim_node_tx_airtime(n0), TSIM_MS(10));
+    CHECK_EQ_I64(tsim_node_rx_airtime(n1), TSIM_MS(10));
+    CHECK_EQ_I64(tsim_node_tx_airtime(n1) + tsim_node_rx_airtime(n0), 0);
+    run_for(&r, TSIM_S(1));
+    CHECK_EQ_I64(tsim_node_tx_airtime(n0), airtime(16));
+    CHECK_EQ_I64(tsim_node_rx_airtime(n1), airtime(16));
+    rig_close(&r);
+}
+
 static void a_full_queue_drops(void) {
     struct tsim_net_params p = tsim_net_defaults(1);
     p.queue_limit = 2;
@@ -590,6 +628,8 @@ static void destroy_leaves_the_scheduler_runnable(void) {
 }
 
 int main(void) {
+    RUN(head_handle_names_the_frame_at_the_head);
+    RUN(a_node_knows_its_own_airtime);
     RUN(routing_starts_once_when_told);
     RUN(originate_hands_the_message_to_its_routing);
     RUN(a_frame_arrives_as_its_bytes);

@@ -39,6 +39,8 @@ jobs:
       - run: cmake --build build
       - name: Run scenarios/scale/region.tsim within 60 s
         run: timeout 60 ./build/tsim scenarios/scale/region.tsim
+      - name: Run scenarios/scale/region-meshtastic.tsim within 60 s
+        run: timeout 60 ./build/tsim scenarios/scale/region-meshtastic.tsim
 
   format:
     runs-on: ubuntu-24.04

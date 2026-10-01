@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "tsim/baseline.h"
+#include "tsim/meshtastic.h"
 #include "tsim/place.h"
 #include "tsim/sched.h"
 
@@ -132,6 +133,9 @@ struct tsim_plugin {
     void (*defaults)(void *config, const struct tsim_radio *radio);
     /* NULL if the setting took, or what was wrong with it. */
     const char *(*set)(void *config, const char *key, const char *value);
+    /* Optional: NULL if the settings together make sense, or what is wrong with them. Run once
+     * every setting is in, so settings that constrain each other can come in any order. */
+    const char *(*check)(const void *config);
 };
 
 static void flood_defaults(void *config, const struct tsim_radio *radio) {
@@ -169,12 +173,153 @@ static const char *aloha_set(void *config, const char *key, const char *value) {
     return "is not a setting of aloha";
 }
 
+static bool parse_yes_no(const char *v, bool *out) {
+    if (strcmp(v, "yes") == 0) {
+        *out = true;
+        return true;
+    }
+    if (strcmp(v, "no") == 0) {
+        *out = false;
+        return true;
+    }
+    return false;
+}
+
+/* A contention window setting, shared by Meshtastic's routing and MAC. NULL if `key` is not one,
+ * else "" if it took, or what was wrong with it. */
+static const char *window_set(struct tsim_meshtastic_window *w, const char *key,
+                              const char *value) {
+    uint64_t v;
+    if (strcmp(key, "slot") == 0) {
+        return parse_time(value, &w->slot) ? "" : "expected a time, such as 40 ms";
+    }
+    uint8_t *cw = strcmp(key, "cw_min") == 0   ? &w->cw_min
+                  : strcmp(key, "cw_max") == 0 ? &w->cw_max
+                                               : NULL;
+    if (!cw) {
+        return NULL;
+    }
+    if (!parse_u64(value, 15, &v)) {
+        return "expected a window exponent from 0 to 15";
+    }
+    *cw = (uint8_t)v;
+    return "";
+}
+
+static const char *window_check(const struct tsim_meshtastic_window *w) {
+    if (w->cw_min > w->cw_max) {
+        return "cw_min is over cw_max";
+    }
+    if (w->slot == 0) {
+        return "slot must be above 0";
+    }
+    if (!tsim_meshtastic_window_valid(w)) {
+        return "slot is too long: 2^(cw_max + 1) slots must fit in a quarter of the clock";
+    }
+    return NULL;
+}
+
+static void meshtastic_defaults(void *config, const struct tsim_radio *radio) {
+    *(struct tsim_meshtastic_config *)config =
+        tsim_meshtastic_default(radio->channel, &radio->lora, radio->tx_dbm);
+}
+
+static const char *meshtastic_set(void *config, const char *key, const char *value) {
+    struct tsim_meshtastic_config *c = config;
+    uint64_t v;
+    const char *why = window_set(&c->window, key, value);
+    if (why) {
+        return *why ? why : NULL;
+    }
+    if (strcmp(key, "role") == 0) {
+        static const struct {
+            const char *name;
+            enum tsim_meshtastic_role role;
+        } roles[] = {{"client", TSIM_MESHTASTIC_CLIENT},
+                     {"client_mute", TSIM_MESHTASTIC_CLIENT_MUTE},
+                     {"router", TSIM_MESHTASTIC_ROUTER}};
+        for (size_t i = 0; i < sizeof roles / sizeof roles[0]; i++) {
+            if (strcmp(value, roles[i].name) == 0) {
+                c->role = roles[i].role;
+                return NULL;
+            }
+        }
+        return "expected client, client_mute or router";
+    }
+    if (strcmp(key, "hop_limit") == 0) {
+        if (!parse_u64(value, TSIM_MESHTASTIC_HOPS_MAX, &v)) {
+            return "expected a hop count from 0 to 7";
+        }
+        c->hop_limit = (uint8_t)v;
+        return NULL;
+    }
+    if (strcmp(key, "want_ack") == 0) {
+        return parse_yes_no(value, &c->want_ack) ? NULL : "expected yes or no";
+    }
+    if (strcmp(key, "ack_duplicates") == 0) {
+        return parse_yes_no(value, &c->ack_duplicates) ? NULL : "expected yes or no";
+    }
+    if (strcmp(key, "retries") == 0) {
+        if (!parse_u64(value, UINT8_MAX, &v)) {
+            return "expected a count from 0 to 255";
+        }
+        c->retries = (uint8_t)v;
+        return NULL;
+    }
+    if (strcmp(key, "processing") == 0) {
+        if (!parse_time(value, &c->processing)) {
+            return "expected a time, such as 4.5 s";
+        }
+        return c->processing <= TSIM_MESHTASTIC_WAIT_MAX ? NULL : "is too long for the clock";
+    }
+    return "is not a setting of meshtastic";
+}
+
+static const char *meshtastic_check(const void *config) {
+    return window_check(&((const struct tsim_meshtastic_config *)config)->window);
+}
+
+static void meshtastic_mac_defaults(void *config, const struct tsim_radio *radio) {
+    *(struct tsim_meshtastic_mac_config *)config = tsim_meshtastic_mac_default(&radio->lora);
+}
+
+static const char *meshtastic_mac_set(void *config, const char *key, const char *value) {
+    struct tsim_meshtastic_mac_config *c = config;
+    const char *why = window_set(&c->window, key, value);
+    if (why) {
+        return *why ? why : NULL;
+    }
+    double *db = strcmp(key, "snr_min") == 0   ? &c->snr_min_db
+                 : strcmp(key, "snr_max") == 0 ? &c->snr_max_db
+                                               : NULL;
+    if (db) {
+        return parse_double(value, db) ? NULL : "expected an SNR in dB";
+    }
+    return "is not a setting of meshtastic";
+}
+
+static const char *meshtastic_mac_check(const void *config) {
+    const struct tsim_meshtastic_mac_config *c = config;
+    if (!(c->snr_min_db < c->snr_max_db)) {
+        return "snr_min is not below snr_max";
+    }
+    return window_check(&c->window);
+}
+
 _Static_assert(sizeof(struct tsim_flood_config) <= TSIM_PLUGIN_CONFIG_MAX, "flood config");
 _Static_assert(sizeof(struct tsim_aloha_config) <= TSIM_PLUGIN_CONFIG_MAX, "aloha config");
+_Static_assert(sizeof(struct tsim_meshtastic_config) <= TSIM_PLUGIN_CONFIG_MAX,
+               "meshtastic config");
+_Static_assert(sizeof(struct tsim_meshtastic_mac_config) <= TSIM_PLUGIN_CONFIG_MAX,
+               "meshtastic mac config");
 
 static const struct tsim_plugin plugins[] = {
-    {"flood", &tsim_flood, NULL, sizeof(struct tsim_flood_config), flood_defaults, flood_set},
-    {"aloha", NULL, &tsim_aloha, sizeof(struct tsim_aloha_config), aloha_defaults, aloha_set},
+    {"flood", &tsim_flood, NULL, sizeof(struct tsim_flood_config), flood_defaults, flood_set, NULL},
+    {"aloha", NULL, &tsim_aloha, sizeof(struct tsim_aloha_config), aloha_defaults, aloha_set, NULL},
+    {"meshtastic", &tsim_meshtastic, NULL, sizeof(struct tsim_meshtastic_config),
+     meshtastic_defaults, meshtastic_set, meshtastic_check},
+    {"meshtastic", NULL, &tsim_meshtastic_mac, sizeof(struct tsim_meshtastic_mac_config),
+     meshtastic_mac_defaults, meshtastic_mac_set, meshtastic_mac_check},
 };
 
 static const struct tsim_plugin *find_plugin(const char *name, bool routing) {
@@ -526,6 +671,13 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
         if (why) {
             ok = fail(err, e->line, "%s = %s: %s", e->key, e->value, why);
         }
+    }
+    const char *why;
+    if (ok && s->routing->check && (why = s->routing->check(s->routing_config))) {
+        ok = fail(err, 0, "routing %s: %s", s->routing->name, why);
+    }
+    if (ok && s->mac->check && (why = s->mac->check(s->mac_config))) {
+        ok = fail(err, 0, "mac %s: %s", s->mac->name, why);
     }
     free(entries);
     free(copy);

@@ -87,6 +87,9 @@ struct tsim_phy_stats {
     uint64_t rx_lost;      /* decoded to the end, then failed on interference */
     uint64_t rx_preempted; /* taken by a louder frame during the preamble */
     uint64_t rx_aborted;   /* cut short by transmitting or retuning */
+    /* Time spent on frames it was receiving, however each reception ended: what the radio was busy
+     * with, which is all a radio's own channel utilisation counter can know of what it heard. */
+    tsim_time rx_airtime;
 };
 
 struct tsim_phy;
@@ -132,5 +135,8 @@ bool tsim_phy_receiving(const struct tsim_phy *phy, uint32_t node);
 bool tsim_phy_cad(const struct tsim_phy *phy, uint32_t node);
 
 const struct tsim_phy_stats *tsim_phy_stats(const struct tsim_phy *phy, uint32_t node);
+
+/* rx_airtime as of now, counting the part of a reception still under way. */
+tsim_time tsim_phy_rx_airtime(const struct tsim_phy *phy, uint32_t node);
 
 #endif

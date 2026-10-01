@@ -17,6 +17,7 @@ metered resource. The protocol is defined by the specification in
 | Radios | `tsim/phy.h` | Half-duplex radios tuned to one channel, SF and bandwidth at a time. Interference is summed per SF and weighted by overlap, a louder frame can take a receiver only during the preamble, and retuning costs deaf time. |
 | Network | `tsim/node.h`, `tsim/net.h` | The seam a candidate plugs into: routing decides what is sent, the MAC decides when. A plugin is handed its own node (`node.h`) and nothing that reaches the radio model, the losses or another node; the driver builds the run and reads the books through `net.h`. Plugins see only what was on the air, every frame is charged to a per-node airtime ledger under its purpose (data, relay, control, announce), and a message is delivered at most once per destination, only by a node that received a frame verifiably carrying its content. |
 | Baseline | `tsim/baseline.h` | ALOHA with a random start, and naive flooding with a hop limit: the floor every candidate has to beat. |
+| Candidate 1 | `tsim/meshtastic.h` | Meshtastic's managed flood and its MAC, written from Meshtasticator's port of the firmware timing: SNR-weighted rebroadcast delays, cancelling a rebroadcast on hearing it from another node, implicit and real acknowledgements with retries, and a contention window that grows with channel utilisation. The compatibility mode that reproduces Meshtasticator's results comes next. |
 | Traffic | `tsim/traffic.h`, `tsim/place.h` | Each node sends on its own Poisson process, with a configurable mix of broadcast and unicast and a range of lengths. The draws come from streams no plugin can seed, so with the same seed every candidate is offered the same messages at the same times. Nodes can be placed uniformly at random, on a grid or along a line. |
 | Metrics | `tsim/metrics.h` | The headline is deliveries that arrive within the deadline per second of airtime. Alongside it: the busiest node's duty cycle, delivery and on-time ratios, latency percentiles, airtime by purpose, and collision counts. Unicast and broadcast are reported separately. |
 | Scenarios | `tsim/scenario.h`, `tools/tsim.c` | A run written as a text file, which `tsim` runs and reports on as JSON. See [docs/scenarios.md](docs/scenarios.md). |
@@ -24,8 +25,8 @@ metered resource. The protocol is defined by the specification in
 The isolation matrix, capture threshold, lock time and retune time are placeholders from the
 literature until the bench rig (MSH-32) measures them; they are parameters, meant to be swept.
 
-Next: the candidates - managed flooding, path routing and distance-vector routing - each as a
-routing and MAC plugin.
+Next: candidate 1's Meshtasticator compatibility mode, then path routing (candidate 2) and
+distance-vector routing (candidate 3).
 
 * [CONTRIBUTING.md](CONTRIBUTING.md) — DCO sign-off and the clean-room rule
 * [Governance](https://github.com/ternmesh/spec/blob/main/GOVERNANCE.md)

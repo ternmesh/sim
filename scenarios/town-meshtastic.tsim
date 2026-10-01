@@ -1,0 +1,21 @@
+# The town scenario under candidate 1: Meshtastic's managed flood and MAC, three hops, every
+# message wanting an acknowledgement.
+nodes     = 200
+placement = uniform
+area      = 8000 x 8000
+
+radio.sf       = 9
+radio.bw       = 125000
+radio.tx_dbm   = 20
+radio.preamble = 16   # what Meshtastic programs
+
+routing      = meshtastic
+mac          = meshtastic
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+warmup   = 1 min
+duration = 1 h
+deadline = 60 s

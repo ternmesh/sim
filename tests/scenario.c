@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "tsim/baseline.h"
+#include "tsim/meshtastic.h"
 
 #include "check.h"
 
@@ -138,6 +139,26 @@ static void problems_say_where_they_are(void) {
         {"nodes = 2\nrouting = flood\nmac = aloha\nrouting.max_delay = 1 s\n", 4,
          "not a setting of flood"},
         {"nodes = 2\nrouting = flood\nmac = aloha\nmac.hops = 1\n", 4, "not a setting of aloha"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.role = repeater\n", 4,
+         "client, client_mute or router"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.hop_limit = 8\n", 4, "0 to 7"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.want_ack = maybe\n", 4,
+         "yes or no"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nmac.cw_max = 16\n", 4, "0 to 15"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nmac.snr_max = loud\n", 4, "SNR in dB"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.cw_min = 9\n", 0,
+         "routing meshtastic: cw_min is over cw_max"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nmac.snr_min = 10\n", 0,
+         "mac meshtastic: snr_min is not below snr_max"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nmac.slot = 0 s\n", 0,
+         "mac meshtastic: slot must be above 0"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.slot = 0 s\n", 0,
+         "routing meshtastic: slot must be above 0"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nmac.slot = 1000000000 s\n"
+         "mac.cw_min = 15\nmac.cw_max = 15\n",
+         0, "mac meshtastic: slot is too long"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.processing = 2000000 h\n", 4,
+         "too long for the clock"},
         {"nodes = 2\n\n# a comment\njust some words\n", 4, "key = value"},
         {"nodes = 2\n = 3\n", 2, "no setting"},
         {"nodes = 2\nseed =   # nothing\n", 2, "seed has no value"},
@@ -201,6 +222,52 @@ static bool same_report(const struct tsim_report *a, const struct tsim_report *b
 
 /* Six nodes in a row that hear only their neighbours: whatever arrives was relayed there, and the
  * run's clock is the warmup, the traffic and the deadline. */
+static const struct tsim_meshtastic_config *meshtastic_of(const struct tsim_scenario *s) {
+    return (const struct tsim_meshtastic_config *)s->routing_config;
+}
+
+static const struct tsim_meshtastic_mac_config *meshtastic_mac_of(const struct tsim_scenario *s) {
+    return (const struct tsim_meshtastic_mac_config *)s->mac_config;
+}
+
+/* Settings that bound each other are checked once all are in, so their order does not matter;
+ * the slot follows the radio. */
+static void meshtastic_settings_read_in_any_order(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 2\nrouting = meshtastic\nmac = meshtastic\n"
+                    "radio.sf = 11\nradio.bw = 250000\n"
+                    "routing.cw_min = 10\nrouting.cw_max = 12\n"
+                    "mac.snr_max = -30\nmac.snr_min = -40\n"
+                    "routing.role = router\nrouting.hop_limit = 7\nrouting.want_ack = no\n"
+                    "routing.retries = 1\nrouting.processing = 1 s\n"
+                    "routing.ack_duplicates = no\n"));
+    const struct tsim_meshtastic_config *r = meshtastic_of(&s);
+    const struct tsim_meshtastic_mac_config *m = meshtastic_mac_of(&s);
+    CHECK(r->window.cw_min == 10 && r->window.cw_max == 12);
+    CHECK(m->snr_min_db == -40 && m->snr_max_db == -30);
+    CHECK(r->role == TSIM_MESHTASTIC_ROUTER && r->hop_limit == 7 && !r->want_ack);
+    CHECK(r->retries == 1 && r->processing == TSIM_S(1) && !r->ack_duplicates);
+    CHECK(r->lora.sf == 11 && r->lora.bw_hz == 250000);
+    CHECK_EQ_I64(r->window.slot, tsim_meshtastic_slot(&r->lora));
+    CHECK_EQ_I64(m->window.slot, r->window.slot);
+    CHECK(m->window.cw_min == 3 && m->window.cw_max == 8);
+
+    CHECK(parse(&s, "nodes = 2\nrouting = meshtastic\nmac = meshtastic\nmac.slot = 50 ms\n"));
+    CHECK_EQ_I64(meshtastic_mac_of(&s)->window.slot, TSIM_MS(50));
+}
+
+static void a_meshtastic_run_floods_a_line(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
+                    "routing = meshtastic\nmac = meshtastic\n"
+                    "traffic.interval = 1 min\ntraffic.broadcast = 1\nduration = 30 min\n"));
+    struct tsim_report rep;
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK(rep.broadcast.messages > 100);
+    CHECK(rep.broadcast.on_time > rep.broadcast.wanted / 2);
+    CHECK(rep.frames[TSIM_PURPOSE_RELAY] > 0);
+}
+
 static void a_run_relays_across_its_map(void) {
     struct tsim_scenario s;
     CHECK(parse(&s, line_text));
@@ -246,7 +313,9 @@ int main(void) {
     RUN(a_later_setting_wins);
     RUN(unset_settings_take_their_defaults);
     RUN(problems_say_where_they_are);
+    RUN(meshtastic_settings_read_in_any_order);
     RUN(a_run_relays_across_its_map);
+    RUN(a_meshtastic_run_floods_a_line);
     RUN(a_run_repeats_with_its_seed);
     RUN(airtime_past_what_a_time_holds_still_adds_up);
     return CHECK_DONE();

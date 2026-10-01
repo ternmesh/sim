@@ -502,3 +502,17 @@ bool tsim_node_receiving(const struct tsim_node *nd) {
 bool tsim_node_tune(struct tsim_node *nd, uint16_t channel, const struct tsim_lora *listen) {
     return tsim_phy_tune(nd->net->phy, nd->index, channel, listen);
 }
+
+uint64_t tsim_node_head_handle(const struct tsim_node *nd) {
+    return nd->queue_len ? nd->queue[0].handle : 0;
+}
+
+tsim_time tsim_node_tx_airtime(const struct tsim_node *nd) {
+    struct tsim_ledger now;
+    tsim_net_ledger_now(nd->net, nd->index, &now);
+    return tsim_ledger_airtime(&now);
+}
+
+tsim_time tsim_node_rx_airtime(const struct tsim_node *nd) {
+    return tsim_phy_rx_airtime(nd->net->phy, nd->index);
+}

@@ -483,6 +483,69 @@ static void destroy_cancels_pending_radio_events(void) {
     world_free(w);
 }
 
+static void tune_now(struct tsim_sched *s, void *ctx) {
+    (void)s;
+    struct world *w = ctx;
+    tsim_phy_tune(w->phy, 0, 0, &w->sf9);
+}
+
+/* The time a radio spends on frames it is receiving, however each reception ends. */
+static void rx_airtime_counts_every_reception_however_it_ends(void) {
+    /* Decoded, and part-way through. */
+    struct world *w = world_new(2, NULL);
+    arrive(w, 1, 0, -86.0);
+    tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_sched_run_until(w->sched, TSIM_MS(10));
+    CHECK_EQ_I64(tsim_phy_rx_airtime(w->phy, 0), TSIM_MS(10));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_airtime, 0);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK_EQ_I64(tsim_phy_rx_airtime(w->phy, 0), SF7_FRAME);
+    CHECK_EQ_I64(tsim_phy_rx_airtime(w->phy, 1), 0); /* sending is not receiving */
+    world_free(w);
+
+    /* Lost to interference: the whole frame was still spent on it. */
+    w = world_new(3, NULL);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -70.0);
+    struct send a, b;
+    send_at(w, &a, 0, 1, &w->sf7);
+    send_at(w, &b, TSIM_MS(20), 2, &w->sf7);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_lost, 1);
+    CHECK_EQ_I64(tsim_phy_rx_airtime(w->phy, 0), SF7_FRAME);
+    world_free(w);
+
+    /* Taken by a louder frame 2 ms in: 2 ms on the first, then all of the second. */
+    w = world_new(3, NULL);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -70.0);
+    send_at(w, &a, 0, 1, &w->sf7);
+    send_at(w, &b, TSIM_MS(2), 2, &w->sf7);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_preempted, 1);
+    CHECK_EQ_I64(tsim_phy_rx_airtime(w->phy, 0), TSIM_MS(2) + SF7_FRAME);
+    world_free(w);
+
+    /* Cut short by transmitting, and by retuning, 10 ms in. */
+    w = world_new(2, NULL);
+    arrive(w, 1, 0, -86.0);
+    send_at(w, &a, 0, 1, &w->sf7);
+    send_at(w, &b, TSIM_MS(10), 0, &w->sf7);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_aborted, 1);
+    CHECK_EQ_I64(tsim_phy_rx_airtime(w->phy, 0), TSIM_MS(10));
+    world_free(w);
+
+    w = world_new(2, NULL);
+    arrive(w, 1, 0, -86.0);
+    send_at(w, &a, 0, 1, &w->sf7);
+    tsim_sched_at(w->sched, TSIM_MS(10), tune_now, w);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_aborted, 1);
+    CHECK_EQ_I64(tsim_phy_rx_airtime(w->phy, 0), TSIM_MS(10));
+    world_free(w);
+}
+
 int main(void) {
     RUN(delivers_at_the_end_of_the_frame);
     RUN(hears_down_to_the_demodulation_floor);
@@ -504,5 +567,6 @@ int main(void) {
     RUN(losses_from_the_channel_model);
     RUN(refuses_a_frame_past_the_end_of_the_clock);
     RUN(destroy_cancels_pending_radio_events);
+    RUN(rx_airtime_counts_every_reception_however_it_ends);
     return CHECK_DONE();
 }
