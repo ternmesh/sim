@@ -8,7 +8,9 @@ struct queued {
     struct tsim_tx tx;
 };
 
-struct node {
+struct tsim_node {
+    struct tsim_net *net;
+    uint32_t index;
     void *routing;
     void *mac;
     struct queued *queue; /* by priority, then by handle */
@@ -34,7 +36,7 @@ struct tsim_net {
     const struct tsim_routing *routing;
     const struct tsim_mac *mac;
     uint32_t n;
-    struct node *nodes;
+    struct tsim_node *nodes;
     uint64_t next_handle;
     struct record *messages;
     size_t message_count;
@@ -53,7 +55,7 @@ static void on_rx(void *ctx, uint32_t node, const struct tsim_frame *frame, doub
         .rssi_dbm = rssi_dbm,
         .snr_db = snr_db,
     };
-    struct node *nd = &net->nodes[node];
+    struct tsim_node *nd = &net->nodes[node];
     net->routing->rx(nd->routing, &rx);
     net->mac->kick(nd->mac);
 }
@@ -61,7 +63,7 @@ static void on_rx(void *ctx, uint32_t node, const struct tsim_frame *frame, doub
 static void on_tx_done(void *ctx, uint32_t node, const struct tsim_frame *frame) {
     (void)frame;
     struct tsim_net *net = ctx;
-    struct node *nd = &net->nodes[node];
+    struct tsim_node *nd = &net->nodes[node];
     nd->sending = false;
     if (net->routing->tx_done) {
         net->routing->tx_done(nd->routing, nd->air.handle);
@@ -103,16 +105,20 @@ struct tsim_net *tsim_net_create(struct tsim_sched *sched, const struct tsim_net
         tsim_net_destroy(net);
         return NULL;
     }
+    for (uint32_t i = 0; i < nodes; i++) {
+        net->nodes[i].net = net;
+        net->nodes[i].index = i;
+    }
     /* MACs first, so a routing plugin can send from start(). */
     for (uint32_t i = 0; i < nodes; i++) {
-        net->nodes[i].mac = mac->create(net, i, mac_config);
+        net->nodes[i].mac = mac->create(&net->nodes[i], mac_config);
         if (!net->nodes[i].mac) {
             tsim_net_destroy(net);
             return NULL;
         }
     }
     for (uint32_t i = 0; i < nodes; i++) {
-        net->nodes[i].routing = routing->create(net, i, routing_config);
+        net->nodes[i].routing = routing->create(&net->nodes[i], routing_config);
         if (!net->nodes[i].routing) {
             tsim_net_destroy(net);
             return NULL;
@@ -156,127 +162,8 @@ struct tsim_sched *tsim_net_sched(struct tsim_net *net) { return net->sched; }
 
 uint32_t tsim_net_nodes(const struct tsim_net *net) { return net->n; }
 
-void tsim_net_rng(const struct tsim_net *net, uint32_t node, enum tsim_stream stream,
-                  struct tsim_rng *rng) {
-    tsim_rng_init(rng, net->params.seed, ((uint64_t)stream << 32) | node);
-}
-
-uint64_t tsim_net_send(struct tsim_net *net, uint32_t node, const struct tsim_tx *tx) {
-    if (node >= net->n || (int)tx->purpose < 0 || tx->purpose >= TSIM_PURPOSE_COUNT ||
-        tx->len > TSIM_FRAME_MAX || tsim_lora_airtime(&tx->lora, tx->len) < 0) {
-        return 0;
-    }
-    struct node *nd = &net->nodes[node];
-    if (net->params.queue_limit && nd->queue_len >= net->params.queue_limit) {
-        nd->stats.dropped++;
-        return 0;
-    }
-    if (nd->queue_len == nd->queue_cap) {
-        size_t cap = nd->queue_cap ? nd->queue_cap * 2 : 8;
-        struct queued *grown = realloc(nd->queue, cap * sizeof *grown);
-        if (!grown) {
-            return 0;
-        }
-        nd->queue = grown;
-        nd->queue_cap = cap;
-    }
-    size_t at = nd->queue_len;
-    while (at > 0 && nd->queue[at - 1].tx.priority < tx->priority) {
-        at--;
-    }
-    memmove(&nd->queue[at + 1], &nd->queue[at], (nd->queue_len - at) * sizeof *nd->queue);
-    nd->queue[at] = (struct queued){net->next_handle++, *tx};
-    nd->queue_len++;
-    nd->stats.queued++;
-    net->mac->kick(nd->mac);
-    return nd->queue[at].handle;
-}
-
-static void remove_at(struct node *nd, size_t at) {
-    memmove(&nd->queue[at], &nd->queue[at + 1], (nd->queue_len - at - 1) * sizeof *nd->queue);
-    nd->queue_len--;
-}
-
-bool tsim_net_cancel(struct tsim_net *net, uint32_t node, uint64_t handle) {
-    if (node >= net->n) {
-        return false;
-    }
-    struct node *nd = &net->nodes[node];
-    for (size_t i = 0; i < nd->queue_len; i++) {
-        if (nd->queue[i].handle == handle) {
-            remove_at(nd, i);
-            nd->stats.cancelled++;
-            return true;
-        }
-    }
-    return false;
-}
-
-bool tsim_net_deliver(struct tsim_net *net, uint32_t node, uint64_t msg) {
-    if (node >= net->n || msg == 0 || msg > net->message_count) {
-        return false;
-    }
-    struct record *rec = &net->messages[msg - 1];
-    const struct tsim_message *m = &rec->r.msg;
-    if (m->dst == TSIM_BROADCAST) {
-        if (node == m->src) {
-            return false;
-        }
-        if (!rec->got) {
-            rec->got = calloc((net->n + 7) / 8, 1);
-            if (!rec->got) {
-                return false;
-            }
-        }
-        uint8_t bit = (uint8_t)(1u << (node % 8));
-        if (rec->got[node / 8] & bit) {
-            return false;
-        }
-        rec->got[node / 8] |= bit;
-    } else if (node != m->dst || rec->r.delivered > 0) {
-        return false;
-    }
-    tsim_time now = tsim_sched_now(net->sched);
-    if (rec->r.delivered == 0) {
-        rec->r.first = now;
-    }
-    rec->r.last = now;
-    rec->r.delivered++;
-    net->nodes[node].stats.delivered++;
-    return true;
-}
-
-const struct tsim_tx *tsim_net_head(const struct tsim_net *net, uint32_t node) {
-    const struct node *nd = &net->nodes[node];
-    return nd->queue_len ? &nd->queue[0].tx : NULL;
-}
-
-size_t tsim_net_queue_length(const struct tsim_net *net, uint32_t node) {
-    return net->nodes[node].queue_len;
-}
-
-bool tsim_net_sending(const struct tsim_net *net, uint32_t node) {
-    return net->nodes[node].sending;
-}
-
-bool tsim_net_transmit(struct tsim_net *net, uint32_t node) {
-    if (node >= net->n) {
-        return false;
-    }
-    struct node *nd = &net->nodes[node];
-    if (nd->sending || nd->queue_len == 0) {
-        return false;
-    }
-    nd->air = nd->queue[0];
-    const struct tsim_tx *tx = &nd->air.tx;
-    if (!tsim_phy_transmit(net->phy, node, tx->channel, &tx->lora, tx->len, tx->tx_dbm, &nd->air)) {
-        return false;
-    }
-    remove_at(nd, 0);
-    nd->sending = true;
-    nd->ledger.frames[tx->purpose]++;
-    nd->ledger.airtime[tx->purpose] += tsim_lora_airtime(&tx->lora, tx->len);
-    return true;
+struct tsim_node *tsim_net_node(struct tsim_net *net, uint32_t node) {
+    return node < net->n ? &net->nodes[node] : NULL;
 }
 
 uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len) {
@@ -331,3 +218,133 @@ const struct tsim_message_record *tsim_net_message(const struct tsim_net *net, u
 }
 
 uint64_t tsim_net_message_count(const struct tsim_net *net) { return net->message_count; }
+
+/* --- A node, as its plugins see it --- */
+
+uint32_t tsim_node_index(const struct tsim_node *node) { return node->index; }
+
+struct tsim_sched *tsim_node_sched(struct tsim_node *node) { return node->net->sched; }
+
+void tsim_node_rng(const struct tsim_node *node, enum tsim_stream stream, struct tsim_rng *rng) {
+    tsim_rng_init(rng, node->net->params.seed, ((uint64_t)stream << 32) | node->index);
+}
+
+uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
+    struct tsim_net *net = nd->net;
+    if ((int)tx->purpose < 0 || tx->purpose >= TSIM_PURPOSE_COUNT || tx->len > TSIM_FRAME_MAX ||
+        tsim_lora_airtime(&tx->lora, tx->len) < 0) {
+        return 0;
+    }
+    if (net->params.queue_limit && nd->queue_len >= net->params.queue_limit) {
+        nd->stats.dropped++;
+        return 0;
+    }
+    if (nd->queue_len == nd->queue_cap) {
+        size_t cap = nd->queue_cap ? nd->queue_cap * 2 : 8;
+        struct queued *grown = realloc(nd->queue, cap * sizeof *grown);
+        if (!grown) {
+            return 0;
+        }
+        nd->queue = grown;
+        nd->queue_cap = cap;
+    }
+    size_t at = nd->queue_len;
+    while (at > 0 && nd->queue[at - 1].tx.priority < tx->priority) {
+        at--;
+    }
+    uint64_t handle = net->next_handle++;
+    memmove(&nd->queue[at + 1], &nd->queue[at], (nd->queue_len - at) * sizeof *nd->queue);
+    nd->queue[at] = (struct queued){handle, *tx};
+    nd->queue_len++;
+    nd->stats.queued++;
+    /* The MAC may send or cancel from inside the kick, which moves the queue under `at`. */
+    net->mac->kick(nd->mac);
+    return handle;
+}
+
+static void remove_at(struct tsim_node *nd, size_t at) {
+    memmove(&nd->queue[at], &nd->queue[at + 1], (nd->queue_len - at - 1) * sizeof *nd->queue);
+    nd->queue_len--;
+}
+
+bool tsim_node_cancel(struct tsim_node *nd, uint64_t handle) {
+    for (size_t i = 0; i < nd->queue_len; i++) {
+        if (nd->queue[i].handle == handle) {
+            remove_at(nd, i);
+            nd->stats.cancelled++;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool tsim_node_deliver(struct tsim_node *nd, uint64_t msg) {
+    struct tsim_net *net = nd->net;
+    uint32_t node = nd->index;
+    if (msg == 0 || msg > net->message_count) {
+        return false;
+    }
+    struct record *rec = &net->messages[msg - 1];
+    const struct tsim_message *m = &rec->r.msg;
+    if (m->dst == TSIM_BROADCAST) {
+        if (node == m->src) {
+            return false;
+        }
+        if (!rec->got) {
+            rec->got = calloc((net->n + 7) / 8, 1);
+            if (!rec->got) {
+                return false;
+            }
+        }
+        uint8_t bit = (uint8_t)(1u << (node % 8));
+        if (rec->got[node / 8] & bit) {
+            return false;
+        }
+        rec->got[node / 8] |= bit;
+    } else if (node != m->dst || rec->r.delivered > 0) {
+        return false;
+    }
+    tsim_time now = tsim_sched_now(net->sched);
+    if (rec->r.delivered == 0) {
+        rec->r.first = now;
+    }
+    rec->r.last = now;
+    rec->r.delivered++;
+    nd->stats.delivered++;
+    return true;
+}
+
+const struct tsim_tx *tsim_node_head(const struct tsim_node *nd) {
+    return nd->queue_len ? &nd->queue[0].tx : NULL;
+}
+
+size_t tsim_node_queue_length(const struct tsim_node *nd) { return nd->queue_len; }
+
+bool tsim_node_sending(const struct tsim_node *nd) { return nd->sending; }
+
+bool tsim_node_transmit(struct tsim_node *nd) {
+    if (nd->sending || nd->queue_len == 0) {
+        return false;
+    }
+    nd->air = nd->queue[0];
+    const struct tsim_tx *tx = &nd->air.tx;
+    if (!tsim_phy_transmit(nd->net->phy, nd->index, tx->channel, &tx->lora, tx->len, tx->tx_dbm,
+                           &nd->air)) {
+        return false;
+    }
+    remove_at(nd, 0);
+    nd->sending = true;
+    nd->ledger.frames[tx->purpose]++;
+    nd->ledger.airtime[tx->purpose] += tsim_lora_airtime(&tx->lora, tx->len);
+    return true;
+}
+
+bool tsim_node_cad(const struct tsim_node *nd) { return tsim_phy_cad(nd->net->phy, nd->index); }
+
+bool tsim_node_receiving(const struct tsim_node *nd) {
+    return tsim_phy_receiving(nd->net->phy, nd->index);
+}
+
+bool tsim_node_tune(struct tsim_node *nd, uint16_t channel, const struct tsim_lora *listen) {
+    return tsim_phy_tune(nd->net->phy, nd->index, channel, listen);
+}

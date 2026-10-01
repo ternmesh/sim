@@ -8,8 +8,7 @@
 /* --- ALOHA --- */
 
 struct aloha {
-    struct tsim_net *net;
-    uint32_t node;
+    struct tsim_node *node;
     struct tsim_aloha_config config;
     struct tsim_rng rng;
     struct tsim_event timer;
@@ -20,14 +19,14 @@ static void aloha_fire(struct tsim_sched *sched, void *ctx) {
     struct aloha *a = ctx;
     a->timer = (struct tsim_event){0};
     /* Still sending: the frame's end kicks again. Queue emptied by a cancel: nothing to do. */
-    tsim_net_transmit(a->net, a->node);
+    tsim_node_transmit(a->node);
 }
 
 static void aloha_kick(void *self) {
     struct aloha *a = self;
-    struct tsim_sched *sched = tsim_net_sched(a->net);
-    if (tsim_sched_pending(sched, a->timer) || tsim_net_sending(a->net, a->node) ||
-        !tsim_net_head(a->net, a->node)) {
+    struct tsim_sched *sched = tsim_node_sched(a->node);
+    if (tsim_sched_pending(sched, a->timer) || tsim_node_sending(a->node) ||
+        !tsim_node_head(a->node)) {
         return;
     }
     tsim_time delay = 0;
@@ -37,21 +36,20 @@ static void aloha_kick(void *self) {
     a->timer = tsim_sched_after(sched, delay, aloha_fire, a);
 }
 
-static void *aloha_create(struct tsim_net *net, uint32_t node, const void *config) {
+static void *aloha_create(struct tsim_node *node, const void *config) {
     struct aloha *a = calloc(1, sizeof *a);
     if (!a) {
         return NULL;
     }
-    a->net = net;
     a->node = node;
     a->config = *(const struct tsim_aloha_config *)config;
-    tsim_net_rng(net, node, TSIM_STREAM_MAC, &a->rng);
+    tsim_node_rng(node, TSIM_STREAM_MAC, &a->rng);
     return a;
 }
 
 static void aloha_destroy(void *self) {
     struct aloha *a = self;
-    tsim_sched_cancel(tsim_net_sched(a->net), a->timer);
+    tsim_sched_cancel(tsim_node_sched(a->node), a->timer);
     free(a);
 }
 
@@ -65,8 +63,8 @@ const struct tsim_mac tsim_aloha = {
 /* --- Naive flooding --- */
 
 struct flood {
-    struct tsim_net *net;
-    uint32_t node;
+    struct tsim_node *node;
+    uint32_t self; /* this node's address */
     struct tsim_flood_config config;
     uint8_t *seen; /* one bit per message id */
     size_t seen_bytes;
@@ -130,7 +128,7 @@ static void flood_originate(void *self, const struct tsim_message *msg) {
     put32(tx.bytes + 8, msg->dst);
     tx.bytes[12] = fl->config.hops;
     tx.len = TSIM_FLOOD_HEADER + msg->len;
-    tsim_net_send(fl->net, fl->node, &tx);
+    tsim_node_send(fl->node, &tx);
 }
 
 static void flood_rx(void *self, const struct tsim_rx *rx) {
@@ -144,26 +142,26 @@ static void flood_rx(void *self, const struct tsim_rx *rx) {
     if (!first_sight(fl, id)) {
         return;
     }
-    if (dst == fl->node || dst == TSIM_BROADCAST) {
-        tsim_net_deliver(fl->net, fl->node, id);
+    if (dst == fl->self || dst == TSIM_BROADCAST) {
+        tsim_node_deliver(fl->node, id);
     }
-    if (dst == fl->node || hops == 0) {
+    if (dst == fl->self || hops == 0) {
         return;
     }
     struct tsim_tx tx = frame_for(fl, TSIM_PURPOSE_RELAY);
     memcpy(tx.bytes, rx->bytes, rx->len);
     tx.bytes[12] = (uint8_t)(hops - 1);
     tx.len = rx->len;
-    tsim_net_send(fl->net, fl->node, &tx);
+    tsim_node_send(fl->node, &tx);
 }
 
-static void *flood_create(struct tsim_net *net, uint32_t node, const void *config) {
+static void *flood_create(struct tsim_node *node, const void *config) {
     struct flood *fl = calloc(1, sizeof *fl);
     if (!fl) {
         return NULL;
     }
-    fl->net = net;
     fl->node = node;
+    fl->self = tsim_node_index(node);
     fl->config = *(const struct tsim_flood_config *)config;
     return fl;
 }

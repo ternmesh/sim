@@ -1,5 +1,7 @@
 #include "tsim/baseline.h"
 
+#include "tsim/net.h"
+
 #include "check.h"
 
 enum { MAX_NODES = 5 };

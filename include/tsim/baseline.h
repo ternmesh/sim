@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #include "tsim/lora.h"
-#include "tsim/net.h"
+#include "tsim/node.h"
 #include "tsim/time.h"
 
 /* The simplest MAC and routing that work: the floor every candidate has to beat, and what the

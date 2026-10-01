@@ -22,18 +22,19 @@ struct log {
     double rx_snr;
     uint64_t done[MAX_NODES];
     int kicks[MAX_NODES];
+    bool eager;
 };
 
 struct self {
     struct log *log;
+    struct tsim_node *handle;
     uint32_t node;
 };
 
-static void *self_create(struct tsim_net *net, uint32_t node, const void *config) {
-    (void)net;
+static void *self_create(struct tsim_node *node, const void *config) {
     struct self *s = malloc(sizeof *s);
     if (s) {
-        *s = (struct self){(struct log *)config, node};
+        *s = (struct self){(struct log *)config, node, tsim_node_index(node)};
     }
     return s;
 }
@@ -72,9 +73,13 @@ static const struct tsim_routing recorder = {
     .tx_done = rec_tx_done,
 };
 
+/* Sends from inside the kick when the test asks it to. */
 static void manual_kick(void *self) {
     struct self *s = self;
     s->log->kicks[s->node]++;
+    if (s->log->eager) {
+        tsim_node_transmit(s->handle);
+    }
 }
 
 static const struct tsim_mac manual = {
@@ -148,12 +153,12 @@ static void a_frame_arrives_as_its_bytes(void) {
     rig_open(&r, tsim_net_defaults(1), 3);
     struct tsim_tx tx = frame(TSIM_PURPOSE_DATA, 0, 5);
     memcpy(tx.bytes, "hello", 5);
-    uint64_t h = tsim_net_send(r.net, 0, &tx);
+    uint64_t h = tsim_node_send(tsim_net_node(r.net, 0), &tx);
     CHECK(h != 0);
     CHECK(r.log.kicks[0] == 1);
-    CHECK(tsim_net_transmit(r.net, 0));
-    CHECK(tsim_net_sending(r.net, 0));
-    CHECK(tsim_net_queue_length(r.net, 0) == 0);
+    CHECK(tsim_node_transmit(tsim_net_node(r.net, 0)));
+    CHECK(tsim_node_sending(tsim_net_node(r.net, 0)));
+    CHECK(tsim_node_queue_length(tsim_net_node(r.net, 0)) == 0);
     run_for(&r, TSIM_S(1));
 
     CHECK(r.log.rx[1] == 1);
@@ -163,7 +168,7 @@ static void a_frame_arrives_as_its_bytes(void) {
     double noise = -174.0 + 10.0 * log10(125000.0) + 6.0;
     CHECK(fabs(r.log.rx_snr - (r.log.rx_rssi - noise)) < 1e-9);
 
-    CHECK(!tsim_net_sending(r.net, 0));
+    CHECK(!tsim_node_sending(tsim_net_node(r.net, 0)));
     CHECK_EQ_U64(r.log.done[0], h);
     CHECK(r.log.kicks[0] == 2); /* queued, then done */
     CHECK(r.log.kicks[1] == 1); /* received */
@@ -176,20 +181,20 @@ static void ledger_charges_each_frame_under_its_purpose(void) {
     struct tsim_tx data = frame(TSIM_PURPOSE_DATA, 0, 10);
     struct tsim_tx control = frame(TSIM_PURPOSE_CONTROL, 0, 20);
     struct tsim_tx announce = frame(TSIM_PURPOSE_ANNOUNCE, 0, 30);
-    tsim_net_send(r.net, 0, &data);
-    tsim_net_send(r.net, 0, &control);
-    uint64_t dropped = tsim_net_send(r.net, 0, &announce);
+    tsim_node_send(tsim_net_node(r.net, 0), &data);
+    tsim_node_send(tsim_net_node(r.net, 0), &control);
+    uint64_t dropped = tsim_node_send(tsim_net_node(r.net, 0), &announce);
 
-    CHECK(tsim_net_transmit(r.net, 0));
+    CHECK(tsim_node_transmit(tsim_net_node(r.net, 0)));
     const struct tsim_ledger *l = tsim_net_ledger(r.net, 0);
     CHECK_EQ_U64(l->frames[TSIM_PURPOSE_DATA], 1);
     CHECK_EQ_I64(l->airtime[TSIM_PURPOSE_DATA], airtime(10));
     CHECK_EQ_U64(l->frames[TSIM_PURPOSE_CONTROL], 0); /* queued is not spent */
 
-    CHECK(!tsim_net_transmit(r.net, 0)); /* still sending */
+    CHECK(!tsim_node_transmit(tsim_net_node(r.net, 0))); /* still sending */
     run_for(&r, TSIM_S(1));
-    CHECK(tsim_net_cancel(r.net, 0, dropped));
-    CHECK(tsim_net_transmit(r.net, 0));
+    CHECK(tsim_node_cancel(tsim_net_node(r.net, 0), dropped));
+    CHECK(tsim_node_transmit(tsim_net_node(r.net, 0)));
     run_for(&r, TSIM_S(1));
 
     CHECK_EQ_U64(l->frames[TSIM_PURPOSE_CONTROL], 1);
@@ -206,16 +211,16 @@ static void queue_goes_by_priority_then_order(void) {
     const uint8_t priority[] = {0, 2, 1, 2};
     for (uint32_t i = 0; i < 4; i++) {
         struct tsim_tx tx = frame(TSIM_PURPOSE_DATA, priority[i], i + 1);
-        tsim_net_send(r.net, 0, &tx);
+        tsim_node_send(tsim_net_node(r.net, 0), &tx);
     }
     const uint32_t expected[] = {2, 4, 3, 1};
     for (int i = 0; i < 4; i++) {
-        CHECK(tsim_net_head(r.net, 0)->len == expected[i]);
-        CHECK(tsim_net_transmit(r.net, 0));
+        CHECK(tsim_node_head(tsim_net_node(r.net, 0))->len == expected[i]);
+        CHECK(tsim_node_transmit(tsim_net_node(r.net, 0)));
         run_for(&r, TSIM_S(1));
     }
-    CHECK(tsim_net_head(r.net, 0) == NULL);
-    CHECK(!tsim_net_transmit(r.net, 0));
+    CHECK(tsim_node_head(tsim_net_node(r.net, 0)) == NULL);
+    CHECK(!tsim_node_transmit(tsim_net_node(r.net, 0)));
     rig_close(&r);
 }
 
@@ -223,17 +228,39 @@ static void cancel_takes_back_only_what_is_queued(void) {
     struct rig r;
     rig_open(&r, tsim_net_defaults(1), 2);
     struct tsim_tx tx = frame(TSIM_PURPOSE_RELAY, 0, 10);
-    uint64_t sent = tsim_net_send(r.net, 0, &tx);
-    CHECK(tsim_net_transmit(r.net, 0));
-    CHECK(!tsim_net_cancel(r.net, 0, sent));
-    uint64_t waiting = tsim_net_send(r.net, 0, &tx);
-    CHECK(!tsim_net_cancel(r.net, 1, waiting)); /* another node's */
-    CHECK(tsim_net_cancel(r.net, 0, waiting));
-    CHECK(!tsim_net_cancel(r.net, 0, waiting));
-    CHECK(tsim_net_queue_length(r.net, 0) == 0);
+    uint64_t sent = tsim_node_send(tsim_net_node(r.net, 0), &tx);
+    CHECK(tsim_node_transmit(tsim_net_node(r.net, 0)));
+    CHECK(!tsim_node_cancel(tsim_net_node(r.net, 0), sent));
+    uint64_t waiting = tsim_node_send(tsim_net_node(r.net, 0), &tx);
+    CHECK(!tsim_node_cancel(tsim_net_node(r.net, 1), waiting)); /* another node's */
+    CHECK(tsim_node_cancel(tsim_net_node(r.net, 0), waiting));
+    CHECK(!tsim_node_cancel(tsim_net_node(r.net, 0), waiting));
+    CHECK(tsim_node_queue_length(tsim_net_node(r.net, 0)) == 0);
     const struct tsim_net_stats *s = tsim_net_stats(r.net, 0);
     CHECK_EQ_U64(s->queued, 2);
     CHECK_EQ_U64(s->cancelled, 1);
+    rig_close(&r);
+}
+
+/* A MAC that sends from inside the kick moves the queue before send returns: here the new frame
+ * goes straight out and the waiting one slides into the slot it was queued in. */
+static void send_returns_its_own_handle_when_the_mac_sends_at_once(void) {
+    struct rig r;
+    rig_open(&r, tsim_net_defaults(1), 2);
+    struct tsim_node *n0 = tsim_net_node(r.net, 0);
+    struct tsim_tx low = frame(TSIM_PURPOSE_DATA, 0, 10);
+    struct tsim_tx high = frame(TSIM_PURPOSE_CONTROL, 1, 20);
+    uint64_t waiting = tsim_node_send(n0, &low);
+    r.log.eager = true;
+    uint64_t sent = tsim_node_send(n0, &high);
+    CHECK(sent != waiting);
+    CHECK(tsim_node_sending(n0));
+    CHECK(tsim_node_head(n0)->len == 10);
+    CHECK(!tsim_node_cancel(n0, sent)); /* already on the air */
+    r.log.eager = false;
+    run_for(&r, TSIM_S(1));
+    CHECK_EQ_U64(r.log.done[0], sent);
+    CHECK(tsim_node_cancel(n0, waiting));
     rig_close(&r);
 }
 
@@ -243,14 +270,14 @@ static void a_full_queue_drops(void) {
     struct rig r;
     rig_open(&r, p, 2);
     struct tsim_tx tx = frame(TSIM_PURPOSE_DATA, 0, 10);
-    CHECK(tsim_net_send(r.net, 0, &tx) != 0);
-    CHECK(tsim_net_send(r.net, 0, &tx) != 0);
-    CHECK_EQ_U64(tsim_net_send(r.net, 0, &tx), 0);
-    CHECK(tsim_net_queue_length(r.net, 0) == 2);
+    CHECK(tsim_node_send(tsim_net_node(r.net, 0), &tx) != 0);
+    CHECK(tsim_node_send(tsim_net_node(r.net, 0), &tx) != 0);
+    CHECK_EQ_U64(tsim_node_send(tsim_net_node(r.net, 0), &tx), 0);
+    CHECK(tsim_node_queue_length(tsim_net_node(r.net, 0)) == 2);
     CHECK_EQ_U64(tsim_net_stats(r.net, 0)->dropped, 1);
     /* The frame on the air is not in the queue. */
-    CHECK(tsim_net_transmit(r.net, 0));
-    CHECK(tsim_net_send(r.net, 0, &tx) != 0);
+    CHECK(tsim_node_transmit(tsim_net_node(r.net, 0)));
+    CHECK(tsim_node_send(tsim_net_node(r.net, 0), &tx) != 0);
     rig_close(&r);
 }
 
@@ -258,14 +285,14 @@ static void send_refuses_what_cannot_go_on_air(void) {
     struct rig r;
     rig_open(&r, tsim_net_defaults(1), 2);
     struct tsim_tx tx = frame(TSIM_PURPOSE_DATA, 0, TSIM_FRAME_MAX + 1);
-    CHECK_EQ_U64(tsim_net_send(r.net, 0, &tx), 0);
+    CHECK_EQ_U64(tsim_node_send(tsim_net_node(r.net, 0), &tx), 0);
     tx = frame(TSIM_PURPOSE_DATA, 0, 10);
     tx.lora.sf = 13;
-    CHECK_EQ_U64(tsim_net_send(r.net, 0, &tx), 0);
+    CHECK_EQ_U64(tsim_node_send(tsim_net_node(r.net, 0), &tx), 0);
     tx = frame(TSIM_PURPOSE_COUNT, 0, 10);
-    CHECK_EQ_U64(tsim_net_send(r.net, 0, &tx), 0);
+    CHECK_EQ_U64(tsim_node_send(tsim_net_node(r.net, 0), &tx), 0);
     tx = frame(TSIM_PURPOSE_DATA, 0, 10);
-    CHECK_EQ_U64(tsim_net_send(r.net, 2, &tx), 0);
+    CHECK(tsim_net_node(r.net, 2) == NULL);
     CHECK_EQ_U64(tsim_net_stats(r.net, 0)->queued, 0);
     CHECK(r.log.kicks[0] == 0);
     rig_close(&r);
@@ -276,28 +303,27 @@ static void delivery_counts_each_destination_once(void) {
     rig_open(&r, tsim_net_defaults(1), 4);
     uint64_t u = tsim_net_originate(r.net, 0, 2, 5);
     run_for(&r, TSIM_MS(1));
-    CHECK(!tsim_net_deliver(r.net, 1, u)); /* not its destination */
-    CHECK(tsim_net_deliver(r.net, 2, u));
-    CHECK(!tsim_net_deliver(r.net, 2, u));
+    CHECK(!tsim_node_deliver(tsim_net_node(r.net, 1), u)); /* not its destination */
+    CHECK(tsim_node_deliver(tsim_net_node(r.net, 2), u));
+    CHECK(!tsim_node_deliver(tsim_net_node(r.net, 2), u));
     const struct tsim_message_record *m = tsim_net_message(r.net, u);
     CHECK(m->wanted == 1 && m->delivered == 1);
     CHECK_EQ_I64(m->first, TSIM_MS(1));
 
     uint64_t b = tsim_net_originate(r.net, 0, TSIM_BROADCAST, 5);
-    CHECK(!tsim_net_deliver(r.net, 0, b)); /* its source */
+    CHECK(!tsim_node_deliver(tsim_net_node(r.net, 0), b)); /* its source */
     run_for(&r, TSIM_MS(1));
-    CHECK(tsim_net_deliver(r.net, 1, b));
+    CHECK(tsim_node_deliver(tsim_net_node(r.net, 1), b));
     run_for(&r, TSIM_MS(1));
-    CHECK(tsim_net_deliver(r.net, 3, b));
-    CHECK(!tsim_net_deliver(r.net, 1, b));
+    CHECK(tsim_node_deliver(tsim_net_node(r.net, 3), b));
+    CHECK(!tsim_node_deliver(tsim_net_node(r.net, 1), b));
     m = tsim_net_message(r.net, b);
     CHECK(m->wanted == 3 && m->delivered == 2);
     CHECK_EQ_I64(m->first, TSIM_MS(2));
     CHECK_EQ_I64(m->last, TSIM_MS(3));
 
-    CHECK(!tsim_net_deliver(r.net, 1, 0));
-    CHECK(!tsim_net_deliver(r.net, 1, 3));
-    CHECK(!tsim_net_deliver(r.net, 4, b));
+    CHECK(!tsim_node_deliver(tsim_net_node(r.net, 1), 0));
+    CHECK(!tsim_node_deliver(tsim_net_node(r.net, 1), 3));
     CHECK(tsim_net_message(r.net, 3) == NULL);
     CHECK_EQ_U64(tsim_net_stats(r.net, 1)->delivered, 1);
     CHECK_EQ_U64(tsim_net_stats(r.net, 2)->delivered, 1);
@@ -310,11 +336,11 @@ static void streams_are_separate_and_repeatable(void) {
     struct rig q;
     rig_open(&q, tsim_net_defaults(2), 2);
     struct tsim_rng a, b, c, d, e;
-    tsim_net_rng(r.net, 0, TSIM_STREAM_MAC, &a);
-    tsim_net_rng(r.net, 0, TSIM_STREAM_MAC, &b);
-    tsim_net_rng(r.net, 1, TSIM_STREAM_MAC, &c);
-    tsim_net_rng(r.net, 0, TSIM_STREAM_ROUTING, &d);
-    tsim_net_rng(q.net, 0, TSIM_STREAM_MAC, &e);
+    tsim_node_rng(tsim_net_node(r.net, 0), TSIM_STREAM_MAC, &a);
+    tsim_node_rng(tsim_net_node(r.net, 0), TSIM_STREAM_MAC, &b);
+    tsim_node_rng(tsim_net_node(r.net, 1), TSIM_STREAM_MAC, &c);
+    tsim_node_rng(tsim_net_node(r.net, 0), TSIM_STREAM_ROUTING, &d);
+    tsim_node_rng(tsim_net_node(q.net, 0), TSIM_STREAM_MAC, &e);
     uint64_t first = tsim_rng_next(&a);
     CHECK(first == tsim_rng_next(&b));
     CHECK(first != tsim_rng_next(&c));
@@ -329,9 +355,9 @@ static void destroy_leaves_the_scheduler_runnable(void) {
     struct rig r;
     rig_open(&r, tsim_net_defaults(1), 2);
     struct tsim_tx tx = frame(TSIM_PURPOSE_DATA, 0, 10);
-    tsim_net_send(r.net, 0, &tx);
-    tsim_net_send(r.net, 0, &tx);
-    CHECK(tsim_net_transmit(r.net, 0));
+    tsim_node_send(tsim_net_node(r.net, 0), &tx);
+    tsim_node_send(tsim_net_node(r.net, 0), &tx);
+    CHECK(tsim_node_transmit(tsim_net_node(r.net, 0)));
     tsim_net_destroy(r.net);
     tsim_sched_run_until(r.sched, TSIM_S(1));
     CHECK(tsim_sched_size(r.sched) == 0);
@@ -344,6 +370,7 @@ int main(void) {
     RUN(ledger_charges_each_frame_under_its_purpose);
     RUN(queue_goes_by_priority_then_order);
     RUN(cancel_takes_back_only_what_is_queued);
+    RUN(send_returns_its_own_handle_when_the_mac_sends_at_once);
     RUN(a_full_queue_drops);
     RUN(send_refuses_what_cannot_go_on_air);
     RUN(delivery_counts_each_destination_once);
