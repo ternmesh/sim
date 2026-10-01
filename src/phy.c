@@ -21,8 +21,9 @@ struct node {
     enum radio_state state;
     uint16_t channel;
     struct tsim_lora tuned;
-    uint32_t frame;         /* RECEIVE: the frame it is on; TRANSMIT: the frame it is sending */
+    uint64_t frame;         /* RECEIVE: the frame it is on; TRANSMIT: the frame it is sending */
     double frame_dbm;       /* RECEIVE: that frame's power here */
+    tsim_time since;        /* RECEIVE: when it started listening to that frame */
     tsim_time lock_at;      /* RECEIVE: until then, a louder frame can take the receiver */
     struct tsim_event wake; /* TRANSMIT: the frame's end; RETUNE: listening again */
     struct tsim_phy_stats stats;
@@ -47,8 +48,8 @@ struct tsim_phy {
     size_t head;
     size_t count;
     size_t cap;
-    uint32_t first_id; /* the id of air[head] */
-    uint32_t next_id;
+    uint64_t first_id; /* the id of air[head] */
+    uint64_t next_id;
 };
 
 static double mw(double dbm) { return pow(10.0, dbm / 10.0); }
@@ -57,7 +58,7 @@ static double noise_dbm(const struct tsim_phy *phy, uint32_t bw_hz) {
     return -174.0 + 10.0 * log10((double)bw_hz) + phy->params.noise_figure_db;
 }
 
-static struct air *find(struct tsim_phy *phy, uint32_t id) {
+static struct air *find(struct tsim_phy *phy, uint64_t id) {
     return &phy->air[phy->head + (id - phy->first_id)];
 }
 
@@ -87,6 +88,7 @@ static void sync_to(struct node *nd, const struct tsim_frame *f, double dbm) {
     nd->state = RECEIVE;
     nd->frame = f->id;
     nd->frame_dbm = dbm;
+    nd->since = now;
     nd->lock_at = now + tsim_lora_symbol(&f->lora) * (tsim_time)nd->phy->params.lock_symbols;
 }
 
@@ -133,17 +135,19 @@ static void begin_retune(struct node *nd) {
     nd->wake = tsim_sched_after(phy->sched, phy->params.retune, retune_done, nd);
 }
 
-/* Whether a frame received at `dbm` by `node` survives everything else that overlapped it. */
+/* Whether a frame received at `dbm` by `node` survives everything else that overlapped it while
+ * the node was listening to it - from `since`, which is the frame's start unless the node caught
+ * it part-way through the preamble. What was on the air before then never reached the
+ * demodulator, so it neither helps nor hurts. */
 static bool survives(const struct tsim_phy *phy, const struct tsim_frame *f, uint32_t node,
-                     double dbm) {
+                     double dbm, tsim_time since) {
     double energy[TSIM_SF_COUNT] = {0};
     for (size_t i = 0; i < phy->count; i++) {
         const struct tsim_frame *g = &phy->air[phy->head + i].f;
-        /* A node's own transmissions are not interference: it was not listening then. */
-        if (g->id == f->id || g->channel != f->channel || g->src == node) {
+        if (g->id == f->id || g->channel != f->channel) {
             continue;
         }
-        tsim_time lo = g->start > f->start ? g->start : f->start;
+        tsim_time lo = g->start > since ? g->start : since;
         tsim_time hi = g->end < f->end ? g->end : f->end;
         if (hi <= lo) {
             continue;
@@ -151,7 +155,7 @@ static bool survives(const struct tsim_phy *phy, const struct tsim_frame *f, uin
         int sf = g->lora.bw_hz == f->lora.bw_hz ? g->lora.sf : f->lora.sf;
         energy[sf - TSIM_SF_MIN] += mw(rx_dbm(phy, g, node)) * (double)(hi - lo);
     }
-    double signal = mw(dbm) * (double)(f->end - f->start);
+    double signal = mw(dbm) * (double)(f->end - since);
     const double *threshold = phy->params.isolation_db[f->lora.sf - TSIM_SF_MIN];
     for (int k = 0; k < TSIM_SF_COUNT; k++) {
         if (energy[k] > 0 && 10.0 * log10(signal / energy[k]) < threshold[k]) {
@@ -196,7 +200,7 @@ static void frame_end(struct tsim_sched *sched, void *ctx) {
         if (nd->state != RECEIVE || nd->frame != f.id) {
             continue;
         }
-        bool ok = survives(phy, &f, i, nd->frame_dbm);
+        bool ok = survives(phy, &f, i, nd->frame_dbm, nd->since);
         if (ok) {
             nd->stats.rx_ok++;
         } else {
@@ -348,7 +352,7 @@ void tsim_phy_set_losses(struct tsim_phy *phy, const struct tsim_channel_params 
     }
 }
 
-uint32_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel,
+uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel,
                            const struct tsim_lora *lora, uint32_t len, double tx_dbm,
                            void *payload) {
     if (node >= phy->n || phy->nodes[node].state == TRANSMIT) {

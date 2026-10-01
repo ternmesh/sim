@@ -20,10 +20,10 @@
  *  - receiving: for the first `lock_symbols` of the preamble the receiver can still be taken by a
  *    matching frame at least `capture_db` louder, and the frame it was on is lost; after that it
  *    is locked, and later frames are only interference;
- *  - at the frame's end it is decoded if, for every SF, the energy of that SF's interference over
- *    the frame leaves a signal-to-interference ratio at or above the isolation threshold for the
- *    pair. Interference is summed, never taken one frame at a time, and is weighted by how much of
- *    the frame it overlapped;
+ *  - at the frame's end it is decoded if, for every SF, the energy of that SF's interference
+ *    while the receiver was on the frame leaves a signal-to-interference ratio at or above the
+ *    isolation threshold for the pair. Interference is summed, never taken one frame at a time,
+ *    and is weighted by how much of the reception it overlapped;
  *  - transmitting aborts any reception, and nothing is heard until the frame has gone out;
  *  - retuning takes `retune` of deafness, and so does transmitting with a modulation other than
  *    the one the radio listens on, which costs a retune when the frame ends.
@@ -60,7 +60,7 @@ struct tsim_phy_params {
 struct tsim_phy_params tsim_phy_defaults(void);
 
 struct tsim_frame {
-    uint32_t id; /* from 1, in the order frames were sent */
+    uint64_t id; /* from 1, in the order frames were sent; never wraps */
     uint32_t src;
     uint16_t channel;
     struct tsim_lora lora;
@@ -110,7 +110,7 @@ void tsim_phy_set_losses(struct tsim_phy *phy, const struct tsim_channel_params 
 
 /* Puts a frame on the air now. Returns its id, or 0 if the node is already transmitting or the
  * modulation and length have no airtime. */
-uint32_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel,
+uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel,
                            const struct tsim_lora *lora, uint32_t len, double tx_dbm,
                            void *payload);
 

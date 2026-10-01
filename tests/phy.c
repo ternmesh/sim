@@ -19,7 +19,7 @@
 struct rx_log {
     int count;
     uint32_t node[64];
-    uint32_t frame[64];
+    uint64_t frame[64];
     tsim_time at[64];
     int tx_done;
 };
@@ -94,7 +94,7 @@ static void send_at(struct world *w, struct send *x, tsim_time at, uint32_t node
     tsim_sched_at(w->sched, at, send_now, x);
 }
 
-static bool received(const struct world *w, uint32_t node, uint32_t frame) {
+static bool received(const struct world *w, uint32_t node, uint64_t frame) {
     for (int i = 0; i < w->log.count; i++) {
         if (w->log.node[i] == node && w->log.frame[i] == frame) {
             return true;
@@ -106,7 +106,7 @@ static bool received(const struct world *w, uint32_t node, uint32_t frame) {
 static void delivers_at_the_end_of_the_frame(void) {
     struct world *w = world_new(2, NULL);
     arrive(w, 1, 0, -86.0);
-    uint32_t id = tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    uint64_t id = tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
     CHECK_EQ_I64(id, 1);
     CHECK(tsim_phy_transmitting(w->phy, 1));
     CHECK(tsim_phy_receiving(w->phy, 0));
@@ -371,19 +371,27 @@ static void transmitting_off_tuning_costs_a_retune(void) {
     world_free(w);
 }
 
-/* After a reception ends, the receiver can still lock on to a frame whose preamble is under way. */
+/* After a reception ends, the receiver can still lock on to a frame whose preamble is under way,
+ * and judges it only on what it heard: A, 30 dB louder, overlapped B's first 2 ms, before the
+ * receiver was listening to B, and does not count against it. A third frame that overlaps B once
+ * the receiver is on it does. */
 static void listens_again_after_a_reception(void) {
-    struct world *w = world_new(3, NULL);
-    arrive(w, 1, 0, -80.0);
-    arrive(w, 2, 0, -80.0);
-    struct send s[2];
-    send_at(w, &s[0], 0, 1, &w->sf7);
-    send_at(w, &s[1], SF7_FRAME - TSIM_US(500), 2, &w->sf7);
-    tsim_sched_run_until(w->sched, TSIM_S(1));
-    /* Each overlaps the other for 0.5 ms of 51.456: 20 dB of SIR, plenty. */
-    CHECK(received(w, 0, 1));
-    CHECK(received(w, 0, 2)); /* 0.5 ms into its preamble: in time */
-    world_free(w);
+    for (int late = 0; late <= 1; late++) {
+        struct world *w = world_new(4, NULL);
+        arrive(w, 1, 0, -70.0);
+        arrive(w, 2, 0, -100.0);
+        arrive(w, 3, 0, -90.0);
+        struct send s[3];
+        send_at(w, &s[0], 0, 1, &w->sf7);
+        send_at(w, &s[1], SF7_FRAME - TSIM_MS(2), 2, &w->sf7);
+        if (late) {
+            send_at(w, &s[2], SF7_FRAME + TSIM_MS(20), 3, &w->sf7);
+        }
+        tsim_sched_run_until(w->sched, TSIM_S(1));
+        CHECK(received(w, 0, 1)); /* -30 dB of interference for 2 ms is nothing */
+        CHECK(received(w, 0, 2) == !late);
+        world_free(w);
+    }
 }
 
 /* A relay that retransmits from inside the rx hook: the frame it repeats is on the air at once,
