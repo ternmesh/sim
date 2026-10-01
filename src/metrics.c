@@ -132,7 +132,9 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
     const struct tsim_phy *phy = tsim_net_phy(net);
     tsim_time busiest = -1;
     for (uint32_t i = 0; i < n; i++) {
-        const struct tsim_ledger *ledger = tsim_net_ledger(net, i);
+        struct tsim_ledger now;
+        tsim_net_ledger_now(net, i, &now);
+        const struct tsim_ledger *ledger = &now;
         for (int p = 0; p < TSIM_PURPOSE_COUNT; p++) {
             r->frames[p] += ledger->frames[p];
             r->airtime[p] += ledger->airtime[p];

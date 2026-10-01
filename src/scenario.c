@@ -1,6 +1,7 @@
 #include "tsim/scenario.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,8 +25,10 @@ static bool parse_u64(const char *v, uint64_t max, uint64_t *out) {
         return false; /* strtoull would take "-1" */
     }
     char *end;
+    errno = 0;
     unsigned long long x = strtoull(v, &end, 10);
-    if (*skip_space(end) != '\0' || x > max) {
+    /* Past UINT64_MAX, strtoull answers UINT64_MAX, which is not over a max of UINT64_MAX. */
+    if (errno == ERANGE || *skip_space(end) != '\0' || x > max) {
         return false;
     }
     *out = x;

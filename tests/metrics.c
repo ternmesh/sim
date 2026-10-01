@@ -119,6 +119,31 @@ static void airtime_and_duty_add_up_from_the_ledgers(void) {
     rig_close(&r);
 }
 
+/* A report cut off mid-frame counts only the airtime that has gone by: the ledger charged the
+ * whole frame when it went on the air, and the rest of it falls after the cutoff. */
+static void a_report_mid_frame_counts_only_what_was_sent(void) {
+    const tsim_time a = frame_airtime(10);
+    struct rig r;
+    line(&r, 2, 0, TSIM_S(5), 1);
+    tsim_net_originate(r.net, 0, 1, 10);
+    tsim_sched_run_until(r.sched, a / 2);
+    struct tsim_report rep;
+    tsim_metrics_report(r.metrics, &rep);
+    CHECK_EQ_I64(tsim_net_ledger(r.net, 0)->airtime[TSIM_PURPOSE_DATA], a);
+    CHECK_EQ_U64(rep.frames[TSIM_PURPOSE_DATA], 1);
+    CHECK_EQ_I64(rep.airtime[TSIM_PURPOSE_DATA], a / 2);
+    CHECK_EQ_I64(rep.airtime_total, a / 2);
+    CHECK(rep.duty_max == 1.0); /* on the air the whole run so far, and no more */
+    CHECK_EQ_U64(rep.unicast.delivered, 0);
+    CHECK(rep.on_time_per_airtime_s == 0);
+
+    tsim_sched_run_until(r.sched, TSIM_S(1));
+    tsim_metrics_report(r.metrics, &rep);
+    CHECK_EQ_I64(rep.airtime_total, a);
+    CHECK_EQ_U64(rep.unicast.delivered, 1);
+    rig_close(&r);
+}
+
 /* One delivery, of a latency anywhere up to 100 s: the percentiles are its bucket's floor and the
  * longest is exact, at every scale the histogram covers. */
 static void percentiles_hold_their_precision_at_every_scale(void) {
@@ -154,6 +179,7 @@ int main(void) {
     RUN(latency_and_deadline_follow_each_delivery);
     RUN(unicast_and_broadcast_are_counted_apart);
     RUN(airtime_and_duty_add_up_from_the_ledgers);
+    RUN(a_report_mid_frame_counts_only_what_was_sent);
     RUN(percentiles_hold_their_precision_at_every_scale);
     RUN(destroy_stops_watching);
     return CHECK_DONE();

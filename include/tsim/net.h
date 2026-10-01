@@ -60,7 +60,14 @@ struct tsim_ledger {
     tsim_time airtime[TSIM_PURPOSE_COUNT];
 };
 
+/* The ledger charges a frame its whole airtime when it goes on the air, so that a plugin cannot
+ * leave a frame out of the books by any means. */
 const struct tsim_ledger *tsim_net_ledger(const struct tsim_net *net, uint32_t node);
+
+/* The ledger as of now: a frame still on the air counts as one frame, and only the part of its
+ * airtime that has gone by. What a report cut off mid-frame should read, so no airtime after the
+ * cutoff is counted, and no duty cycle runs over 1. */
+void tsim_net_ledger_now(const struct tsim_net *net, uint32_t node, struct tsim_ledger *out);
 
 /* Every purpose together. */
 tsim_time tsim_ledger_airtime(const struct tsim_ledger *ledger);

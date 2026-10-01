@@ -43,7 +43,9 @@ struct tsim_report {
     struct tsim_delivery broadcast;
 
     uint64_t frames[TSIM_PURPOSE_COUNT];
-    tsim_time airtime[TSIM_PURPOSE_COUNT]; /* every node, by purpose */
+    /* Every node, by purpose, up to now: a frame still on the air counts for the part of it sent.
+     */
+    tsim_time airtime[TSIM_PURPOSE_COUNT];
     tsim_time airtime_total;
 
     /* On-time deliveries, unicast and broadcast, per second of total airtime; 0 with no airtime. */

@@ -20,6 +20,7 @@ struct tsim_node {
      * put until the radio reports the frame done, after every receiver has had it. */
     bool sending;
     struct queued air;
+    tsim_time air_end;
     struct tsim_ledger ledger;
     struct tsim_net_stats stats;
     struct tsim_timer *timers; /* every timer its plugins hold, so destroy can free them */
@@ -257,6 +258,15 @@ const struct tsim_ledger *tsim_net_ledger(const struct tsim_net *net, uint32_t n
     return &net->nodes[node].ledger;
 }
 
+void tsim_net_ledger_now(const struct tsim_net *net, uint32_t node, struct tsim_ledger *out) {
+    const struct tsim_node *nd = &net->nodes[node];
+    *out = nd->ledger;
+    tsim_time ahead = nd->air_end - tsim_sched_now(net->sched);
+    if (nd->sending && ahead > 0) {
+        out->airtime[nd->air.tx.purpose] -= ahead;
+    }
+}
+
 tsim_time tsim_ledger_airtime(const struct tsim_ledger *ledger) {
     tsim_time total = 0;
     for (int p = 0; p < TSIM_PURPOSE_COUNT; p++) {
@@ -477,7 +487,9 @@ bool tsim_node_transmit(struct tsim_node *nd) {
     remove_at(nd, 0);
     nd->sending = true;
     nd->ledger.frames[tx->purpose]++;
-    nd->ledger.airtime[tx->purpose] += tsim_lora_airtime(&tx->lora, tx->len);
+    tsim_time airtime = tsim_lora_airtime(&tx->lora, tx->len);
+    nd->air_end = tsim_sched_now(nd->net->sched) + airtime;
+    nd->ledger.airtime[tx->purpose] += airtime;
     return true;
 }
 
