@@ -19,7 +19,8 @@ struct tsim_net_params {
     uint16_t channel; /* what every radio listens on at the start */
     struct tsim_lora listen;
     uint32_t queue_limit; /* frames waiting per node; 0 is no limit */
-    uint64_t seed;        /* the root of every stream tsim_node_rng() hands out */
+    uint64_t seed;        /* the root of every stream tsim_node_rng() hands out, and of the fading:
+                           * it replaces phy.fading_seed */
 };
 
 /* tsim_phy_defaults(), every radio on channel 0 at SF7/125 kHz, and 16 frames of queue. */

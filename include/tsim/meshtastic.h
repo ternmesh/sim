@@ -102,9 +102,13 @@ struct tsim_meshtastic_mac_config {
     struct tsim_meshtastic_window window;
     double snr_min_db; /* a rebroadcast heard at or below this waits the least */
     double snr_max_db; /* and at or above this the most; above snr_min_db */
+    /* Each time it looks, the MAC also finds the channel busy with this probability: traffic from
+     * outside the mesh, Meshtasticator's interference level. 0 to 1. */
+    double busy_chance;
 };
 
-/* The default window for `lora`, and the firmware's SNR range, -20 dB to 10 dB. */
+/* The default window for `lora`, the firmware's SNR range, -20 dB to 10 dB, and no outside traffic.
+ */
 struct tsim_meshtastic_mac_config tsim_meshtastic_mac_default(const struct tsim_lora *lora);
 
 extern const struct tsim_mac tsim_meshtastic_mac;
@@ -123,11 +127,14 @@ struct tsim_meshtastic_config {
     bool ack_duplicates;  /* acknowledge every copy of a message, not only the first */
     uint8_t retries;      /* sends after the first, for a message no one acknowledges */
     tsim_time processing; /* added to the acknowledgement wait, at most TSIM_MESHTASTIC_WAIT_MAX */
+    /* The noise a rebroadcast's SNR is reckoned from, if not NaN: its SNR is then its RSSI less
+     * this, as Meshtasticator reckons it from -119.25 dBm, rather than what the radio measured. */
+    double noise_dbm;
     struct tsim_meshtastic_window window;
 };
 
 /* A client on `lora`, three hops, acknowledgements wanted, three retries, 4.5 s of processing,
- * duplicates acknowledged. */
+ * duplicates acknowledged, and the SNR the radio measured. */
 struct tsim_meshtastic_config tsim_meshtastic_default(uint16_t channel,
                                                       const struct tsim_lora *lora, double tx_dbm);
 

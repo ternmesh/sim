@@ -5,7 +5,8 @@
 
 /* The propagation channel: how much signal a link loses, in dB.
  *
- * Loss is log-distance path loss plus log-normal shadowing:
+ * Loss is a median path loss - log-distance unless another model is chosen - plus log-normal
+ * shadowing. With log-distance:
  *
  *     L(d) = PL0 + 10 n log10(d / d0) + X,   X ~ N(0, sigma^2)
  *
@@ -31,10 +32,22 @@ struct tsim_pos {
     double y;
 };
 
+/* The median loss's shape. The 3GPP models are the macro-cell formulas Meshtasticator uses (its
+ * models 5 and 6, from 3GPP TR 25.996), for a base and a mobile at the same height: there for
+ * reproducing its results, and as a second opinion on the log-distance fit. */
+enum tsim_path_model {
+    TSIM_PATH_LOG_DISTANCE, /* PL0 + 10 n log10(d / d0) */
+    TSIM_PATH_3GPP_SUBURBAN,
+    TSIM_PATH_3GPP_URBAN, /* 3 dB more than suburban */
+};
+
 struct tsim_channel_params {
+    enum tsim_path_model model;
     double pl0_db;          /* median loss at d0 */
     double d0_m;            /* reference distance */
     double exponent;        /* path loss exponent n */
+    double freq_mhz;        /* 3GPP: carrier frequency */
+    double height_m;        /* 3GPP: both antennas above the ground */
     double sigma_db;        /* standard deviation of the shadowing */
     double node_share;      /* fraction of the shadowing variance that is shared, 0..1 */
     double decorrelation_m; /* spacing of the shared field */
@@ -42,7 +55,7 @@ struct tsim_channel_params {
 };
 
 /* Petäjäjärvi's model (PL0 128.95 dB at 1 km, n 2.32, sigma 7.8 dB), half the shadowing shared,
- * over a 100 m field. */
+ * over a 100 m field. The 3GPP settings, if chosen, start at 915 MHz and 1 m. */
 struct tsim_channel_params tsim_channel_default(uint64_t seed);
 
 /* The loss without shadowing. Distances under 1 m are taken as 1 m. */

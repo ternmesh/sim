@@ -72,6 +72,7 @@ struct tsim_meshtastic_mac_config tsim_meshtastic_mac_default(const struct tsim_
         .window = tsim_meshtastic_window_default(lora),
         .snr_min_db = -20,
         .snr_max_db = 10,
+        .busy_chance = 0,
     };
 }
 
@@ -119,7 +120,8 @@ static void mac_fire(void *ctx) {
     if (!head) {
         return;
     }
-    if (tsim_node_receiving(m->node) || tsim_node_cad(m->node)) {
+    if (tsim_node_receiving(m->node) || tsim_node_cad(m->node) ||
+        (m->config.busy_chance > 0 && tsim_rng_unit(&m->rng) < m->config.busy_chance)) {
         tsim_timer_start(m->timer, draw_busy(m, wait_for(m, head)));
         return;
     }
@@ -148,7 +150,8 @@ static void mac_kick(void *self) {
 
 static void *mac_create(struct tsim_node *node, const void *config) {
     const struct tsim_meshtastic_mac_config *c = config;
-    if (!tsim_meshtastic_window_valid(&c->window) || !(c->snr_min_db < c->snr_max_db)) {
+    if (!tsim_meshtastic_window_valid(&c->window) || !(c->snr_min_db < c->snr_max_db) ||
+        !(c->busy_chance >= 0 && c->busy_chance <= 1)) {
         return NULL;
     }
     struct mac *m = calloc(1, sizeof *m);
@@ -255,6 +258,7 @@ struct tsim_meshtastic_config tsim_meshtastic_default(uint16_t channel,
         .hop_limit = 3,
         .want_ack = true,
         .ack_duplicates = true,
+        .noise_dbm = NAN,
         .retries = 3,
         .processing = TSIM_MS(4500),
         .window = tsim_meshtastic_window_default(lora),
@@ -480,7 +484,8 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
     tx.len = rx->len;
     tx.bytes[AT_FLAGS] = (uint8_t)((b[AT_FLAGS] & ~FLAG_HOPS) | (hops - 1));
     tx.bytes[AT_RELAY] = (uint8_t)r->self;
-    tx.hint = hint_for(rx->snr_db, r->config.role == TSIM_MESHTASTIC_ROUTER);
+    tx.hint = hint_for(isnan(r->config.noise_dbm) ? rx->snr_db : rx->rssi_dbm - r->config.noise_dbm,
+                       r->config.role == TSIM_MESHTASTIC_ROUTER);
     if (data) {
         tx.carries = id;
         tx.carries_at = TSIM_MESHTASTIC_OVERHEAD;
@@ -503,7 +508,8 @@ static void *router_create(struct tsim_node *node, const void *config) {
     const struct tsim_meshtastic_config *c = config;
     if (c->hop_limit > TSIM_MESHTASTIC_HOPS_MAX || c->processing < 0 ||
         c->processing > TSIM_MESHTASTIC_WAIT_MAX || !tsim_meshtastic_window_valid(&c->window) ||
-        (unsigned)c->role > TSIM_MESHTASTIC_ROUTER) {
+        (unsigned)c->role > TSIM_MESHTASTIC_ROUTER ||
+        (!isnan(c->noise_dbm) && !(fabs(c->noise_dbm) <= 1e3))) {
         return NULL;
     }
     struct router *r = calloc(1, sizeof *r);

@@ -394,6 +394,31 @@ static void a_node_knows_its_own_airtime(void) {
     rig_close(&r);
 }
 
+/* The power node 1 hears node 0's first frame at, on a 100 dB link. */
+static double heard_at(uint64_t seed, double fading_db) {
+    struct rig r;
+    struct tsim_net_params p = tsim_net_defaults(seed);
+    p.phy.fading_db = fading_db;
+    p.phy.fading_seed = 12345; /* replaced by the network's seed */
+    rig_open(&r, p, 2);
+    struct tsim_tx tx = frame(TSIM_PURPOSE_DATA, 0, 16);
+    tsim_node_send(tsim_net_node(r.net, 0), &tx);
+    tsim_node_transmit(tsim_net_node(r.net, 0));
+    run_for(&r, TSIM_S(1));
+    CHECK_EQ_I64(r.log.rx[1], 1);
+    double rssi = r.log.rx_rssi;
+    rig_close(&r);
+    return rssi;
+}
+
+/* The radios' fading is seeded by the run, like everything else random in it. */
+static void fading_follows_the_networks_seed(void) {
+    CHECK(heard_at(1, 0) == -86.0);
+    CHECK(heard_at(1, 3.0) != -86.0);
+    CHECK(heard_at(1, 3.0) == heard_at(1, 3.0));
+    CHECK(heard_at(1, 3.0) != heard_at(2, 3.0));
+}
+
 static void a_full_queue_drops(void) {
     struct tsim_net_params p = tsim_net_defaults(1);
     p.queue_limit = 2;
@@ -630,6 +655,7 @@ static void destroy_leaves_the_scheduler_runnable(void) {
 int main(void) {
     RUN(head_handle_names_the_frame_at_the_head);
     RUN(a_node_knows_its_own_airtime);
+    RUN(fading_follows_the_networks_seed);
     RUN(routing_starts_once_when_told);
     RUN(originate_hands_the_message_to_its_routing);
     RUN(a_frame_arrives_as_its_bytes);

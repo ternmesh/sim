@@ -2,6 +2,9 @@
  *
  *     tsim [-s key=value]... scenario.tsim
  *
+ * A scenario placed from a file names it with `positions`; a relative path is from the scenario
+ * file's directory.
+ *
  * Each -s is read as a line appended to the file, so it overrides the file's setting; a seed sweep
  * is a loop over -s seed=N. The report goes to stdout and is the same on every run of the same
  * scenario and seed; how long the run took goes to stderr, because it is not. */
@@ -152,6 +155,42 @@ static bool parse(struct tsim_scenario *scenario, const char *path, char **sets,
     return false;
 }
 
+/* Reads the positions of a scenario placed from a file, which a relative path finds beside the
+ * scenario file. Returns them, for the scenario to point at, or NULL having said why. */
+static struct tsim_pos *load_positions(struct tsim_scenario *s, const char *scenario_path) {
+    char path[4096];
+    const char *slash = strrchr(scenario_path, '/');
+    int len = s->positions_file[0] == '/' || !slash
+                  ? snprintf(path, sizeof path, "%s", s->positions_file)
+                  : snprintf(path, sizeof path, "%.*s/%s", (int)(slash - scenario_path),
+                             scenario_path, s->positions_file);
+    if (len < 0 || (size_t)len >= sizeof path) {
+        fprintf(stderr, "%s: the positions path is too long\n", scenario_path);
+        return NULL;
+    }
+    char *text = read_file(path);
+    if (!text) {
+        fprintf(stderr, "%s: cannot read positions from %s\n", scenario_path, path);
+        return NULL;
+    }
+    struct tsim_pos *pos = malloc(s->nodes * sizeof *pos);
+    struct tsim_scenario_error err;
+    if (!pos) {
+        fprintf(stderr, "tsim: out of memory\n");
+    } else if (!tsim_scenario_read_positions(s, text, pos, &err)) {
+        if (err.line > 0) {
+            fprintf(stderr, "%s:%d: %s\n", path, err.line, err.message);
+        } else {
+            fprintf(stderr, "%s: %s\n", path, err.message);
+        }
+        free(pos);
+        pos = NULL;
+    }
+    free(text);
+    s->positions = pos;
+    return pos;
+}
+
 int main(int argc, char **argv) {
     char **sets = calloc((size_t)argc, sizeof *sets);
     int set_count = 0;
@@ -179,15 +218,22 @@ int main(int argc, char **argv) {
     if (!parsed) {
         return 1;
     }
+    struct tsim_pos *positions = NULL;
+    if (scenario.placement == TSIM_PLACEMENT_FILE &&
+        !(positions = load_positions(&scenario, path))) {
+        return 1;
+    }
 
     struct tsim_report report;
     clock_t started = clock();
     if (!tsim_scenario_run(&scenario, &report)) {
         fprintf(stderr, "%s: the run could not be set up\n", path);
+        free(positions);
         return 1;
     }
     double cpu = (double)(clock() - started) / CLOCKS_PER_SEC;
     print_report(path, &scenario, &report);
+    free(positions);
     fprintf(stderr, "%s: %" PRIu32 " nodes, %.1f simulated s in %.2f s of CPU\n", path,
             scenario.nodes, seconds(report.elapsed), cpu);
     return 0;

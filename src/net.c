@@ -122,7 +122,9 @@ struct tsim_net *tsim_net_create(struct tsim_sched *sched, const struct tsim_net
     net->n = nodes;
     net->next_handle = 1;
     net->nodes = calloc(nodes, sizeof *net->nodes);
-    net->phy = tsim_phy_create(sched, &params->phy, nodes, params->channel, &params->listen,
+    struct tsim_phy_params phy = params->phy;
+    phy.fading_seed = params->seed;
+    net->phy = tsim_phy_create(sched, &phy, nodes, params->channel, &params->listen,
                                (struct tsim_phy_hooks){on_rx, on_tx_done, net});
     if (!net->nodes || !net->phy) {
         tsim_net_destroy(net);

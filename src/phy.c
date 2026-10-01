@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "tsim/rng.h"
+
 /* Frames live in a queue ordered by id, which is also the order they started. A frame is kept
  * after it ends for as long as it overlaps a frame still on the air, because that frame's
  * receivers will need its energy when they decide whether it survived. */
@@ -62,8 +64,19 @@ static struct air *find(struct tsim_phy *phy, uint64_t id) {
     return &phy->air[phy->head + (id - phy->first_id)];
 }
 
+/* The fading on one frame at one receiver: a pure function of the seed, the frame and the node,
+ * drawn from a domain of its own so it never repeats a stream the seed roots elsewhere. */
+static double fade(const struct tsim_phy *phy, uint64_t frame, uint32_t node) {
+    struct tsim_rng r;
+    tsim_rng_init(&r, phy->params.fading_seed, (uint64_t)0xC3 << 56);
+    tsim_rng_init(&r, tsim_rng_next(&r), frame);
+    tsim_rng_init(&r, tsim_rng_next(&r), node);
+    return phy->params.fading_db * tsim_rng_normal(&r);
+}
+
 static double rx_dbm(const struct tsim_phy *phy, const struct tsim_frame *f, uint32_t node) {
-    return f->tx_dbm - phy->loss[(size_t)f->src * phy->n + node];
+    double dbm = f->tx_dbm - phy->loss[(size_t)f->src * phy->n + node];
+    return phy->params.fading_db > 0 ? dbm - fade(phy, f->id, node) : dbm;
 }
 
 static bool tuned_to(const struct node *nd, const struct tsim_frame *f) {
@@ -140,12 +153,49 @@ static void begin_retune(struct node *nd) {
     nd->wake = tsim_sched_after(phy->sched, phy->params.retune, retune_done, nd);
 }
 
+/* LoRaSim's rule: each interferer on its own, at full weight, and only one the receiver could
+ * decode. Overlapping no more than the first (preamble - lock_symbols) symbols of the later of the
+ * two frames is no overlap: the receiver had not yet settled on it. */
+static bool survives_pairwise(const struct tsim_phy *phy, const struct tsim_frame *f, uint32_t node,
+                              double dbm, tsim_time since) {
+    const double *threshold = phy->params.isolation_db[f->lora.sf - TSIM_SF_MIN];
+    for (size_t i = 0; i < phy->count; i++) {
+        const struct tsim_frame *g = &phy->air[phy->head + i].f;
+        if (g->id == f->id || g->channel != f->channel) {
+            continue;
+        }
+        tsim_time lo = g->start > since ? g->start : since;
+        tsim_time hi = g->end < f->end ? g->end : f->end;
+        const struct tsim_frame *later = g->start > f->start ? g : f;
+        int64_t grace = (int64_t)later->lora.preamble - (int64_t)phy->params.lock_symbols;
+        /* The overlap starts no earlier than the later frame does; it is forgiven only if it is
+         * over by the end of that frame's grace, wherever the receiver came in. */
+        tsim_time grace_end =
+            later->start + (grace > 0 ? grace : 0) * tsim_lora_symbol(&later->lora);
+        if (hi <= lo || hi <= grace_end) {
+            continue;
+        }
+        double other = rx_dbm(phy, g, node);
+        if (!decodable(phy, g, other)) {
+            continue;
+        }
+        int sf = g->lora.bw_hz == f->lora.bw_hz ? g->lora.sf : f->lora.sf;
+        if (dbm - other < threshold[sf - TSIM_SF_MIN]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Whether a frame received at `dbm` by `node` survives everything else that overlapped it while
  * the node was listening to it - from `since`, which is the frame's start unless the node caught
  * it part-way through the preamble. What was on the air before then never reached the
  * demodulator, so it neither helps nor hurts. */
 static bool survives(const struct tsim_phy *phy, const struct tsim_frame *f, uint32_t node,
                      double dbm, tsim_time since) {
+    if (phy->params.pairwise) {
+        return survives_pairwise(phy, f, node, dbm, since);
+    }
     double energy[TSIM_SF_COUNT] = {0};
     for (size_t i = 0; i < phy->count; i++) {
         const struct tsim_frame *g = &phy->air[phy->head + i].f;
@@ -286,7 +336,9 @@ struct tsim_phy_params tsim_phy_defaults(void) {
 struct tsim_phy *tsim_phy_create(struct tsim_sched *sched, const struct tsim_phy_params *params,
                                  uint32_t nodes, uint16_t channel,
                                  const struct tsim_lora *listen_on, struct tsim_phy_hooks hooks) {
-    if (nodes == 0 || !tsim_lora_valid(listen_on)) {
+    if (nodes == 0 || !tsim_lora_valid(listen_on) ||
+        !(params->fading_db >= 0 && params->fading_db <= 1e3) ||
+        !(params->cad_margin_db >= -1e3 && params->cad_margin_db <= 1e3) || params->cad_delay < 0) {
         return NULL;
     }
     struct tsim_phy *phy = calloc(1, sizeof *phy);
@@ -416,7 +468,7 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
             if (decodable(phy, f, dbm)) {
                 sync_to(nd, f, dbm);
             }
-        } else if (nd->state == RECEIVE && now < nd->lock_at) {
+        } else if (nd->state == RECEIVE && (phy->params.capture_anytime || now < nd->lock_at)) {
             double dbm = rx_dbm(phy, f, i);
             if (decodable(phy, f, dbm) && dbm >= nd->frame_dbm + phy->params.capture_db) {
                 count_reception(nd);
@@ -462,10 +514,12 @@ bool tsim_phy_cad(const struct tsim_phy *phy, uint32_t node) {
     if (nd->state == TRANSMIT || nd->state == RETUNE) {
         return false;
     }
+    tsim_time now = tsim_sched_now(phy->sched);
     for (size_t i = 0; i < phy->count; i++) {
         const struct air *a = &phy->air[phy->head + i];
         if (a->on_air && a->f.src != node && tuned_to(nd, &a->f) &&
-            decodable(phy, &a->f, rx_dbm(phy, &a->f, node))) {
+            now - a->f.start >= phy->params.cad_delay &&
+            decodable(phy, &a->f, rx_dbm(phy, &a->f, node) + phy->params.cad_margin_db)) {
             return true;
         }
     }

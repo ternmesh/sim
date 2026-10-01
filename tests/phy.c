@@ -546,6 +546,207 @@ static void rx_airtime_counts_every_reception_however_it_ends(void) {
     world_free(w);
 }
 
+static struct tsim_phy_params with_pairwise(void) {
+    struct tsim_phy_params p = tsim_phy_defaults();
+    p.pairwise = true;
+    return p;
+}
+
+/* Pairwise, two interferers 8 dB down leave 8 dB each, which survives; summed, they did not. */
+static void pairwise_takes_interferers_one_at_a_time(void) {
+    struct tsim_phy_params p = with_pairwise();
+    struct world *w = world_new(4, &p);
+    arrive(w, 1, 0, -70.0);
+    arrive(w, 2, 0, -78.0);
+    arrive(w, 3, 0, -78.0);
+    struct send s[3];
+    send_at(w, &s[0], 0, 1, &w->sf7);
+    send_at(w, &s[1], TSIM_MS(6), 2, &w->sf7);
+    send_at(w, &s[2], TSIM_MS(6), 3, &w->sf7);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(received(w, 0, 1));
+    world_free(w);
+}
+
+/* Pairwise, an interferer counts at full weight: 3 dB louder over the last tenth is a loss,
+ * where weighted by its overlap it left 7 dB. */
+static void pairwise_does_not_weigh_by_overlap(void) {
+    for (int pairwise = 0; pairwise <= 1; pairwise++) {
+        struct tsim_phy_params p = tsim_phy_defaults();
+        p.pairwise = pairwise;
+        struct world *w = world_new(3, &p);
+        arrive(w, 1, 0, -80.0);
+        arrive(w, 2, 0, -77.0);
+        struct send s[2];
+        send_at(w, &s[0], 0, 1, &w->sf7);
+        send_at(w, &s[1], SF7_FRAME - SF7_FRAME / 10, 2, &w->sf7);
+        tsim_sched_run_until(w->sched, TSIM_S(1));
+        CHECK(received(w, 0, 1) == !pairwise);
+        world_free(w);
+    }
+}
+
+/* Pairwise, a frame too faint for the receiver to decode does not interfere: 4 dB below a frame
+ * at 5 dB SNR, it is under the floor. Summed, it leaves 4 dB. */
+static void pairwise_ignores_what_the_receiver_could_not_hear(void) {
+    for (int pairwise = 0; pairwise <= 1; pairwise++) {
+        struct tsim_phy_params p = tsim_phy_defaults();
+        p.pairwise = pairwise;
+        struct world *w = world_new(3, &p);
+        arrive(w, 1, 0, -122.0);
+        arrive(w, 2, 0, -126.0);
+        struct send s[2];
+        send_at(w, &s[0], 0, 1, &w->sf7);
+        send_at(w, &s[1], TSIM_MS(6), 2, &w->sf7);
+        tsim_sched_run_until(w->sched, TSIM_S(1));
+        CHECK(received(w, 0, 1) == pairwise);
+        world_free(w);
+    }
+}
+
+/* Pairwise, a frame that overlaps no more than the first 3 symbols of its preamble (8 programmed,
+ * less 5 to lock) does not collide with the one ending; 4 symbols does. */
+static void pairwise_forgives_a_preamble_overlap(void) {
+    for (int symbols = 2; symbols <= 4; symbols += 2) {
+        struct tsim_phy_params p = with_pairwise();
+        struct world *w = world_new(3, &p);
+        arrive(w, 1, 0, -80.0);
+        arrive(w, 2, 0, -80.0);
+        struct send s[2];
+        send_at(w, &s[0], 0, 1, &w->sf7);
+        send_at(w, &s[1], SF7_FRAME - TSIM_US(1024) * symbols, 2, &w->sf7);
+        tsim_sched_run_until(w->sched, TSIM_S(1));
+        CHECK(received(w, 0, 1) == (symbols == 2));
+        world_free(w);
+    }
+}
+
+static void tune_back(struct tsim_sched *s, void *ctx) {
+    (void)s;
+    struct world *w = ctx;
+    tsim_phy_tune(w->phy, 0, 0, &w->sf7);
+}
+
+/* The grace is for the later frame's first symbols, not for any short overlap. Node 0 is deaf
+ * from a retune until 2 ms before B ends, then catches A, which started 4 ms before that - long
+ * enough ago that A's 3-symbol grace has passed. B's last 2 ms are payload overlapping A's
+ * payload, 3 dB under it: a collision, however short. */
+static void pairwise_grace_covers_only_the_preamble(void) {
+    struct tsim_phy_params p = with_pairwise();
+    struct world *w = world_new(3, &p);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -83.0);
+    struct send a, b;
+    send_at(w, &b, 0, 2, &w->sf7);                      /* ends at SF7_FRAME */
+    send_at(w, &a, SF7_FRAME - TSIM_MS(6), 1, &w->sf7); /* grace over at SF7_FRAME - 2.928 ms */
+    tsim_sched_at(w->sched, SF7_FRAME - TSIM_US(3100), tune_now, w);
+    tsim_sched_at(w->sched, SF7_FRAME - TSIM_US(3000), tune_back, w); /* listening 1 ms later */
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(!received(w, 0, 2));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_lost, 1); /* it caught A, and lost it */
+    CHECK(!received(w, 0, 1));
+    world_free(w);
+}
+
+/* With capture_anytime, a frame 10 dB louder 20 ms in - long after the lock - takes the receiver,
+ * as it would only during the preamble otherwise. */
+static void capture_anytime_lets_a_louder_frame_take_the_receiver_late(void) {
+    struct tsim_phy_params p = tsim_phy_defaults();
+    p.capture_anytime = true;
+    struct world *w = world_new(3, &p);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -70.0);
+    struct send a, b;
+    send_at(w, &a, 0, 1, &w->sf7);
+    send_at(w, &b, TSIM_MS(20), 2, &w->sf7);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(received(w, 0, 2));
+    CHECK(!received(w, 0, 1));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_preempted, 1);
+    world_free(w);
+}
+
+/* Thirty frames, one every 100 ms, from node 1 to nodes 0 and 2, each arriving 0.03 dB over the
+ * floor before fading. Returns which arrived, as bits: node 0's in the low 32, node 2's above. */
+static uint64_t faded(double fading_db, uint64_t seed) {
+    struct tsim_phy_params p = tsim_phy_defaults();
+    p.fading_db = fading_db;
+    p.fading_seed = seed;
+    struct world *w = world_new(3, &p);
+    arrive(w, 1, 0, -124.5);
+    arrive(w, 1, 2, -124.5);
+    struct send s[30];
+    for (int i = 0; i < 30; i++) {
+        send_at(w, &s[i], TSIM_MS(100) * i, 1, &w->sf7);
+    }
+    tsim_sched_run_until(w->sched, TSIM_S(10));
+    uint64_t bits = 0;
+    for (int i = 0; i < w->log.count; i++) {
+        bits |= (uint64_t)1 << ((w->log.frame[i] - 1) + (w->log.node[i] == 2 ? 32 : 0));
+    }
+    world_free(w);
+    return bits;
+}
+
+static int popcount(uint64_t x) {
+    int n = 0;
+    for (; x; x &= x - 1) {
+        n++;
+    }
+    return n;
+}
+
+static void fading_varies_each_frame_at_each_receiver_and_repeats(void) {
+    uint64_t all = 0x3FFFFFFFull | 0x3FFFFFFFull << 32;
+    CHECK_EQ_U64(faded(0, 1), all);
+    uint64_t a = faded(3.0, 1);
+    int heard = popcount(a);
+    CHECK(heard > 15 && heard < 45); /* about half of 60 */
+    CHECK_EQ_U64(faded(3.0, 1), a);  /* the same seed fades the same way */
+    CHECK(faded(3.0, 2) != a);
+    CHECK((a & 0x3FFFFFFFull) != a >> 32); /* the two receivers fade apart */
+}
+
+/* CAD notices a frame 1 dB under the floor only with a margin, and only after its delay. */
+static void cad_has_a_margin_and_a_delay(void) {
+    struct tsim_phy_params p = tsim_phy_defaults();
+    struct world *w = world_new(2, &p);
+    arrive(w, 1, 0, -125.5);
+    tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    CHECK(!tsim_phy_cad(w->phy, 0));
+    world_free(w);
+
+    p.cad_margin_db = 3.0;
+    p.cad_delay = TSIM_MS(10);
+    w = world_new(2, &p);
+    arrive(w, 1, 0, -125.5);
+    tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_sched_run_until(w->sched, TSIM_MS(5));
+    CHECK(!tsim_phy_cad(w->phy, 0));
+    tsim_sched_run_until(w->sched, TSIM_MS(15));
+    CHECK(tsim_phy_cad(w->phy, 0));
+    world_free(w);
+}
+
+static void create_refuses_bad_fading_and_cad(void) {
+    struct tsim_sched *s = tsim_sched_create();
+    struct tsim_lora sf7 = tsim_lora_default(7, 125000);
+    struct tsim_phy_hooks hooks = {0};
+    struct tsim_phy_params p = tsim_phy_defaults();
+    p.fading_db = -1;
+    CHECK(!tsim_phy_create(s, &p, 2, 0, &sf7, hooks));
+    p = tsim_phy_defaults();
+    p.fading_db = NAN;
+    CHECK(!tsim_phy_create(s, &p, 2, 0, &sf7, hooks));
+    p = tsim_phy_defaults();
+    p.cad_margin_db = NAN;
+    CHECK(!tsim_phy_create(s, &p, 2, 0, &sf7, hooks));
+    p = tsim_phy_defaults();
+    p.cad_delay = -1;
+    CHECK(!tsim_phy_create(s, &p, 2, 0, &sf7, hooks));
+    tsim_sched_destroy(s);
+}
+
 int main(void) {
     RUN(delivers_at_the_end_of_the_frame);
     RUN(hears_down_to_the_demodulation_floor);
@@ -568,5 +769,14 @@ int main(void) {
     RUN(refuses_a_frame_past_the_end_of_the_clock);
     RUN(destroy_cancels_pending_radio_events);
     RUN(rx_airtime_counts_every_reception_however_it_ends);
+    RUN(pairwise_takes_interferers_one_at_a_time);
+    RUN(pairwise_does_not_weigh_by_overlap);
+    RUN(pairwise_ignores_what_the_receiver_could_not_hear);
+    RUN(pairwise_forgives_a_preamble_overlap);
+    RUN(pairwise_grace_covers_only_the_preamble);
+    RUN(capture_anytime_lets_a_louder_frame_take_the_receiver_late);
+    RUN(fading_varies_each_frame_at_each_receiver_and_repeats);
+    RUN(cad_has_a_margin_and_a_delay);
+    RUN(create_refuses_bad_fading_and_cad);
     return CHECK_DONE();
 }
