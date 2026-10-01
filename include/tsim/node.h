@@ -92,7 +92,7 @@ struct tsim_message {
 struct tsim_node;
 
 /* A routing plugin. Each node gets its own instance from create(); start, if given, runs once
- * every node has one. */
+ * every node has one and the driver has laid out the links, so whatever it sends can be heard. */
 struct tsim_routing {
     const char *name;
     void *(*create)(struct tsim_node *node, const void *config);
@@ -142,11 +142,12 @@ void tsim_timer_stop(struct tsim_timer *timer);
 
 bool tsim_timer_pending(const struct tsim_timer *timer);
 
-/* Which random stream a draw comes from, so that one layer's draws never shift another's. */
+/* Which random stream a draw comes from, so that one layer's draws never shift another's. There is
+ * no stream for traffic: that is the driver's (tsim/traffic.h), drawn from streams no plugin can
+ * seed, so a protocol cannot know when its node will next be handed a message, or for whom. */
 enum tsim_stream {
     TSIM_STREAM_MAC = 1,
     TSIM_STREAM_ROUTING,
-    TSIM_STREAM_TRAFFIC,
 };
 
 /* Seeds `rng` with this node's stream for one purpose, from the run's seed. */

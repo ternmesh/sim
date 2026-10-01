@@ -57,6 +57,9 @@ struct tsim_net {
     struct record *messages;
     size_t message_count;
     size_t message_cap;
+    bool started;
+    tsim_net_delivered_fn observer;
+    void *observer_ctx;
 };
 
 static void on_rx(void *ctx, uint32_t node, const struct tsim_frame *frame, double rssi_dbm,
@@ -143,12 +146,19 @@ struct tsim_net *tsim_net_create(struct tsim_sched *sched, const struct tsim_net
             return NULL;
         }
     }
-    if (routing->start) {
-        for (uint32_t i = 0; i < nodes; i++) {
-            routing->start(net->nodes[i].routing);
+    return net;
+}
+
+void tsim_net_start(struct tsim_net *net) {
+    if (net->started) {
+        return;
+    }
+    net->started = true;
+    if (net->routing->start) {
+        for (uint32_t i = 0; i < net->n; i++) {
+            net->routing->start(net->nodes[i].routing);
         }
     }
-    return net;
 }
 
 void tsim_net_destroy(struct tsim_net *net) {
@@ -267,6 +277,11 @@ const struct tsim_message_record *tsim_net_message(const struct tsim_net *net, u
 }
 
 uint64_t tsim_net_message_count(const struct tsim_net *net) { return net->message_count; }
+
+void tsim_net_observe(struct tsim_net *net, tsim_net_delivered_fn fn, void *ctx) {
+    net->observer = fn;
+    net->observer_ctx = ctx;
+}
 
 /* --- A node, as its plugins see it --- */
 
@@ -435,6 +450,9 @@ bool tsim_node_deliver(struct tsim_node *nd, uint64_t msg) {
     rec->r.last = now;
     rec->r.delivered++;
     nd->stats.delivered++;
+    if (net->observer) {
+        net->observer(net->observer_ctx, &rec->r, node);
+    }
     return true;
 }
 

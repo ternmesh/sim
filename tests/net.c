@@ -102,6 +102,7 @@ static void rig_open(struct rig *r, struct tsim_net_params params, uint32_t node
     r->sched = tsim_sched_create();
     r->net = tsim_net_create(r->sched, &params, nodes, &recorder, &r->log, &manual, &r->log);
     tsim_phy_set_loss(tsim_net_phy(r->net), 0, 1, 100.0);
+    tsim_net_start(r->net);
 }
 
 static void rig_close(struct rig *r) {
@@ -502,6 +503,58 @@ static void a_frame_must_carry_what_it_claims(void) {
     rig_close(&r);
 }
 
+/* Routing starts when the driver says the links are laid, not when the network is built. */
+static void routing_starts_once_when_told(void) {
+    struct log log = {0};
+    struct tsim_sched *sched = tsim_sched_create();
+    struct tsim_net_params p = tsim_net_defaults(1);
+    struct tsim_net *net = tsim_net_create(sched, &p, 3, &recorder, &log, &manual, &log);
+    CHECK(log.starts == 0);
+    tsim_net_start(net);
+    CHECK(log.starts == 3);
+    tsim_net_start(net);
+    CHECK(log.starts == 3);
+    tsim_net_destroy(net);
+    tsim_sched_destroy(sched);
+}
+
+struct seen {
+    int calls;
+    uint64_t msg;
+    uint32_t node;
+    uint32_t delivered;
+};
+
+static void on_delivered(void *ctx, const struct tsim_message_record *rec, uint32_t node) {
+    struct seen *s = ctx;
+    s->calls++;
+    s->msg = rec->msg.id;
+    s->node = node;
+    s->delivered = rec->delivered;
+}
+
+/* Once per delivery that counts, after the record has counted it, and not once removed. */
+static void the_observer_sees_each_delivery(void) {
+    struct rig r;
+    struct seen seen = {0};
+    rig_open(&r, tsim_net_defaults(1), 4);
+    tsim_phy_set_loss(tsim_net_phy(r.net), 0, 2, 100.0);
+    tsim_net_observe(r.net, on_delivered, &seen);
+    uint64_t b = tsim_net_originate(r.net, 0, TSIM_BROADCAST, 5);
+    CHECK(carry(&r, 0, b));
+    CHECK(tsim_node_deliver(tsim_net_node(r.net, 1), b));
+    CHECK(seen.calls == 1 && seen.msg == b && seen.node == 1 && seen.delivered == 1);
+    CHECK(!tsim_node_deliver(tsim_net_node(r.net, 1), b));
+    CHECK(!tsim_node_deliver(tsim_net_node(r.net, 0), b));
+    CHECK(!tsim_node_deliver(tsim_net_node(r.net, 3), b)); /* never heard it */
+    CHECK(seen.calls == 1);
+    tsim_net_observe(r.net, NULL, NULL);
+    CHECK(tsim_node_deliver(tsim_net_node(r.net, 2), b));
+    CHECK(seen.calls == 1);
+    CHECK(tsim_net_message(r.net, b)->delivered == 2);
+    rig_close(&r);
+}
+
 static void streams_are_separate_and_repeatable(void) {
     struct rig r;
     rig_open(&r, tsim_net_defaults(1), 2);
@@ -537,6 +590,7 @@ static void destroy_leaves_the_scheduler_runnable(void) {
 }
 
 int main(void) {
+    RUN(routing_starts_once_when_told);
     RUN(originate_hands_the_message_to_its_routing);
     RUN(a_frame_arrives_as_its_bytes);
     RUN(ledger_charges_each_frame_under_its_purpose);
@@ -548,6 +602,7 @@ int main(void) {
     RUN(delivery_counts_each_destination_once);
     RUN(delivery_needs_the_message_to_have_arrived);
     RUN(a_frame_must_carry_what_it_claims);
+    RUN(the_observer_sees_each_delivery);
     RUN(streams_are_separate_and_repeatable);
     RUN(timers_fire_once_at_their_time);
     RUN(a_timer_may_destroy_itself_when_it_fires);

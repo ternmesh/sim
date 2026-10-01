@@ -28,11 +28,15 @@ struct tsim_net_params tsim_net_defaults(uint64_t seed);
 struct tsim_net;
 
 /* A network of `nodes` nodes, each with its own instance of `routing` and `mac`. Every link
- * starts with infinite loss; set them through tsim_net_phy(). */
+ * starts with infinite loss; set them through tsim_net_phy(), then call tsim_net_start(). */
 struct tsim_net *tsim_net_create(struct tsim_sched *sched, const struct tsim_net_params *params,
                                  uint32_t nodes, const struct tsim_routing *routing,
                                  const void *routing_config, const struct tsim_mac *mac,
                                  const void *mac_config);
+/* Runs every routing's start(), once: after the links are set, so a protocol that announces
+ * itself at start is heard, and before the scheduler runs. A second call does nothing. */
+void tsim_net_start(struct tsim_net *net);
+
 /* Destroys every plugin instance, then the radios; the scheduler can go on running without it. */
 void tsim_net_destroy(struct tsim_net *net);
 
@@ -86,5 +90,12 @@ const struct tsim_message_record *tsim_net_message(const struct tsim_net *net, u
 
 /* How many messages have been originated; ids run from 1 to this. */
 uint64_t tsim_net_message_count(const struct tsim_net *net);
+
+/* Called each time a message reaches one of its destinations, after the record counts it, with
+ * the record and the node it reached. For the driver's bookkeeping (tsim/metrics.h): it must not
+ * originate, send or destroy anything. One observer at a time; NULL removes it. */
+typedef void (*tsim_net_delivered_fn)(void *ctx, const struct tsim_message_record *record,
+                                      uint32_t node);
+void tsim_net_observe(struct tsim_net *net, tsim_net_delivered_fn fn, void *ctx);
 
 #endif

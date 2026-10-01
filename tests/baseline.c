@@ -40,6 +40,7 @@ static void line(struct rig *r, uint32_t nodes, uint8_t hops) {
     for (uint32_t i = 0; i + 1 < nodes; i++) {
         tsim_phy_set_loss(tsim_net_phy(r->net), i, i + 1, 100.0);
     }
+    tsim_net_start(r->net);
 }
 
 static tsim_time frame_airtime(uint32_t payload) {
@@ -120,6 +121,7 @@ static void diamond(struct rig *r, tsim_time max_delay, uint64_t seed) {
     tsim_phy_set_loss(phy, 0, 2, 100.0);
     tsim_phy_set_loss(phy, 1, 3, 100.0);
     tsim_phy_set_loss(phy, 2, 3, 100.0);
+    tsim_net_start(r->net);
 }
 
 /* Without a random start, 1 and 2 relay at the same instant and 3 hears neither - but both are
@@ -180,6 +182,7 @@ static void aloha_drops_its_start_when_the_queue_empties(void) {
     const tsim_time max_delay = TSIM_S(1);
     struct rig r;
     rig_open(&r, 2, 3, max_delay, 1);
+    tsim_net_start(r.net);
     struct tsim_node *n0 = tsim_net_node(r.net, 0);
     struct tsim_rng rng;
     tsim_node_rng(n0, TSIM_STREAM_MAC, &rng);
@@ -213,6 +216,7 @@ static void destroy_mid_flood_leaves_the_scheduler_runnable(void) {
     for (uint32_t i = 0; i + 1 < MAX_NODES; i++) {
         tsim_phy_set_loss(tsim_net_phy(r.net), i, i + 1, 100.0);
     }
+    tsim_net_start(r.net);
     for (uint32_t i = 0; i < MAX_NODES; i++) {
         tsim_net_originate(r.net, i, TSIM_BROADCAST, 10);
     }
