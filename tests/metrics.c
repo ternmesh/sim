@@ -106,8 +106,8 @@ static void airtime_and_duty_add_up_from_the_ledgers(void) {
      * sent by 1, relayed by 0 and 2, and by 3. */
     CHECK_EQ_U64(rep.frames[TSIM_PURPOSE_DATA], 2);
     CHECK_EQ_U64(rep.frames[TSIM_PURPOSE_RELAY], 6);
-    CHECK_EQ_I64(rep.airtime[TSIM_PURPOSE_DATA], 2 * a);
-    CHECK_EQ_I64(rep.airtime_total, 8 * a);
+    CHECK(rep.airtime_s[TSIM_PURPOSE_DATA] == (double)(2 * a) / 1e9);
+    CHECK(rep.airtime_total_s == (double)(8 * a) / 1e9);
     /* Every node sent two frames - 0 and 1 one of each, 2 and 3 two relays - so the busiest is a
      * tie, and the first of it is named. */
     CHECK(rep.duty_max_node == 0);
@@ -131,15 +131,15 @@ static void a_report_mid_frame_counts_only_what_was_sent(void) {
     tsim_metrics_report(r.metrics, &rep);
     CHECK_EQ_I64(tsim_net_ledger(r.net, 0)->airtime[TSIM_PURPOSE_DATA], a);
     CHECK_EQ_U64(rep.frames[TSIM_PURPOSE_DATA], 1);
-    CHECK_EQ_I64(rep.airtime[TSIM_PURPOSE_DATA], a / 2);
-    CHECK_EQ_I64(rep.airtime_total, a / 2);
+    CHECK(rep.airtime_s[TSIM_PURPOSE_DATA] == (double)(a / 2) / 1e9);
+    CHECK(rep.airtime_total_s == (double)(a / 2) / 1e9);
     CHECK(rep.duty_max == 1.0); /* on the air the whole run so far, and no more */
     CHECK_EQ_U64(rep.unicast.delivered, 0);
     CHECK(rep.on_time_per_airtime_s == 0);
 
     tsim_sched_run_until(r.sched, TSIM_S(1));
     tsim_metrics_report(r.metrics, &rep);
-    CHECK_EQ_I64(rep.airtime_total, a);
+    CHECK(rep.airtime_total_s == (double)a / 1e9);
     CHECK_EQ_U64(rep.unicast.delivered, 1);
     rig_close(&r);
 }

@@ -431,6 +431,24 @@ static long split(char *text, struct entry *entries, struct tsim_scenario_error 
     return count;
 }
 
+/* How far from the origin a node can stand. */
+static double extent(const struct tsim_scenario *s) {
+    switch (s->placement) {
+    case TSIM_PLACEMENT_GRID: {
+        uint32_t cols = 1;
+        while ((uint64_t)cols * cols < s->nodes) {
+            cols++;
+        }
+        return s->spacing_m * (double)(cols - 1);
+    }
+    case TSIM_PLACEMENT_LINE:
+        return s->spacing_m * (double)(s->nodes - 1);
+    case TSIM_PLACEMENT_UNIFORM:
+        break;
+    }
+    return s->width_m > s->height_m ? s->width_m : s->height_m;
+}
+
 static bool plugin_key(const char *key, const char *prefix, const char **rest) {
     size_t len = strlen(prefix);
     if (strncmp(key, prefix, len) == 0) {
@@ -481,6 +499,11 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     }
     if (ok && !s->mac) {
         ok = fail(err, 0, "mac is not set");
+    }
+    if (ok && !(extent(s) / s->channel.decorrelation_m <= 1e9)) {
+        ok = fail(err, 0,
+                  "the map is over a billion channel.decorrelation cells across, too many for a "
+                  "position to be placed within its cell");
     }
     if (ok && (s->warmup > INT64_MAX - s->duration ||
                s->deadline > INT64_MAX - s->warmup - s->duration)) {

@@ -100,10 +100,24 @@ static void nearby_links_are_correlated(void) {
     CHECK(fabs(rd) < 0.06);
 }
 
+/* A coordinate too large for any integer type still names a grid cell: the shadowing comes out
+ * finite and repeatable, rather than from a cast the language leaves undefined. */
+static void shadowing_holds_at_any_finite_position(void) {
+    struct tsim_channel_params p = tsim_channel_default(5);
+    struct tsim_pos far = {1e300, -1e300};
+    struct tsim_pos near = {1e300, -1e300 + 1e290};
+    double x = tsim_channel_shadowing(&p, 0, far, 1, near);
+    CHECK(isfinite(x));
+    CHECK(x == tsim_channel_shadowing(&p, 0, far, 1, near));
+    struct tsim_pos edge = {-9.3e20, 9.3e20}; /* just past what an int64_t cell index holds */
+    CHECK(isfinite(tsim_channel_shadowing(&p, 0, edge, 1, far)));
+}
+
 int main(void) {
     RUN(median_loss_follows_log_distance);
     RUN(shadowing_is_symmetric_and_repeatable);
     RUN(shadowing_has_the_configured_spread);
     RUN(nearby_links_are_correlated);
+    RUN(shadowing_holds_at_any_finite_position);
     return CHECK_DONE();
 }

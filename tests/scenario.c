@@ -155,6 +155,10 @@ static void problems_say_where_they_are(void) {
         {"nodes = 2\nrouting = flood\n", 0, "mac is not set"},
         {"nodes = 2\nrouting = flood\nmac = aloha\nduration = 3000000000 h\n", 4,
          "expected a time"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\narea = 1e300 x 1e300\n", 0, "billion"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nplacement = line\nspacing = 1e12\n", 0,
+         "billion"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nchannel.decorrelation = 1e-300\n", 0, "billion"},
         {"nodes = 2\nrouting = flood\nmac = aloha\nduration = 2000000 h\nwarmup = 1000000 h\n", 0,
          "too long"},
     };
@@ -185,7 +189,7 @@ static bool same_delivery(const struct tsim_delivery *a, const struct tsim_deliv
 
 static bool same_report(const struct tsim_report *a, const struct tsim_report *b) {
     for (int p = 0; p < TSIM_PURPOSE_COUNT; p++) {
-        if (a->frames[p] != b->frames[p] || a->airtime[p] != b->airtime[p]) {
+        if (a->frames[p] != b->frames[p] || a->airtime_s[p] != b->airtime_s[p]) {
             return false;
         }
     }
@@ -209,6 +213,20 @@ static void a_run_relays_across_its_map(void) {
     CHECK(rep.on_time_per_airtime_s > 0);
 }
 
+/* Forty radios at 1 Hz, SF12 and a 65535-symbol preamble send frames years long, and between
+ * them spend more airtime than a tsim_time holds. The report adds it up regardless. */
+static void airtime_past_what_a_time_holds_still_adds_up(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 40\nrouting = flood\nmac = aloha\narea = 2000 x 2000\n"
+                    "radio.bw = 1\nradio.sf = 12\nradio.preamble = 65535\n"
+                    "traffic.interval = 24 h\nduration = 70080 h\ndeadline = 1 h\n"));
+    struct tsim_report rep;
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK(rep.airtime_total_s > (double)INT64_MAX / 1e9);
+    CHECK(rep.duty_max > 0 && rep.duty_max <= 1.0);
+    CHECK(rep.duty_mean > 0 && rep.duty_mean <= 1.0);
+}
+
 static void a_run_repeats_with_its_seed(void) {
     struct tsim_scenario s;
     struct tsim_report a, b, c;
@@ -230,5 +248,6 @@ int main(void) {
     RUN(problems_say_where_they_are);
     RUN(a_run_relays_across_its_map);
     RUN(a_run_repeats_with_its_seed);
+    RUN(airtime_past_what_a_time_holds_still_adds_up);
     return CHECK_DONE();
 }

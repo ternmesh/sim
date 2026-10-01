@@ -43,10 +43,12 @@ struct tsim_report {
     struct tsim_delivery broadcast;
 
     uint64_t frames[TSIM_PURPOSE_COUNT];
-    /* Every node, by purpose, up to now: a frame still on the air counts for the part of it sent.
-     */
-    tsim_time airtime[TSIM_PURPOSE_COUNT];
-    tsim_time airtime_total;
+    /* Seconds of airtime, every node, by purpose, up to now: a frame still on the air counts for
+     * the part of it sent. Doubles, because one node's airtime is no longer than the run but the
+     * sum over nodes can be longer than a tsim_time holds. Summed in nanoseconds, so exact up to
+     * 2^53 ns, which is 104 days. */
+    double airtime_s[TSIM_PURPOSE_COUNT];
+    double airtime_total_s;
 
     /* On-time deliveries, unicast and broadcast, per second of total airtime; 0 with no airtime. */
     double on_time_per_airtime_s;

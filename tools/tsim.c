@@ -94,9 +94,9 @@ static void print_report(const char *path, const struct tsim_scenario *s,
            r->duty_max, r->duty_max_node, r->duty_mean);
     print_delivery("unicast", &r->unicast, ",");
     print_delivery("broadcast", &r->broadcast, ",");
-    printf("  \"airtime_s\": {\"total\": %.6f", seconds(r->airtime_total));
+    printf("  \"airtime_s\": {\"total\": %.6f", r->airtime_total_s);
     for (int p = 0; p < TSIM_PURPOSE_COUNT; p++) {
-        printf(", \"%s\": %.6f", purposes[p], seconds(r->airtime[p]));
+        printf(", \"%s\": %.6f", purposes[p], r->airtime_s[p]);
     }
     printf("},\n  \"frames\": {");
     for (int p = 0; p < TSIM_PURPOSE_COUNT; p++) {

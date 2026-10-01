@@ -131,16 +131,18 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
     uint32_t n = tsim_net_nodes(net);
     const struct tsim_phy *phy = tsim_net_phy(net);
     tsim_time busiest = -1;
+    double airtime_ns[TSIM_PURPOSE_COUNT] = {0};
+    double total_ns = 0;
     for (uint32_t i = 0; i < n; i++) {
         struct tsim_ledger now;
         tsim_net_ledger_now(net, i, &now);
         const struct tsim_ledger *ledger = &now;
         for (int p = 0; p < TSIM_PURPOSE_COUNT; p++) {
             r->frames[p] += ledger->frames[p];
-            r->airtime[p] += ledger->airtime[p];
+            airtime_ns[p] += (double)ledger->airtime[p];
         }
         tsim_time air = tsim_ledger_airtime(ledger);
-        r->airtime_total += air;
+        total_ns += (double)air;
         if (air > busiest) {
             busiest = air;
             r->duty_max_node = i;
@@ -152,12 +154,16 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
         r->rx_preempted += ps->rx_preempted;
         r->rx_aborted += ps->rx_aborted;
     }
+    for (int p = 0; p < TSIM_PURPOSE_COUNT; p++) {
+        r->airtime_s[p] = airtime_ns[p] / 1e9;
+    }
+    r->airtime_total_s = total_ns / 1e9;
     if (r->elapsed > 0) {
         r->duty_max = (double)busiest / (double)r->elapsed;
-        r->duty_mean = (double)r->airtime_total / (double)n / (double)r->elapsed;
+        r->duty_mean = total_ns / (double)n / (double)r->elapsed;
     }
-    if (r->airtime_total > 0) {
-        r->on_time_per_airtime_s = (double)(r->unicast.on_time + r->broadcast.on_time) /
-                                   ((double)r->airtime_total / (double)TSIM_S(1));
+    if (total_ns > 0) {
+        r->on_time_per_airtime_s =
+            (double)(r->unicast.on_time + r->broadcast.on_time) / r->airtime_total_s;
     }
 }
