@@ -15,11 +15,13 @@ metered resource. The protocol is defined by the specification in
 | Randomness | `tsim/rng.h` | Seeded streams (xoshiro256\*\*), one per source of randomness, so a run is reproducible on every platform. |
 | Channel | `tsim/channel.h` | Log-distance path loss with correlated shadowing: links whose ends stand near each other share part of their luck. |
 | Radios | `tsim/phy.h` | Half-duplex radios tuned to one channel, SF and bandwidth at a time. Interference is summed per SF and weighted by overlap, a louder frame can take a receiver only during the preamble, and retuning costs deaf time. |
+| Network | `tsim/net.h` | The seam a candidate plugs into: routing decides what is sent, the MAC decides when. Plugins see only what was on the air, every frame is charged to a per-node airtime ledger under its purpose (data, relay, control, announce), and each message is delivered at most once per destination. |
+| Baseline | `tsim/baseline.h` | ALOHA with a random start, and naive flooding with a hop limit: the floor every candidate has to beat. |
 
 The isolation matrix, capture threshold, lock time and retune time are placeholders from the
 literature until the bench rig (MSH-32) measures them; they are parameters, meant to be swept.
 
-Next: the MAC seam and the routing plugin interface, then the candidates.
+Next: the traffic generator, the scenario format and the metrics, then the candidates.
 
 * [CONTRIBUTING.md](CONTRIBUTING.md) — DCO sign-off and the clean-room rule
 * [Governance](https://github.com/ternmesh/spec/blob/main/GOVERNANCE.md)
