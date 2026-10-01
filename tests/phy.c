@@ -298,7 +298,7 @@ static void tune_now(struct tsim_sched *s, void *ctx);
 
 /* Node 0 gives up A to send its own frame; B begins in the last 1 ms of it, while node 0 is
  * sending, so it was never missed, and catching it takes nothing back. */
-static void a_send_ends_a_run_of_receptions(void) {
+static void a_frame_begun_while_sending_was_never_missed(void) {
     struct world *w = world_new(3, NULL);
     arrive(w, 1, 0, -80.0);
     arrive(w, 2, 0, -80.0);
@@ -317,7 +317,7 @@ static void a_send_ends_a_run_of_receptions(void) {
 
 /* Node 0 has finished with A and is listening on SF7 when B begins on SF9; it retunes, at no cost,
  * in time to catch B. B began while it was idle, not receiving, so it was never missed. */
-static void listening_ends_a_run_of_receptions(void) {
+static void a_frame_begun_while_idle_was_never_missed(void) {
     struct tsim_phy_params p = tsim_phy_defaults();
     p.retune = 0;
     struct world *w = world_new(3, &p);
@@ -336,7 +336,7 @@ static void listening_ends_a_run_of_receptions(void) {
 
 /* Node 0 leaves A to retune to SF9, deaf for 1 ms, and B begins on SF9 in that millisecond: it was
  * never missed, so catching it when the retune ends takes nothing back. */
-static void a_retune_ends_a_run_of_receptions(void) {
+static void a_frame_begun_while_retuning_was_never_missed(void) {
     struct world *w = world_new(3, NULL);
     arrive(w, 1, 0, -80.0);
     arrive(w, 2, 0, -80.0);
@@ -352,11 +352,61 @@ static void a_retune_ends_a_run_of_receptions(void) {
     world_free(w);
 }
 
-/* A louder frame taking the receiver does not start a new run. X, with a long preamble, begins
- * while node 0 is on A and is missed; then B, short and 10 dB louder, takes the receiver; when B
- * ends, X's preamble still has time to run and node 0 catches it. X began in the run, so it is
- * taken back from missed. */
-static void a_capture_continues_a_run_of_receptions(void) {
+/* Node 0 leaves A for SF9 with no time deaf, and catches B, which began on SF9 while node 0 was on
+ * A but not tuned to it: never missed, so nothing to take back. */
+static void a_frame_on_another_tuning_was_never_missed(void) {
+    struct tsim_phy_params p = tsim_phy_defaults();
+    p.retune = 0;
+    struct world *w = world_new(3, &p);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -80.0);
+    struct send a;
+    struct send b;
+    send_at(w, &a, 0, 1, &w->sf7);
+    send_at(w, &b, TSIM_MS(5), 2, &w->sf9);
+    tsim_sched_at(w->sched, TSIM_MS(6), tune_now, w);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(received(w, 0, 2));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_aborted, 1);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_missed, 0);
+    world_free(w);
+}
+
+/* A, with a long preamble, is taken from node 0 by B, short and 10 dB louder; when B ends, A's
+ * preamble still has time to run and node 0 catches it again. A was taken, not missed, so nothing
+ * comes back out of rx_missed - not even X, which began on A and was missed, but whose preamble
+ * was over long before B ended. */
+static void a_frame_taken_and_caught_again_was_never_missed(void) {
+    struct tsim_phy_params p = tsim_phy_defaults();
+    p.capture_anytime = true;
+    struct world *w = world_new(4, &p);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -70.0);
+    arrive(w, 3, 0, -80.0);
+    struct tsim_lora long_preamble = w->sf7;
+    long_preamble.preamble = 32;
+    struct tsim_lora short_preamble = w->sf7;
+    short_preamble.preamble = 6;
+    struct send a;
+    struct send x;
+    struct send b;
+    send_at(w, &a, 0, 1, &long_preamble);
+    send_at(w, &x, TSIM_US(500), 3, &w->sf7);
+    send_at(w, &b, TSIM_MS(1), 2, &short_preamble);
+    b.len = 1;
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(received(w, 0, 3));
+    CHECK(!received(w, 0, 2));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_preempted, 1);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_ok + tsim_phy_stats(w->phy, 0)->rx_lost, 2);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_missed, 1); /* X */
+    world_free(w);
+}
+
+/* X, with a long preamble, begins while node 0 is on A and is missed; then B, short and 10 dB
+ * louder, takes the receiver; when B ends, X's preamble still has time to run and node 0 catches
+ * it. X was counted missed, so it is taken back, though another frame came between. */
+static void a_frame_missed_before_a_capture_is_taken_back(void) {
     struct tsim_phy_params p = tsim_phy_defaults();
     p.capture_anytime = true;
     struct world *w = world_new(4, &p);
@@ -902,10 +952,12 @@ int main(void) {
     RUN(missed_counts_only_frames_it_could_have_decoded);
     RUN(a_frame_caught_after_all_is_not_missed);
     RUN(a_frame_caught_after_sending_was_never_missed);
-    RUN(a_send_ends_a_run_of_receptions);
-    RUN(listening_ends_a_run_of_receptions);
-    RUN(a_retune_ends_a_run_of_receptions);
-    RUN(a_capture_continues_a_run_of_receptions);
+    RUN(a_frame_begun_while_sending_was_never_missed);
+    RUN(a_frame_begun_while_idle_was_never_missed);
+    RUN(a_frame_begun_while_retuning_was_never_missed);
+    RUN(a_frame_on_another_tuning_was_never_missed);
+    RUN(a_frame_taken_and_caught_again_was_never_missed);
+    RUN(a_frame_missed_before_a_capture_is_taken_back);
     RUN(quieter_late_frame_is_survived);
     RUN(interference_is_summed);
     RUN(interference_is_weighted_by_overlap);
