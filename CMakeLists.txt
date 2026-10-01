@@ -29,23 +29,40 @@ add_library(ternsim
     src/baseline.c
     src/channel.c
     src/lora.c
+    src/metrics.c
     src/net.c
     src/phy.c
+    src/place.c
     src/rng.c
+    src/scenario.c
     src/sched.c
+    src/traffic.c
 )
 target_include_directories(ternsim PUBLIC include)
 target_link_libraries(ternsim PUBLIC m)
 target_compile_options(ternsim PRIVATE ${TSIM_WARNINGS})
 
+add_executable(tsim tools/tsim.c)
+target_link_libraries(tsim PRIVATE ternsim)
+target_compile_options(tsim PRIVATE ${TSIM_WARNINGS})
+
 include(CTest)
 if(BUILD_TESTING)
-    foreach(t baseline channel lora net phy rng sched)
+    foreach(t baseline channel lora metrics net phy place rng scenario sched traffic)
         add_executable(test_${t} tests/${t}.c)
         target_link_libraries(test_${t} PRIVATE ternsim)
         # The test files define their cases as static functions, so the prototype warning is
         # the library's rule, not theirs.
         target_compile_options(test_${t} PRIVATE ${TSIM_WARNINGS} -Wno-missing-prototypes)
         add_test(NAME ${t} COMMAND test_${t})
+    endforeach()
+
+    # Every scenario under scenarios/ runs as a test, through the tool, so a scenario that stops
+    # parsing or running fails CI. Those under scenarios/scale/ are too big for a sanitized debug
+    # build and run in CI's timing job instead.
+    file(GLOB TSIM_SCENARIOS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/scenarios/*.tsim)
+    foreach(s ${TSIM_SCENARIOS})
+        get_filename_component(name ${s} NAME_WE)
+        add_test(NAME scenario_${name} COMMAND tsim ${s})
     endforeach()
 endif()

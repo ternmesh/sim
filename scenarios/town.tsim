@@ -1,0 +1,22 @@
+# 200 nodes scattered over 8 km, on Petajajarvi's channel with correlated shadowing, flooding
+# three hops at SF9: a mid-sized community mesh, and the size the comparison starts at.
+nodes     = 200
+placement = uniform
+area      = 8000 x 8000
+
+radio.sf     = 9
+radio.bw     = 125000
+radio.tx_dbm = 20
+
+routing      = flood
+routing.hops = 3
+mac           = aloha
+mac.max_delay = 2 s
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+warmup   = 1 min
+duration = 1 h
+deadline = 60 s
