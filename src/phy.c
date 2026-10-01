@@ -74,14 +74,12 @@ static bool decodable(const struct tsim_phy *phy, const struct tsim_frame *f, do
     return dbm - noise_dbm(phy, f->lora.bw_hz) >= phy->params.snr_min_db[f->lora.sf - TSIM_SF_MIN];
 }
 
-/* The last moment a receiver can start listening and still lock on: lock_symbols before the end
- * of the preamble, which on air is the programmed length plus 4.25 symbols. */
-static tsim_time sync_deadline(const struct tsim_phy *phy, const struct tsim_frame *f) {
+/* Whether a receiver that starts listening at `now` can still lock on to the frame: it needs
+ * lock_symbols of preamble, which on air is the programmed length plus 4.25 symbols. A preamble
+ * shorter than lock_symbols can never be locked on, even from its first symbol. */
+static bool can_lock(const struct tsim_phy *phy, const struct tsim_frame *f, tsim_time now) {
     int64_t quarters = 4 * (int64_t)f->lora.preamble + 17 - 4 * (int64_t)phy->params.lock_symbols;
-    if (quarters < 0) {
-        quarters = 0;
-    }
-    return f->start + tsim_lora_symbol(&f->lora) * quarters / 4;
+    return quarters >= 0 && now <= f->start + tsim_lora_symbol(&f->lora) * quarters / 4;
 }
 
 static void sync_to(struct node *nd, const struct tsim_frame *f, double dbm) {
@@ -103,7 +101,7 @@ static void listen(struct node *nd) {
     for (size_t i = 0; i < phy->count; i++) {
         const struct air *a = &phy->air[phy->head + i];
         if (!a->on_air || a->f.src == nd->index || !tuned_to(nd, &a->f) ||
-            now > sync_deadline(phy, &a->f)) {
+            !can_lock(phy, &a->f, now)) {
             continue;
         }
         double dbm = rx_dbm(phy, &a->f, nd->index);
@@ -317,6 +315,14 @@ void tsim_phy_destroy(struct tsim_phy *phy) {
     if (!phy) {
         return;
     }
+    /* A frame still on the air or a retune under way has an event in the scheduler that points
+     * into the nodes, and the scheduler may outlive the medium. */
+    for (uint32_t i = 0; phy->nodes && i < phy->n; i++) {
+        struct node *nd = &phy->nodes[i];
+        if (nd->state == TRANSMIT || nd->state == RETUNE) {
+            tsim_sched_cancel(phy->sched, nd->wake);
+        }
+    }
     free(phy->nodes);
     free(phy->loss);
     free(phy->outcomes);
@@ -385,7 +391,7 @@ uint32_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
 
     for (uint32_t i = 0; i < phy->n; i++) {
         struct node *nd = &phy->nodes[i];
-        if (i == node || !tuned_to(nd, f)) {
+        if (i == node || !tuned_to(nd, f) || !can_lock(phy, f, now)) {
             continue;
         }
         if (nd->state == LISTEN) {

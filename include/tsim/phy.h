@@ -96,6 +96,8 @@ struct tsim_phy;
 struct tsim_phy *tsim_phy_create(struct tsim_sched *sched, const struct tsim_phy_params *params,
                                  uint32_t nodes, uint16_t channel, const struct tsim_lora *listen,
                                  struct tsim_phy_hooks hooks);
+/* Frees the medium and cancels its pending events, so the scheduler can go on running without it.
+ * Frames still on the air end silently. */
 void tsim_phy_destroy(struct tsim_phy *phy);
 
 /* Sets the loss of the link between a and b, in both directions. */

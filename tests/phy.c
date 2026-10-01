@@ -326,6 +326,22 @@ static void retuning_catches_a_preamble_only_in_time(void) {
     }
 }
 
+/* A preamble shorter than the lock needs cannot be locked on, even by a receiver listening from
+ * its first symbol: 0 programmed symbols is 4.25 on air, under the 5 the default lock needs. */
+static void preamble_too_short_to_lock_is_not_heard(void) {
+    for (uint16_t preamble = 0; preamble <= 1; preamble++) {
+        struct world *w = world_new(2, NULL);
+        arrive(w, 1, 0, -80.0);
+        struct tsim_lora short_preamble = w->sf7;
+        short_preamble.preamble = preamble;
+        tsim_phy_transmit(w->phy, 1, 0, &short_preamble, 16, TX_DBM, NULL);
+        CHECK(tsim_phy_receiving(w->phy, 0) == (preamble == 1));
+        tsim_sched_run_until(w->sched, TSIM_S(1));
+        CHECK(received(w, 0, 1) == (preamble == 1));
+        world_free(w);
+    }
+}
+
 /* Transmitting on a modulation other than the one it listens on costs the radio a retune when the
  * frame ends; on the same one it listens straight away. */
 static void transmitting_off_tuning_costs_a_retune(void) {
@@ -431,6 +447,20 @@ static void losses_from_the_channel_model(void) {
     tsim_sched_destroy(s);
 }
 
+/* The scheduler can outlive the medium: destroying it with a frame on the air and a retune under
+ * way leaves no event behind that points into it. */
+static void destroy_cancels_pending_radio_events(void) {
+    struct world *w = world_new(2, NULL);
+    tsim_phy_transmit(w->phy, 0, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_phy_tune(w->phy, 1, 0, &w->sf9);
+    CHECK_EQ_I64(tsim_sched_size(w->sched), 2);
+    tsim_phy_destroy(w->phy);
+    w->phy = NULL;
+    CHECK_EQ_I64(tsim_sched_size(w->sched), 0);
+    CHECK_EQ_I64(tsim_sched_run_until(w->sched, TSIM_S(1)), 0);
+    world_free(w);
+}
+
 int main(void) {
     RUN(delivers_at_the_end_of_the_frame);
     RUN(hears_down_to_the_demodulation_floor);
@@ -445,9 +475,11 @@ int main(void) {
     RUN(interference_is_weighted_by_overlap);
     RUN(other_sfs_interfere_up_to_their_isolation);
     RUN(retuning_catches_a_preamble_only_in_time);
+    RUN(preamble_too_short_to_lock_is_not_heard);
     RUN(transmitting_off_tuning_costs_a_retune);
     RUN(listens_again_after_a_reception);
     RUN(hooks_may_transmit);
     RUN(losses_from_the_channel_model);
+    RUN(destroy_cancels_pending_radio_events);
     return CHECK_DONE();
 }
