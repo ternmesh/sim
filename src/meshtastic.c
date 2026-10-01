@@ -75,15 +75,16 @@ struct tsim_meshtastic_mac_config tsim_meshtastic_mac_default(const struct tsim_
     };
 }
 
-/* A uniform draw of 0 to `slots` slots. */
-static tsim_time slots(struct mac *m, uint64_t n) {
-    return (tsim_time)tsim_rng_below(&m->rng, n + 1) * m->config.window.slot;
-}
+/* What a frame's wait is drawn from: a fixed part, then 0 to `slots` slots. */
+struct wait {
+    tsim_time fixed;
+    uint64_t slots;
+};
 
-static tsim_time wait_for(struct mac *m, const struct tsim_tx *tx) {
+static struct wait wait_for(const struct mac *m, const struct tsim_tx *tx) {
     const struct tsim_meshtastic_window *w = &m->config.window;
     if (!(tx->hint & HINT_RELAY)) {
-        return slots(m, (uint64_t)1 << window_by_utilisation(m->node, w));
+        return (struct wait){0, (uint64_t)1 << window_by_utilisation(m->node, w)};
     }
     double lo = m->config.snr_min_db;
     double hi = m->config.snr_max_db;
@@ -91,9 +92,25 @@ static tsim_time wait_for(struct mac *m, const struct tsim_tx *tx) {
     snr = snr < lo ? lo : snr > hi ? hi : snr;
     int cw = (int)((snr - lo) * (w->cw_max - w->cw_min) / (hi - lo)) + w->cw_min;
     if (tx->hint & HINT_ROUTER) {
-        return slots(m, 2 * (uint64_t)cw);
+        return (struct wait){0, 2 * (uint64_t)cw};
     }
-    return 2 * (tsim_time)w->cw_max * w->slot + slots(m, (uint64_t)1 << cw);
+    return (struct wait){2 * (tsim_time)w->cw_max * w->slot, (uint64_t)1 << cw};
+}
+
+static tsim_time draw(struct mac *m, struct wait wait) {
+    return wait.fixed + (tsim_time)tsim_rng_below(&m->rng, wait.slots + 1) * m->config.window.slot;
+}
+
+/* The wait after finding the channel busy. Looking again at the same instant would find it the
+ * same, so a wait of nothing is no wait at all: the draw is from the waits that take some time,
+ * which is what drawing again until one does would come to, and a window with none - a router's
+ * at cw 0 - waits one slot. */
+static tsim_time draw_busy(struct mac *m, struct wait wait) {
+    if (wait.fixed > 0) {
+        return draw(m, wait);
+    }
+    uint64_t n = wait.slots ? 1 + tsim_rng_below(&m->rng, wait.slots) : 1;
+    return (tsim_time)n * m->config.window.slot;
 }
 
 static void mac_fire(void *ctx) {
@@ -103,7 +120,7 @@ static void mac_fire(void *ctx) {
         return;
     }
     if (tsim_node_receiving(m->node) || tsim_node_cad(m->node)) {
-        tsim_timer_start(m->timer, wait_for(m, head));
+        tsim_timer_start(m->timer, draw_busy(m, wait_for(m, head)));
         return;
     }
     tsim_node_transmit(m->node);
@@ -126,7 +143,7 @@ static void mac_kick(void *self) {
     }
     /* A new head - the first, or one that took a cancelled frame's place - draws its own wait. */
     m->waiting = head;
-    tsim_timer_start(m->timer, wait_for(m, tsim_node_head(m->node)));
+    tsim_timer_start(m->timer, draw(m, wait_for(m, tsim_node_head(m->node))));
 }
 
 static void *mac_create(struct tsim_node *node, const void *config) {
@@ -237,6 +254,7 @@ struct tsim_meshtastic_config tsim_meshtastic_default(uint16_t channel,
         .role = TSIM_MESHTASTIC_CLIENT,
         .hop_limit = 3,
         .want_ack = true,
+        .ack_duplicates = true,
         .retries = 3,
         .processing = TSIM_MS(4500),
         .window = tsim_meshtastic_window_default(lora),
@@ -428,6 +446,10 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
     }
     h->times++;
     if (h->times > 1) {
+        /* A retry that reached the destination: its sender may have missed the acknowledgement. */
+        if (to == r->self && data && (b[AT_FLAGS] & FLAG_WANT_ACK) && r->config.ack_duplicates) {
+            send_ack(r, from, id);
+        }
         uint32_t enough = r->config.role == TSIM_MESHTASTIC_ROUTER ? 3 : 2;
         if (h->relay && h->times >= enough) {
             tsim_node_cancel(r->node, h->relay);

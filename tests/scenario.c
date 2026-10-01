@@ -239,13 +239,14 @@ static void meshtastic_settings_read_in_any_order(void) {
                     "routing.cw_min = 10\nrouting.cw_max = 12\n"
                     "mac.snr_max = -30\nmac.snr_min = -40\n"
                     "routing.role = router\nrouting.hop_limit = 7\nrouting.want_ack = no\n"
-                    "routing.retries = 1\nrouting.processing = 1 s\n"));
+                    "routing.retries = 1\nrouting.processing = 1 s\n"
+                    "routing.ack_duplicates = no\n"));
     const struct tsim_meshtastic_config *r = meshtastic_of(&s);
     const struct tsim_meshtastic_mac_config *m = meshtastic_mac_of(&s);
     CHECK(r->window.cw_min == 10 && r->window.cw_max == 12);
     CHECK(m->snr_min_db == -40 && m->snr_max_db == -30);
     CHECK(r->role == TSIM_MESHTASTIC_ROUTER && r->hop_limit == 7 && !r->want_ack);
-    CHECK(r->retries == 1 && r->processing == TSIM_S(1));
+    CHECK(r->retries == 1 && r->processing == TSIM_S(1) && !r->ack_duplicates);
     CHECK(r->lora.sf == 11 && r->lora.bw_hz == 250000);
     CHECK_EQ_I64(r->window.slot, tsim_meshtastic_slot(&r->lora));
     CHECK_EQ_I64(m->window.slot, r->window.slot);

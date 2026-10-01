@@ -29,7 +29,9 @@
  *  - hearing the same packet again before the rebroadcast has gone cancels it: the second copy
  *    heard for a client, the third for a router. A packet heard again is never rebroadcast;
  *  - the destination of a direct message that wants one answers with an acknowledgement, a packet
- *    of its own that floods back the same way and is charged as control;
+ *    of its own that floods back the same way and is charged as control. With ack_duplicates it
+ *    answers every copy it hears, so a sender whose first acknowledgement was lost is answered
+ *    when it retries; without, only the first, as in Meshtasticator;
  *  - the sender of a message that wants an acknowledgement waits for one after its frame has gone
  *    out. Hearing any node rebroadcast the message counts (the implicit acknowledgement), as does
  *    the real one. Without either it sends the same frame again, up to `retries` times. Since a
@@ -50,6 +52,10 @@
  *    nearer ones hear it and cancel: CW grows from cw_min at snr_min_db to cw_max at snr_max_db. A
  *    router waits 0 to 2CW slots; a client waits out the longest a router could, 2 cw_max slots,
  *    and then 0 to 2^CW more.
+ *
+ * Looking again at the same instant would find the channel as busy as before, so the wait after
+ * finding it busy is drawn only from the waits that take some time - what Meshtasticator's drawing
+ * again until one does comes to - and a router whose window is 0 slots waits one.
  *
  * Channel utilisation is the share of the run so far the radio has spent sending or receiving,
  * as Meshtasticator computes it. The firmware averages over a recent window instead.
@@ -114,12 +120,14 @@ struct tsim_meshtastic_config {
     enum tsim_meshtastic_role role;
     uint8_t hop_limit; /* rebroadcasts a packet may have, at most TSIM_MESHTASTIC_HOPS_MAX */
     bool want_ack;
+    bool ack_duplicates;  /* acknowledge every copy of a message, not only the first */
     uint8_t retries;      /* sends after the first, for a message no one acknowledges */
     tsim_time processing; /* added to the acknowledgement wait, at most TSIM_MESHTASTIC_WAIT_MAX */
     struct tsim_meshtastic_window window;
 };
 
-/* A client on `lora`, three hops, acknowledgements wanted, three retries, 4.5 s of processing. */
+/* A client on `lora`, three hops, acknowledgements wanted, three retries, 4.5 s of processing,
+ * duplicates acknowledged. */
 struct tsim_meshtastic_config tsim_meshtastic_default(uint16_t channel,
                                                       const struct tsim_lora *lora, double tx_dbm);
 

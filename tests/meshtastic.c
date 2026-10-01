@@ -193,6 +193,65 @@ static void an_unacknowledged_message_is_retried_and_an_acknowledged_one_is_not(
     CHECK_EQ_U64(sends_to_a_mute_neighbour(3, true, 1), 1); /* node 1's real acknowledgement */
 }
 
+/* Node 0 listens on SF8 and sends on SF7, so it never hears an acknowledgement and retries every
+ * time; node 1 hears each copy. How many acknowledgements does node 1 send? */
+static uint64_t acks_to_a_deaf_sender(bool ack_duplicates) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.ack_duplicates = ack_duplicates;
+    build(&r, 2, 1);
+    link(&r, 0, 1, LOSS_LOUD);
+    tsim_net_start(r.net);
+    struct tsim_lora sf8 = tsim_lora_default(8, 125000);
+    CHECK(tsim_node_tune(tsim_net_node(r.net, 0), 0, &sf8));
+    uint64_t m = tsim_net_originate(r.net, 0, 1, 10);
+    tsim_sched_run_until(r.sched, TSIM_S(600));
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 4); /* the first and three retries */
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    uint64_t acks = frames(&r, 1, TSIM_PURPOSE_CONTROL);
+    rig_close(&r);
+    return acks;
+}
+
+/* A sender that missed the acknowledgement retries, and the destination answers again. */
+static void a_retry_that_reaches_the_destination_is_acknowledged_again(void) {
+    CHECK_EQ_U64(acks_to_a_deaf_sender(true), 4);
+    CHECK_EQ_U64(acks_to_a_deaf_sender(false), 1); /* Meshtasticator's way */
+}
+
+/* A router at cw 0 has a rebroadcast ready at once, while CAD finds the channel busy with a frame
+ * it came in too late to receive. It must wait until that frame ends, not look again at the same
+ * instant for ever. */
+static void a_busy_channel_always_moves_the_wait_on(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.role = TSIM_MESHTASTIC_ROUTER;
+    r.rc.want_ack = false;
+    r.rc.window.cw_min = r.rc.window.cw_max = 0;
+    r.mc.window.cw_min = r.mc.window.cw_max = 0;
+    build(&r, 3, 1);
+    link(&r, 0, 1, 94.0);  /* node 0's frame arrives at -80 dBm */
+    link(&r, 2, 1, 114.0); /* node 2's at -100 dBm: under node 0's, but there for CAD */
+    tsim_net_start(r.net);
+    struct tsim_node *n0 = tsim_net_node(r.net, 0);
+    tsim_net_originate(r.net, 0, TSIM_BROADCAST, 10);
+    while (!tsim_node_sending(n0) && tsim_sched_step(r.sched)) {
+    }
+    /* 15 ms into node 0's 62 ms frame, after node 1 has locked on to it, node 2 starts a 330 ms one
+     * (within one 10 ms slot of being asked to). */
+    tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + TSIM_MS(15));
+    tsim_net_originate(r.net, 2, TSIM_BROADCAST, 200);
+    /* Looking again at the same instant would never let the run end. */
+    int steps = 0;
+    while (steps < 100000 && tsim_sched_step(r.sched)) {
+        steps++;
+    }
+    CHECK(steps < 100000);
+    CHECK_EQ_U64(frames(&r, 1, TSIM_PURPOSE_RELAY), 1);
+    CHECK(tsim_node_rx_airtime(tsim_net_node(r.net, 1)) > 0);
+    rig_close(&r);
+}
+
 /* The wait before a node's own first frame, on a channel it has not used. */
 static tsim_time first_wait(uint64_t seed) {
     struct rig r;
@@ -372,6 +431,8 @@ int main(void) {
     RUN(a_second_copy_cancels_a_clients_rebroadcast_and_a_third_a_routers);
     RUN(a_direct_message_is_acknowledged_back_along_the_flood);
     RUN(an_unacknowledged_message_is_retried_and_an_acknowledged_one_is_not);
+    RUN(a_retry_that_reaches_the_destination_is_acknowledged_again);
+    RUN(a_busy_channel_always_moves_the_wait_on);
     RUN(a_nodes_own_frame_waits_up_to_two_to_the_cw_min_slots);
     RUN(a_rebroadcast_waits_longer_the_louder_it_was_heard);
     RUN(the_mac_holds_off_while_the_radio_is_receiving);

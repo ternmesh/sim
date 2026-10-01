@@ -256,6 +256,9 @@ static const char *meshtastic_set(void *config, const char *key, const char *val
     if (strcmp(key, "want_ack") == 0) {
         return parse_yes_no(value, &c->want_ack) ? NULL : "expected yes or no";
     }
+    if (strcmp(key, "ack_duplicates") == 0) {
+        return parse_yes_no(value, &c->ack_duplicates) ? NULL : "expected yes or no";
+    }
     if (strcmp(key, "retries") == 0) {
         if (!parse_u64(value, UINT8_MAX, &v)) {
             return "expected a count from 0 to 255";

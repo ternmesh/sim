@@ -86,6 +86,7 @@ until the bench rig measures real radios; see `tsim/phy.h`.
 | `routing.role` (`meshtastic`) | `client` | `client`, `client_mute` (never rebroadcasts) or `router` (waits less to rebroadcast, and cancels on the third copy heard, not the second) |
 | `routing.hop_limit` (`meshtastic`) | 3 | rebroadcasts a packet may have, 0 to 7 |
 | `routing.want_ack` (`meshtastic`) | `yes` | whether a message wants an acknowledgement (`yes` or `no`); broadcasts take an implicit one |
+| `routing.ack_duplicates` (`meshtastic`) | `yes` | whether a destination acknowledges every copy of a message it hears, so a retry is answered when the first acknowledgement was lost; `no` acknowledges only the first, as Meshtasticator does |
 | `routing.retries` (`meshtastic`) | 3 | sends after the first, for a message that is not acknowledged |
 | `routing.processing` (`meshtastic`) | `4.5 s` | added to the wait for an acknowledgement, at most a quarter of the clock |
 | `routing.slot`, `mac.slot` (`meshtastic`) | from the radio | the contention slot: 2.5 symbols plus 7.6 ms; above 0, and short enough that 2^(`cw_max` + 1) slots fit in a quarter of the clock |
