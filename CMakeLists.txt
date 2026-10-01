@@ -26,16 +26,19 @@ if(TSIM_SANITIZE)
 endif()
 
 add_library(ternsim
+    src/channel.c
     src/lora.c
+    src/phy.c
     src/rng.c
     src/sched.c
 )
 target_include_directories(ternsim PUBLIC include)
+target_link_libraries(ternsim PUBLIC m)
 target_compile_options(ternsim PRIVATE ${TSIM_WARNINGS})
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(t lora rng sched)
+    foreach(t channel lora phy rng sched)
         add_executable(test_${t} tests/${t}.c)
         target_link_libraries(test_${t} PRIVATE ternsim)
         # The test files define their cases as static functions, so the prototype warning is

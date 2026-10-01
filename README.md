@@ -13,9 +13,13 @@ metered resource. The protocol is defined by the specification in
 | Scheduler | `tsim/sched.h` | The clock and the event queue. Events at the same time run in scheduling order, so a run is a pure function of its inputs and seed. |
 | Airtime | `tsim/lora.h` | LoRa time on air (Semtech's formula, SF7–SF12), in integer nanoseconds. |
 | Randomness | `tsim/rng.h` | Seeded streams (xoshiro256\*\*), one per source of randomness, so a run is reproducible on every platform. |
+| Channel | `tsim/channel.h` | Log-distance path loss with correlated shadowing: links whose ends stand near each other share part of their luck. |
+| Radios | `tsim/phy.h` | Half-duplex radios tuned to one channel, SF and bandwidth at a time. Interference is summed per SF and weighted by overlap, a louder frame can take a receiver only during the preamble, and retuning costs deaf time. |
 
-Next: the radio channel and receivers, with interference summed per spreading factor and each
-receiver tuned to one SF at a time; then the routing plugin interface and the candidates.
+The isolation matrix, capture threshold, lock time and retune time are placeholders from the
+literature until the bench rig (MSH-32) measures them; they are parameters, meant to be swept.
+
+Next: the MAC seam and the routing plugin interface, then the candidates.
 
 * [CONTRIBUTING.md](CONTRIBUTING.md) — DCO sign-off and the clean-room rule
 * [Governance](https://github.com/ternmesh/spec/blob/main/GOVERNANCE.md)

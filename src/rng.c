@@ -1,5 +1,7 @@
 #include "tsim/rng.h"
 
+#include <math.h>
+
 static uint64_t splitmix64(uint64_t *x) {
     uint64_t z = (*x += 0x9e3779b97f4a7c15ULL);
     z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
@@ -48,4 +50,12 @@ uint64_t tsim_rng_below(struct tsim_rng *rng, uint64_t bound) {
 
 double tsim_rng_unit(struct tsim_rng *rng) {
     return (double)(tsim_rng_next(rng) >> 11) * 0x1.0p-53;
+}
+
+double tsim_rng_normal(struct tsim_rng *rng) {
+    /* Box-Muller, keeping only the cosine half so a draw always consumes exactly two numbers. The
+     * first is moved from [0, 1) to (0, 1] so the logarithm is finite. */
+    double u1 = 1.0 - tsim_rng_unit(rng);
+    double u2 = tsim_rng_unit(rng);
+    return sqrt(-2.0 * log(u1)) * cos(6.283185307179586 * u2);
 }
