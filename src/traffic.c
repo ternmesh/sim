@@ -28,8 +28,10 @@ struct tsim_traffic {
  * for intervals near a nanosecond, which no radio could carry anyway. */
 static tsim_time gap(struct source *s) {
     double g = -log(1.0 - tsim_rng_unit(&s->rng)) * (double)s->traffic->params.interval;
-    if (!(g < (double)INT64_MAX / 2)) {
-        return INT64_MAX / 2;
+    /* Only what no time can hold is capped: plan() checks a gap against the window before adding
+     * it, so a gap past the window, however long, falls outside it as it should. */
+    if (!(g < (double)INT64_MAX)) {
+        return INT64_MAX;
     }
     tsim_time t = (tsim_time)(g + 0.5);
     return t > 0 ? t : 1;
