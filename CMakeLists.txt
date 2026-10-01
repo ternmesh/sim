@@ -42,7 +42,7 @@ target_include_directories(ternsim PUBLIC include)
 target_link_libraries(ternsim PUBLIC m)
 target_compile_options(ternsim PRIVATE ${TSIM_WARNINGS})
 
-add_executable(tsim tools/tsim.c)
+add_executable(tsim tools/tsim.c tools/json.c)
 target_link_libraries(tsim PRIVATE ternsim)
 target_compile_options(tsim PRIVATE ${TSIM_WARNINGS})
 
@@ -56,6 +56,12 @@ if(BUILD_TESTING)
         target_compile_options(test_${t} PRIVATE ${TSIM_WARNINGS} -Wno-missing-prototypes)
         add_test(NAME ${t} COMMAND test_${t})
     endforeach()
+
+    # The tool's JSON writer, which is not the library's.
+    add_executable(test_json tests/json.c tools/json.c)
+    target_include_directories(test_json PRIVATE tools)
+    target_compile_options(test_json PRIVATE ${TSIM_WARNINGS} -Wno-missing-prototypes)
+    add_test(NAME json COMMAND test_json)
 
     # Every scenario under scenarios/ runs as a test, through the tool, so a scenario that stops
     # parsing or running fails CI. Those under scenarios/scale/ are too big for a sanitized debug

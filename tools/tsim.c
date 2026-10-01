@@ -14,6 +14,8 @@
 
 #include "tsim/scenario.h"
 
+#include "json.h"
+
 static char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -67,22 +69,6 @@ static char *with_overrides(char *text, char **sets, int count) {
 
 static double seconds(tsim_time t) { return (double)t / 1e9; }
 
-/* A JSON string. A path may hold any byte but '\0': quotes, backslashes and control bytes are
- * escaped, and the rest pass through, so a UTF-8 path stays UTF-8. */
-static void print_string(const char *s) {
-    putchar('"');
-    for (const unsigned char *c = (const unsigned char *)s; *c; c++) {
-        if (*c == '"' || *c == '\\') {
-            printf("\\%c", *c);
-        } else if (*c < 0x20) {
-            printf("\\u%04x", *c);
-        } else {
-            putchar(*c);
-        }
-    }
-    putchar('"');
-}
-
 static void print_delivery(const char *name, const struct tsim_delivery *d, const char *tail) {
     printf("  \"%s\": {\"messages\": %" PRIu64 ", \"refused\": %" PRIu64 ", \"wanted\": %" PRIu64
            ", \"delivered\": %" PRIu64 ", \"on_time\": %" PRIu64
@@ -96,7 +82,7 @@ static void print_report(const char *path, const struct tsim_scenario *s,
     static const char *purposes[TSIM_PURPOSE_COUNT] = {"data", "relay", "control", "announce"};
     printf("{\n");
     printf("  \"scenario\": ");
-    print_string(path);
+    json_string(stdout, path);
     printf(",\n");
     printf("  \"seed\": %" PRIu64 ", \"nodes\": %" PRIu32
            ", \"routing\": \"%s\", \"mac\": \"%s\",\n",

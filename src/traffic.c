@@ -23,10 +23,16 @@ struct tsim_traffic {
 };
 
 /* An exponential gap with the configured mean, rounded to the nanosecond. 1 - u is in (0, 1], so
- * the log is finite. */
+ * the log is finite. Never under one nanosecond: a gap that rounded to zero would put two of a
+ * node's messages at one instant, and its first at the start itself. That lengthens the mean only
+ * for intervals near a nanosecond, which no radio could carry anyway. */
 static tsim_time gap(struct source *s) {
     double g = -log(1.0 - tsim_rng_unit(&s->rng)) * (double)s->traffic->params.interval;
-    return g < (double)INT64_MAX / 2 ? (tsim_time)(g + 0.5) : INT64_MAX / 2;
+    if (!(g < (double)INT64_MAX / 2)) {
+        return INT64_MAX / 2;
+    }
+    tsim_time t = (tsim_time)(g + 0.5);
+    return t > 0 ? t : 1;
 }
 
 static void send_next(struct tsim_sched *sched, void *ctx);

@@ -9,9 +9,9 @@
 /* The application above every node: who sends what to whom, and when.
  *
  * Each node sends on its own Poisson process - the gap between two of its messages is exponential
- * with mean `interval` - so nodes neither march in step nor drift into it. Each message is a
- * broadcast with probability `broadcast`, and otherwise goes to another node chosen uniformly; its
- * length is uniform over [len_min, len_max].
+ * with mean `interval`, rounded to the nanosecond and never under one - so nodes neither march in
+ * step nor drift into it. Each message is a broadcast with probability `broadcast`, and otherwise
+ * goes to another node chosen uniformly; its length is uniform over [len_min, len_max].
  *
  * The draws are the driver's, from streams of their own that no plugin can seed: a protocol is
  * told about a message when its node originates it, and not before. Nothing a protocol does

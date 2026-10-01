@@ -115,6 +115,32 @@ static void messages_are_made_only_inside_the_window(void) {
     rig_close(&r);
 }
 
+/* At an interval of a nanosecond most gaps round to nothing; none may, or a node would send two
+ * messages at one instant, and its first at the start itself. */
+static void no_two_of_a_nodes_messages_share_an_instant(void) {
+    enum { N = 20 };
+    struct tsim_traffic_params p = params();
+    p.interval = TSIM_NS(1);
+    p.start = TSIM_NS(100);
+    p.stop = TSIM_NS(200);
+    struct rig r;
+    rig_open(&r, N, &refuser, false, &p);
+    tsim_sched_run_until(r.sched, TSIM_NS(300));
+    tsim_time last[N];
+    for (int i = 0; i < N; i++) {
+        last[i] = p.start;
+    }
+    uint64_t count = tsim_net_message_count(r.net);
+    CHECK(count > N);
+    CHECK(count <= N * 99);
+    for (uint64_t id = 1; id <= count; id++) {
+        const struct tsim_message *m = &tsim_net_message(r.net, id)->msg;
+        CHECK(m->created > last[m->src]);
+        last[m->src] = m->created;
+    }
+    rig_close(&r);
+}
+
 static void destinations_and_lengths_cover_their_ranges(void) {
     enum { N = 5 };
     struct tsim_traffic_params p = params();
@@ -233,6 +259,7 @@ static void destroy_stops_the_traffic(void) {
 int main(void) {
     RUN(messages_come_at_the_configured_rate);
     RUN(messages_are_made_only_inside_the_window);
+    RUN(no_two_of_a_nodes_messages_share_an_instant);
     RUN(destinations_and_lengths_cover_their_ranges);
     RUN(every_protocol_is_offered_the_same_messages);
     RUN(invalid_parameters_are_refused);
