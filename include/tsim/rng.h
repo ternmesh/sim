@@ -27,4 +27,8 @@ uint64_t tsim_rng_below(struct tsim_rng *rng, uint64_t bound);
 /* A uniform double in [0, 1), with 53 random bits. */
 double tsim_rng_unit(struct tsim_rng *rng);
 
+/* A standard normal deviate (Box-Muller). It goes through libm's log, sqrt and cos, so unlike the
+ * draws above its last bit can differ between C libraries; runs on one platform still repeat. */
+double tsim_rng_normal(struct tsim_rng *rng);
+
 #endif
