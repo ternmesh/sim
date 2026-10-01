@@ -153,6 +153,7 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
         r->rx_lost += ps->rx_lost;
         r->rx_preempted += ps->rx_preempted;
         r->rx_aborted += ps->rx_aborted;
+        r->rx_missed += ps->rx_missed;
     }
     for (int p = 0; p < TSIM_PURPOSE_COUNT; p++) {
         r->airtime_s[p] = airtime_ns[p] / 1e9;

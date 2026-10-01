@@ -458,22 +458,32 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
     tx->stats.tx++;
     tx->stats.tx_airtime += airtime;
 
-    for (uint32_t i = 0; i < phy->n; i++) {
+    /* decodable(), with what it works out the same for every receiver worked out once. */
+    double noise = noise_dbm(phy, f->lora.bw_hz);
+    double snr_min = phy->params.snr_min_db[f->lora.sf - TSIM_SF_MIN];
+    uint32_t receivers = can_lock(phy, f, now) ? phy->n : 0;
+    for (uint32_t i = 0; i < receivers; i++) {
         struct node *nd = &phy->nodes[i];
-        if (i == node || !tuned_to(nd, f) || !can_lock(phy, f, now)) {
+        if (i == node || !tuned_to(nd, f)) {
             continue;
         }
         if (nd->state == LISTEN) {
             double dbm = rx_dbm(phy, f, i);
-            if (decodable(phy, f, dbm)) {
+            if (dbm - noise >= snr_min) {
                 sync_to(nd, f, dbm);
             }
-        } else if (nd->state == RECEIVE && (phy->params.capture_anytime || now < nd->lock_at)) {
+        } else if (nd->state == RECEIVE) {
             double dbm = rx_dbm(phy, f, i);
-            if (decodable(phy, f, dbm) && dbm >= nd->frame_dbm + phy->params.capture_db) {
+            if (!(dbm - noise >= snr_min)) {
+                continue;
+            }
+            if ((phy->params.capture_anytime || now < nd->lock_at) &&
+                dbm >= nd->frame_dbm + phy->params.capture_db) {
                 count_reception(nd);
                 nd->stats.rx_preempted++;
                 sync_to(nd, f, dbm);
+            } else {
+                nd->stats.rx_missed++;
             }
         }
     }

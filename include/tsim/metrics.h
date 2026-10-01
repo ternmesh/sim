@@ -62,6 +62,7 @@ struct tsim_report {
     uint64_t rx_lost;
     uint64_t rx_preempted;
     uint64_t rx_aborted;
+    uint64_t rx_missed;
 };
 
 struct tsim_metrics;

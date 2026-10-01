@@ -205,6 +205,7 @@ static void louder_frame_after_lock_destroys_but_is_not_heard(void) {
     CHECK_EQ_I64(w->log.count, 0);
     CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_lost, 1);
     CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_preempted, 0);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_missed, 1);
     world_free(w);
 }
 
@@ -221,6 +222,7 @@ static void louder_frame_during_the_preamble_takes_the_receiver(void) {
     CHECK_EQ_I64(w->log.count, 1);
     CHECK(received(w, 0, 2));
     CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_preempted, 1);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_missed, 0);
     world_free(w);
 }
 
@@ -236,6 +238,26 @@ static void slightly_louder_frame_does_not_take_the_receiver(void) {
     CHECK_EQ_I64(w->log.count, 0);
     CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_preempted, 0);
     CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_lost, 1);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_missed, 1);
+    world_free(w);
+}
+
+/* A frame that begins while the radio is busy with another is missed only if the radio could have
+ * decoded it, and only by a radio that is receiving, not one that is transmitting. */
+static void missed_counts_only_frames_it_could_have_decoded(void) {
+    struct world *w = world_new(4, NULL);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -140.0); /* under the floor */
+    arrive(w, 3, 0, -100.0);
+    arrive(w, 3, 1, -100.0);
+    struct send s[3];
+    send_at(w, &s[0], 0, 1, &w->sf7);
+    send_at(w, &s[1], TSIM_MS(10), 2, &w->sf7);
+    send_at(w, &s[2], TSIM_MS(20), 3, &w->sf7);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(received(w, 0, 1));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_missed, 1);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 1)->rx_missed, 0);
     world_free(w);
 }
 
@@ -756,6 +778,7 @@ int main(void) {
     RUN(louder_frame_after_lock_destroys_but_is_not_heard);
     RUN(louder_frame_during_the_preamble_takes_the_receiver);
     RUN(slightly_louder_frame_does_not_take_the_receiver);
+    RUN(missed_counts_only_frames_it_could_have_decoded);
     RUN(quieter_late_frame_is_survived);
     RUN(interference_is_summed);
     RUN(interference_is_weighted_by_overlap);

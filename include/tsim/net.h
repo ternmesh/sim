@@ -90,7 +90,8 @@ struct tsim_message_record {
     uint32_t delivered; /* destinations that have it */
     tsim_time first;    /* when the first and the latest of them got it */
     tsim_time last;
-    bool refused; /* the source's routing could not carry it */
+    bool refused;  /* the source's routing could not carry it */
+    bool finished; /* the source's routing is done with it; see tsim_node_finished() */
 };
 
 /* The record for a message id, or NULL. Valid until the next message is originated. */
@@ -105,5 +106,13 @@ uint64_t tsim_net_message_count(const struct tsim_net *net);
 typedef void (*tsim_net_delivered_fn)(void *ctx, const struct tsim_message_record *record,
                                       uint32_t node);
 void tsim_net_observe(struct tsim_net *net, tsim_net_delivered_fn fn, void *ctx);
+
+/* Called once for each message when its source's routing is finished with it, after the record
+ * says so: a refused message, and every message of a routing that does not report_finished, as
+ * tsim_net_originate() returns. For the application (tsim/traffic.h): it may schedule its next
+ * message, but must not originate, send or destroy anything from inside, since it can be called
+ * from inside tsim_net_originate() or a plugin. One observer at a time; NULL removes it. */
+typedef void (*tsim_net_finished_fn)(void *ctx, const struct tsim_message_record *record);
+void tsim_net_observe_finished(struct tsim_net *net, tsim_net_finished_fn fn, void *ctx);
 
 #endif

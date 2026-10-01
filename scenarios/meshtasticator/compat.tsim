@@ -1,0 +1,56 @@
+# Candidate 1 set up as Meshtasticator's discrete-event simulator runs it by default, so the two
+# can be compared on the same map: LongFast in the US region, 3GPP suburban path loss, a broadcast
+# every 100 s from every node, for 30 minutes. tools/meshtasticator.py runs this over the maps in
+# this directory, which Meshtasticator placed, and compares the results with reference.json.
+nodes     = 10
+placement = file
+positions = n10-s1.positions
+
+# LongFast: SF11, 250 kHz, 4/5, and the 16-symbol preamble Meshtastic programs, at 30 dBm.
+radio.sf       = 11
+radio.bw       = 250000
+radio.cr       = 1
+radio.preamble = 16
+radio.tx_dbm   = 30
+
+# Model 5 at 1 m, on channel 27's 908.75 MHz, without shadowing: its only spread is the 2 dB drawn
+# afresh for each packet at each receiver.
+channel.model  = 3gpp_suburban
+channel.freq   = 908.75
+channel.height = 1
+channel.sigma  = 0
+phy.fading     = 2
+
+# Its collision rule: each pair of overlapping frames judged alone, a frame 6 dB louder winning at
+# any point, and CAD 3 dB below sensitivity once a frame has been on the air for one slot.
+phy.pairwise        = yes
+phy.capture_anytime = yes
+phy.cad_margin      = 3
+phy.cad_delay       = 28.08 ms
+
+# Its sender: acknowledging only the first copy, waiting for an acknowledgement from when the
+# message is queued and noticing one only when the wait runs out, and cancelling a frame only when
+# its turn to be sent comes. Its SNR is reckoned from a fixed noise level, and a tenth of the times
+# it looks, the channel is busy with outside traffic: its 5% interference level, rounded up.
+routing                = meshtastic
+routing.ack_duplicates = no
+routing.ack_poll       = yes
+routing.cancel_late    = yes
+routing.noise          = -119.25
+mac                    = meshtastic
+mac.busy_chance        = 0.1
+queue                  = 0
+
+# Its packet is a 40-byte payload under a 16-byte header, but it times the payload at 9 symbols per
+# codeword, not LongFast's 5: its airtime formula wants the coding rate as 1 for 4/5, and it passes
+# the preset's 5. So its 56 bytes are on the air for 1.042 s, 20.25 symbols of preamble and 107 of
+# payload. 88 bytes under our 17-byte header, at 4/5, are 108 symbols of payload and 1.050 s.
+traffic.len       = 88
+traffic.broadcast = 1
+traffic.interval  = 100 s
+traffic.closed    = yes   # a node makes its next message once it is done with the last
+
+# It stops generating a little before the end, so the last floods can finish, and stops the clock
+# at 30 minutes.
+duration = 1797 s
+deadline = 3 s

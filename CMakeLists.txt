@@ -72,4 +72,14 @@ if(BUILD_TESTING)
         get_filename_component(name ${s} NAME_WE)
         add_test(NAME scenario_${name} COMMAND tsim ${s})
     endforeach()
+
+    # Candidate 1's compatibility mode against Meshtasticator's results on the same maps, which
+    # tools/meshtasticator.py recorded in scenarios/meshtasticator/. Only the comparison runs here;
+    # Meshtasticator itself is run by hand.
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME meshtasticator
+            COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/tools/meshtasticator.py check
+                --tsim $<TARGET_FILE:tsim>)
+    endif()
 endif()

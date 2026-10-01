@@ -1,6 +1,7 @@
 #ifndef TSIM_TRAFFIC_H
 #define TSIM_TRAFFIC_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "tsim/net.h"
@@ -17,7 +18,12 @@
  * told about a message when its node originates it, and not before. Nothing a protocol does
  * moves a draw - a message the routing refuses still uses its draws - so with the same seed every
  * candidate is offered the same messages at the same times. The gaps go through libm's log, so as
- * with tsim_rng_normal() their last bit can differ between C libraries. */
+ * with tsim_rng_normal() their last bit can differ between C libraries.
+ *
+ * Closed, a node's next gap starts not when its last message was made but when its routing is
+ * finished with it (tsim_node_finished()), so a node waiting on an acknowledgement makes nothing
+ * new - as Meshtasticator's nodes behave. The draws are the same, but when they fall then depends
+ * on the protocol, so candidates are no longer offered the same messages at the same times. */
 
 struct tsim_traffic_params {
     tsim_time interval; /* mean gap between one node's messages; must be positive */
@@ -27,6 +33,7 @@ struct tsim_traffic_params {
     tsim_time start;  /* messages are made in [start, stop) */
     tsim_time stop;
     uint64_t seed;
+    bool closed; /* each gap starts when the node's previous message is finished */
 };
 
 struct tsim_traffic;

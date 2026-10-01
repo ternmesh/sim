@@ -36,6 +36,22 @@ static const struct tsim_routing refuser = {
     .rx = refuser_rx,
 };
 
+/* A routing that holds every message until the test finishes it. */
+static bool holder_originate(void *self, const struct tsim_message *msg) {
+    (void)self;
+    (void)msg;
+    return true;
+}
+
+static const struct tsim_routing holder = {
+    .name = "holder",
+    .create = refuser_create,
+    .destroy = refuser_destroy,
+    .originate = holder_originate,
+    .rx = refuser_rx,
+    .reports_finished = true,
+};
+
 struct rig {
     struct tsim_sched *sched;
     struct tsim_net *net;
@@ -233,6 +249,47 @@ static void every_protocol_is_offered_the_same_messages(void) {
     rig_close(&b);
 }
 
+/* Closed, a node makes nothing new until its routing is done with the last, and its next gap is
+ * drawn from then. */
+static void closed_traffic_waits_for_the_last_message(void) {
+    struct tsim_traffic_params p = params();
+    p.closed = true;
+    struct rig r;
+    rig_open(&r, 2, &holder, false, &p);
+    tsim_sched_run_until(r.sched, TSIM_S(1800));
+    CHECK_EQ_U64(tsim_traffic_made(r.traffic), 2); /* one each, held */
+    uint64_t first = tsim_net_message(r.net, 1)->msg.src == 0 ? 1 : 2;
+    CHECK(tsim_node_finished(tsim_net_node(r.net, 0), first));
+    tsim_sched_run_until(r.sched, TSIM_S(3600));
+    CHECK_EQ_U64(tsim_traffic_made(r.traffic), 3);
+    const struct tsim_message_record *next = tsim_net_message(r.net, 3);
+    CHECK(next->msg.src == 0 && next->msg.created > TSIM_S(1800));
+    rig_close(&r);
+}
+
+/* With a routing that is done with each message at once, closed traffic is open traffic: the same
+ * draws in the same order, so the same messages at the same times. */
+static void closed_traffic_with_nothing_to_wait_for_is_open_traffic(void) {
+    struct tsim_traffic_params p = params();
+    struct rig open;
+    rig_open(&open, 5, &refuser, false, &p);
+    tsim_sched_run_until(open.sched, p.stop);
+    p.closed = true;
+    struct rig closed;
+    rig_open(&closed, 5, &refuser, false, &p);
+    tsim_sched_run_until(closed.sched, p.stop);
+    uint64_t made = tsim_traffic_made(open.traffic);
+    CHECK(made > 100);
+    CHECK_EQ_U64(tsim_traffic_made(closed.traffic), made);
+    for (uint64_t id = 1; id <= made; id++) {
+        const struct tsim_message *a = &tsim_net_message(open.net, id)->msg;
+        const struct tsim_message *b = &tsim_net_message(closed.net, id)->msg;
+        CHECK(a->src == b->src && a->dst == b->dst && a->len == b->len && a->created == b->created);
+    }
+    rig_close(&open);
+    rig_close(&closed);
+}
+
 static void invalid_parameters_are_refused(void) {
     struct tsim_sched *sched = tsim_sched_create();
     struct tsim_net_params np = tsim_net_defaults(1);
@@ -288,6 +345,8 @@ int main(void) {
     RUN(a_gap_longer_than_the_window_stays_longer);
     RUN(destinations_and_lengths_cover_their_ranges);
     RUN(every_protocol_is_offered_the_same_messages);
+    RUN(closed_traffic_waits_for_the_last_message);
+    RUN(closed_traffic_with_nothing_to_wait_for_is_open_traffic);
     RUN(invalid_parameters_are_refused);
     RUN(a_lone_node_sends_nothing);
     RUN(destroy_stops_the_traffic);

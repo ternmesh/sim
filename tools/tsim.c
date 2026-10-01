@@ -107,8 +107,9 @@ static void print_report(const char *path, const struct tsim_scenario *s,
     }
     printf("},\n");
     printf("  \"queue_dropped\": %" PRIu64 ", \"rx_ok\": %" PRIu64 ", \"rx_lost\": %" PRIu64
-           ", \"rx_preempted\": %" PRIu64 ", \"rx_aborted\": %" PRIu64 "\n",
-           r->queue_dropped, r->rx_ok, r->rx_lost, r->rx_preempted, r->rx_aborted);
+           ", \"rx_preempted\": %" PRIu64 ", \"rx_aborted\": %" PRIu64 ", \"rx_missed\": %" PRIu64
+           "\n",
+           r->queue_dropped, r->rx_ok, r->rx_lost, r->rx_preempted, r->rx_aborted, r->rx_missed);
     printf("}\n");
 }
 

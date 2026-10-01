@@ -107,6 +107,13 @@ struct tsim_routing {
     bool (*originate)(void *self, const struct tsim_message *msg);
     void (*rx)(void *self, const struct tsim_rx *rx);
     void (*tx_done)(void *self, uint64_t handle); /* optional: a queued frame has been sent */
+    /* Optional: the MAC is about to put this queued frame on the air. Returning false withdraws it
+     * instead, as tsim_node_cancel() would have - for a protocol that decides whether a frame is
+     * still wanted only once it is due. It must not send, cancel or transmit from inside. */
+    bool (*sending)(void *self, uint64_t handle);
+    /* Whether it calls tsim_node_finished() for every message it originates and does not refuse.
+     * If not, a message is finished as soon as originate() returns. */
+    bool reports_finished;
 };
 
 /* A MAC. kick() is called whenever the queue or the radio may have changed: a frame was queued or
@@ -172,6 +179,13 @@ bool tsim_node_cancel(struct tsim_node *node, uint64_t handle);
  * the message, is one of its destinations, and had not had it yet. */
 bool tsim_node_deliver(struct tsim_node *node, uint64_t msg);
 
+/* Tells the application that this node's routing is done with a message the node originated: it
+ * was acknowledged, or the routing gave up on it. Only for a routing that reports_finished; the
+ * application may be waiting on it before making the node's next message (tsim/traffic.h).
+ * Returns false, doing nothing, for a message this node did not originate or that is already
+ * finished. */
+bool tsim_node_finished(struct tsim_node *node, uint64_t msg);
+
 /* --- What the MAC calls --- */
 
 /* The frame at the head of the queue, or NULL. Valid until the queue next changes. */
@@ -186,7 +200,9 @@ uint64_t tsim_node_head_handle(const struct tsim_node *node);
 bool tsim_node_sending(const struct tsim_node *node);
 
 /* Puts the head of the queue on the air now, charging it to the ledger. Returns false, leaving it
- * queued, if the queue is empty, the node is still sending, or the radio refuses it. */
+ * queued, if the queue is empty, the node is still sending, or the radio refuses it - or, taking
+ * it out of the queue, if the routing withdraws it (tsim_routing.sending), in which case the MAC
+ * is kicked for the frame behind it. */
 bool tsim_node_transmit(struct tsim_node *node);
 
 /* --- The node's own radio --- */

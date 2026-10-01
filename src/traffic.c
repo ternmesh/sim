@@ -63,11 +63,22 @@ static void send_next(struct tsim_sched *sched, void *ctx) {
     }
     uint32_t len = p->len_min + (uint32_t)tsim_rng_below(&s->rng, p->len_max - p->len_min + 1);
     tsim_time now = tsim_sched_now(sched);
-    plan(s, now);
-    /* A lone node has nobody to send to. */
-    if (t->n > 1 && tsim_net_originate(t->net, s->node, dst, len)) {
-        t->made++;
+    if (!p->closed) {
+        plan(s, now);
     }
+    /* A lone node has nobody to send to. */
+    uint64_t id = t->n > 1 ? tsim_net_originate(t->net, s->node, dst, len) : 0;
+    if (id) {
+        t->made++;
+    } else if (p->closed) {
+        plan(s, now); /* nothing to wait for */
+    }
+}
+
+/* Closed loop: the node's next gap starts when its routing is done with this message. */
+static void on_finished(void *ctx, const struct tsim_message_record *record) {
+    struct tsim_traffic *t = ctx;
+    plan(&t->sources[record->msg.src], tsim_sched_now(t->sched));
 }
 
 struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
@@ -102,12 +113,18 @@ struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
         tsim_rng_init(&s->rng, p->seed, UINT64_C(0xC1) << 56 | i);
         plan(s, from);
     }
+    if (p->closed) {
+        tsim_net_observe_finished(net, on_finished, t);
+    }
     return t;
 }
 
 void tsim_traffic_destroy(struct tsim_traffic *t) {
     if (!t) {
         return;
+    }
+    if (t->params.closed) {
+        tsim_net_observe_finished(t->net, NULL, NULL);
     }
     for (uint32_t i = 0; i < t->n; i++) {
         tsim_sched_cancel(t->sched, t->sources[i].next);

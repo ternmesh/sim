@@ -261,6 +261,12 @@ static const char *meshtastic_set(void *config, const char *key, const char *val
     if (strcmp(key, "ack_duplicates") == 0) {
         return parse_yes_no(value, &c->ack_duplicates) ? NULL : "expected yes or no";
     }
+    if (strcmp(key, "ack_poll") == 0) {
+        return parse_yes_no(value, &c->ack_poll) ? NULL : "expected yes or no";
+    }
+    if (strcmp(key, "cancel_late") == 0) {
+        return parse_yes_no(value, &c->cancel_late) ? NULL : "expected yes or no";
+    }
     if (strcmp(key, "retries") == 0) {
         if (!parse_u64(value, UINT8_MAX, &v)) {
             return "expected a count from 0 to 255";
@@ -568,6 +574,9 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     if (strcmp(key, "traffic.broadcast") == 0) {
         return parse_fraction(v, &s->broadcast) ? NULL : "expected a fraction from 0 to 1";
     }
+    if (strcmp(key, "traffic.closed") == 0) {
+        return parse_yes_no(v, &s->closed) ? NULL : "expected yes or no";
+    }
     return "is not a setting";
 }
 
@@ -864,6 +873,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         .start = s->warmup,
         .stop = s->warmup + s->duration,
         .seed = s->seed,
+        .closed = s->closed,
     };
     traffic = tsim_traffic_create(net, &tp);
     if (!metrics || !traffic) {
