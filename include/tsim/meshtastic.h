@@ -79,6 +79,19 @@ tsim_time tsim_meshtastic_slot(const struct tsim_lora *lora);
 /* That slot, with cw_min 3 and cw_max 8. */
 struct tsim_meshtastic_window tsim_meshtastic_window_default(const struct tsim_lora *lora);
 
+/* The longest window, in slots, any wait is drawn from: a client's rebroadcast waits up to
+ * 2 cw_max + 2^cw_max slots, and the acknowledgement wait counts 2^cw_max + 2 cw_max + 2^cw
+ * slots, cw at most cw_max. */
+uint64_t tsim_meshtastic_window_slots(const struct tsim_meshtastic_window *w); /* cw_max <= 15 */
+
+/* Whether both plugins can run on the window: cw_min <= cw_max <= 15, a slot above 0 - a MAC that
+ * waits no time while the channel is busy would wait at the same instant for ever - and the longest
+ * window short enough that a wait of it, and the acknowledgement wait built on it, fit in a
+ * tsim_time: no more than TSIM_MESHTASTIC_WAIT_MAX. */
+bool tsim_meshtastic_window_valid(const struct tsim_meshtastic_window *w);
+
+#define TSIM_MESHTASTIC_WAIT_MAX (INT64_MAX / 4)
+
 struct tsim_meshtastic_mac_config {
     struct tsim_meshtastic_window window;
     double snr_min_db; /* a rebroadcast heard at or below this waits the least */
@@ -102,7 +115,7 @@ struct tsim_meshtastic_config {
     uint8_t hop_limit; /* rebroadcasts a packet may have, at most TSIM_MESHTASTIC_HOPS_MAX */
     bool want_ack;
     uint8_t retries;      /* sends after the first, for a message no one acknowledges */
-    tsim_time processing; /* added to the acknowledgement wait */
+    tsim_time processing; /* added to the acknowledgement wait, at most TSIM_MESHTASTIC_WAIT_MAX */
     struct tsim_meshtastic_window window;
 };
 

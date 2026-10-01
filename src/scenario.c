@@ -207,7 +207,16 @@ static const char *window_set(struct tsim_meshtastic_window *w, const char *key,
 }
 
 static const char *window_check(const struct tsim_meshtastic_window *w) {
-    return w->cw_min <= w->cw_max ? NULL : "cw_min is over cw_max";
+    if (w->cw_min > w->cw_max) {
+        return "cw_min is over cw_max";
+    }
+    if (w->slot == 0) {
+        return "slot must be above 0";
+    }
+    if (!tsim_meshtastic_window_valid(w)) {
+        return "slot is too long: 2^(cw_max + 1) slots must fit in a quarter of the clock";
+    }
+    return NULL;
 }
 
 static void meshtastic_defaults(void *config, const struct tsim_radio *radio) {
@@ -255,7 +264,10 @@ static const char *meshtastic_set(void *config, const char *key, const char *val
         return NULL;
     }
     if (strcmp(key, "processing") == 0) {
-        return parse_time(value, &c->processing) ? NULL : "expected a time, such as 4.5 s";
+        if (!parse_time(value, &c->processing)) {
+            return "expected a time, such as 4.5 s";
+        }
+        return c->processing <= TSIM_MESHTASTIC_WAIT_MAX ? NULL : "is too long for the clock";
     }
     return "is not a setting of meshtastic";
 }

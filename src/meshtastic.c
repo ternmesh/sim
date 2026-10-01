@@ -31,8 +31,13 @@ struct tsim_meshtastic_window tsim_meshtastic_window_default(const struct tsim_l
     };
 }
 
-static bool window_valid(const struct tsim_meshtastic_window *w) {
-    return w->slot >= 0 && w->cw_min <= w->cw_max && w->cw_max <= 15;
+uint64_t tsim_meshtastic_window_slots(const struct tsim_meshtastic_window *w) {
+    return ((uint64_t)2 << w->cw_max) + 2 * (uint64_t)w->cw_max;
+}
+
+bool tsim_meshtastic_window_valid(const struct tsim_meshtastic_window *w) {
+    return w->cw_min <= w->cw_max && w->cw_max <= 15 && w->slot > 0 &&
+           (uint64_t)w->slot <= TSIM_MESHTASTIC_WAIT_MAX / tsim_meshtastic_window_slots(w);
 }
 
 /* The share of the run the radio has spent sending or receiving, as a percentage. */
@@ -126,7 +131,7 @@ static void mac_kick(void *self) {
 
 static void *mac_create(struct tsim_node *node, const void *config) {
     const struct tsim_meshtastic_mac_config *c = config;
-    if (!window_valid(&c->window) || !(c->snr_min_db < c->snr_max_db)) {
+    if (!tsim_meshtastic_window_valid(&c->window) || !(c->snr_min_db < c->snr_max_db)) {
         return NULL;
     }
     struct mac *m = calloc(1, sizeof *m);
@@ -474,7 +479,8 @@ static void router_tx_done(void *self, uint64_t handle) {
 
 static void *router_create(struct tsim_node *node, const void *config) {
     const struct tsim_meshtastic_config *c = config;
-    if (c->hop_limit > TSIM_MESHTASTIC_HOPS_MAX || c->processing < 0 || !window_valid(&c->window) ||
+    if (c->hop_limit > TSIM_MESHTASTIC_HOPS_MAX || c->processing < 0 ||
+        c->processing > TSIM_MESHTASTIC_WAIT_MAX || !tsim_meshtastic_window_valid(&c->window) ||
         (unsigned)c->role > TSIM_MESHTASTIC_ROUTER) {
         return NULL;
     }

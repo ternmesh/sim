@@ -87,8 +87,8 @@ until the bench rig measures real radios; see `tsim/phy.h`.
 | `routing.hop_limit` (`meshtastic`) | 3 | rebroadcasts a packet may have, 0 to 7 |
 | `routing.want_ack` (`meshtastic`) | `yes` | whether a message wants an acknowledgement (`yes` or `no`); broadcasts take an implicit one |
 | `routing.retries` (`meshtastic`) | 3 | sends after the first, for a message that is not acknowledged |
-| `routing.processing` (`meshtastic`) | `4.5 s` | added to the wait for an acknowledgement |
-| `routing.slot`, `mac.slot` (`meshtastic`) | from the radio | the contention slot: 2.5 symbols plus 7.6 ms |
+| `routing.processing` (`meshtastic`) | `4.5 s` | added to the wait for an acknowledgement, at most a quarter of the clock |
+| `routing.slot`, `mac.slot` (`meshtastic`) | from the radio | the contention slot: 2.5 symbols plus 7.6 ms; above 0, and short enough that 2^(`cw_max` + 1) slots fit in a quarter of the clock |
 | `routing.cw_min`, `mac.cw_min` (`meshtastic`) | 3 | smallest contention window, as a power of two |
 | `routing.cw_max`, `mac.cw_max` (`meshtastic`) | 8 | largest, at most 15 |
 | `mac.snr_min`, `mac.snr_max` (`meshtastic`) | -20, 10 | the SNR range, in dB, over which a rebroadcast's window grows from `cw_min` to `cw_max` |

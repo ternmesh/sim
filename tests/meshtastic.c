@@ -312,7 +312,43 @@ static void bad_configs_are_refused(void) {
     rig_init(&r);
     r.mc.snr_max_db = r.mc.snr_min_db;
     CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
+    /* A zero slot would have a MAC that finds the channel busy wait again at the same instant,
+     * for ever. */
+    rig_init(&r);
+    r.mc.window.slot = 0;
+    CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
+    rig_init(&r);
+    r.rc.window.slot = 0;
+    CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
+    rig_init(&r);
+    r.rc.processing = TSIM_MESHTASTIC_WAIT_MAX + 1;
+    CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
     tsim_sched_destroy(sched);
+}
+
+/* The longest window either plugin accepts: every wait drawn from it fits in a time. */
+static void the_longest_window_fits_the_clock(void) {
+    struct tsim_meshtastic_window w = {.slot = 1, .cw_min = 15, .cw_max = 15};
+    CHECK_EQ_U64(tsim_meshtastic_window_slots(&w), 65536 + 30);
+    w.slot = (tsim_time)(TSIM_MESHTASTIC_WAIT_MAX / tsim_meshtastic_window_slots(&w));
+    CHECK(tsim_meshtastic_window_valid(&w));
+    w.slot++;
+    CHECK(!tsim_meshtastic_window_valid(&w));
+    w.slot--;
+
+    /* Run on it: a client's rebroadcast waits the most, and the acknowledgement wait is sized
+     * from it, so both are drawn. */
+    struct rig r;
+    rig_init(&r);
+    r.rc.window = w;
+    r.rc.processing = TSIM_MESHTASTIC_WAIT_MAX;
+    r.mc.window = w;
+    line(&r, 3, 1);
+    tsim_net_originate(r.net, 0, TSIM_BROADCAST, 10);
+    tsim_net_originate(r.net, 2, 0, 10);
+    for (int i = 0; i < 64 && tsim_sched_step(r.sched); i++) {
+    }
+    rig_close(&r);
 }
 
 /* Destroying the network with messages still waiting for acknowledgement frees their timers. */
@@ -341,6 +377,7 @@ int main(void) {
     RUN(the_mac_holds_off_while_the_radio_is_receiving);
     RUN(a_seed_repeats_a_run);
     RUN(bad_configs_are_refused);
+    RUN(the_longest_window_fits_the_clock);
     RUN(destroy_mid_flood_leaves_the_scheduler_runnable);
     return CHECK_DONE();
 }
