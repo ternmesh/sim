@@ -2,6 +2,8 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <inttypes.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -266,6 +268,11 @@ static const char *meshtastic_set(void *config, const char *key, const char *val
         c->retries = (uint8_t)v;
         return NULL;
     }
+    if (strcmp(key, "noise") == 0) {
+        return parse_double(value, &c->noise_dbm) && fabs(c->noise_dbm) <= 1e3
+                   ? NULL
+                   : "expected dBm from -1000 to 1000";
+    }
     if (strcmp(key, "processing") == 0) {
         if (!parse_time(value, &c->processing)) {
             return "expected a time, such as 4.5 s";
@@ -294,6 +301,9 @@ static const char *meshtastic_mac_set(void *config, const char *key, const char 
                                                : NULL;
     if (db) {
         return parse_double(value, db) ? NULL : "expected an SNR in dB";
+    }
+    if (strcmp(key, "busy_chance") == 0) {
+        return parse_fraction(value, &c->busy_chance) ? NULL : "expected a fraction from 0 to 1";
     }
     return "is not a setting of meshtastic";
 }
@@ -377,9 +387,18 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
             s->placement = TSIM_PLACEMENT_GRID;
         } else if (strcmp(v, "line") == 0) {
             s->placement = TSIM_PLACEMENT_LINE;
+        } else if (strcmp(v, "file") == 0) {
+            s->placement = TSIM_PLACEMENT_FILE;
         } else {
-            return "expected uniform, grid or line";
+            return "expected uniform, grid, line or file";
         }
+        return NULL;
+    }
+    if (strcmp(key, "positions") == 0) {
+        if (strlen(v) >= sizeof s->positions_file) {
+            return "is too long a path";
+        }
+        strcpy(s->positions_file, v);
         return NULL;
     }
     if (strcmp(key, "area") == 0) {
@@ -473,6 +492,31 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     if (strcmp(key, "channel.share") == 0) {
         return parse_fraction(v, &s->channel.node_share) ? NULL : "expected a fraction from 0 to 1";
     }
+    if (strcmp(key, "channel.model") == 0) {
+        static const struct {
+            const char *name;
+            enum tsim_path_model model;
+        } models[] = {{"log_distance", TSIM_PATH_LOG_DISTANCE},
+                      {"3gpp_suburban", TSIM_PATH_3GPP_SUBURBAN},
+                      {"3gpp_urban", TSIM_PATH_3GPP_URBAN}};
+        for (size_t i = 0; i < sizeof models / sizeof models[0]; i++) {
+            if (strcmp(v, models[i].name) == 0) {
+                s->channel.model = models[i].model;
+                return NULL;
+            }
+        }
+        return "expected log_distance, 3gpp_suburban or 3gpp_urban";
+    }
+    if (strcmp(key, "channel.freq") == 0) {
+        return parse_double(v, &s->channel.freq_mhz) && s->channel.freq_mhz > 0
+                   ? NULL
+                   : "expected MHz above 0";
+    }
+    if (strcmp(key, "channel.height") == 0) {
+        return parse_double(v, &s->channel.height_m) && s->channel.height_m > 0
+                   ? NULL
+                   : "expected metres above 0";
+    }
     if (strcmp(key, "channel.decorrelation") == 0) {
         return parse_double(v, &s->channel.decorrelation_m) && s->channel.decorrelation_m > 0
                    ? NULL
@@ -494,6 +538,23 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     }
     if (strcmp(key, "phy.retune") == 0) {
         return parse_time(v, &s->net.phy.retune) ? NULL : "expected a time, such as 1 ms";
+    }
+    if (strcmp(key, "phy.fading") == 0) {
+        double *f = &s->net.phy.fading_db;
+        return parse_double(v, f) && *f >= 0 && *f <= 1e3 ? NULL : "expected dB from 0 to 1000";
+    }
+    if (strcmp(key, "phy.pairwise") == 0) {
+        return parse_yes_no(v, &s->net.phy.pairwise) ? NULL : "expected yes or no";
+    }
+    if (strcmp(key, "phy.capture_anytime") == 0) {
+        return parse_yes_no(v, &s->net.phy.capture_anytime) ? NULL : "expected yes or no";
+    }
+    if (strcmp(key, "phy.cad_margin") == 0) {
+        double *m = &s->net.phy.cad_margin_db;
+        return parse_double(v, m) && fabs(*m) <= 1e3 ? NULL : "expected dB from -1000 to 1000";
+    }
+    if (strcmp(key, "phy.cad_delay") == 0) {
+        return parse_time(v, &s->net.phy.cad_delay) ? NULL : "expected a time, such as 30 ms";
     }
 
     if (strcmp(key, "traffic.interval") == 0) {
@@ -588,6 +649,8 @@ static double extent(const struct tsim_scenario *s) {
     }
     case TSIM_PLACEMENT_LINE:
         return s->spacing_m * (double)(s->nodes - 1);
+    case TSIM_PLACEMENT_FILE:
+        return 0; /* tsim_scenario_read_positions() checks each position */
     case TSIM_PLACEMENT_UNIFORM:
         break;
     }
@@ -645,6 +708,9 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     if (ok && !s->mac) {
         ok = fail(err, 0, "mac is not set");
     }
+    if (ok && s->placement == TSIM_PLACEMENT_FILE && !s->positions_file[0]) {
+        ok = fail(err, 0, "positions is not set: placement = file reads them from that file");
+    }
     if (ok && !(extent(s) / s->channel.decorrelation_m <= 1e9)) {
         ok = fail(err, 0,
                   "the map is over a billion channel.decorrelation cells across, too many for a "
@@ -684,6 +750,68 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     return ok;
 }
 
+/* --- Positions --- */
+
+/* Reads one coordinate at *p, moving past it and any separator after it. */
+static bool coordinate(const char **p, double *out) {
+    char *end;
+    *out = strtod(*p, &end);
+    if (end == *p) {
+        return false;
+    }
+    *p = skip_space(end);
+    if (**p == ',') {
+        *p = skip_space(*p + 1);
+    }
+    return true;
+}
+
+bool tsim_scenario_read_positions(const struct tsim_scenario *s, const char *text,
+                                  struct tsim_pos *out, struct tsim_scenario_error *err) {
+    /* Past a billion cells, a position can no longer be placed within its cell. */
+    double limit = 1e9 * s->channel.decorrelation_m;
+    uint32_t count = 0;
+    int line = 0;
+    for (const char *at = text; *at;) {
+        line++;
+        const char *next = strchr(at, '\n');
+        size_t len = next ? (size_t)(next - at) : strlen(at);
+        char buf[256];
+        if (len >= sizeof buf) {
+            return fail(err, line, "the line is too long");
+        }
+        memcpy(buf, at, len);
+        buf[len] = '\0';
+        at += len + (next ? 1 : 0);
+        char *hash = strchr(buf, '#');
+        if (hash) {
+            *hash = '\0';
+        }
+        const char *p = skip_space(buf);
+        if (*p == '\0') {
+            continue;
+        }
+        struct tsim_pos pos;
+        if (!coordinate(&p, &pos.x) || !coordinate(&p, &pos.y) || *p != '\0') {
+            return fail(err, line, "expected a position, as x y in metres");
+        }
+        if (!(fabs(pos.x) <= limit && fabs(pos.y) <= limit)) {
+            return fail(
+                err, line,
+                "the position is over a billion channel.decorrelation cells from the origin");
+        }
+        if (count == s->nodes) {
+            return fail(err, line, "there are more positions than the %" PRIu32 " nodes", s->nodes);
+        }
+        out[count++] = pos;
+    }
+    if (count < s->nodes) {
+        return fail(err, 0, "there are %" PRIu32 " positions for %" PRIu32 " nodes", count,
+                    s->nodes);
+    }
+    return true;
+}
+
 /* --- Running --- */
 
 bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report) {
@@ -705,6 +833,12 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         break;
     case TSIM_PLACEMENT_LINE:
         tsim_place_line(pos, s->nodes, s->spacing_m);
+        break;
+    case TSIM_PLACEMENT_FILE:
+        if (!s->positions) {
+            goto done;
+        }
+        memcpy(pos, s->positions, s->nodes * sizeof *pos);
         break;
     }
 

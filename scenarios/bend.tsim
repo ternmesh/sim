@@ -1,0 +1,18 @@
+# The line scenario's ten nodes, bent at a right angle halfway along: placed from bend.positions,
+# which is how a map from elsewhere - another simulator's, or a real mesh's - is brought in.
+nodes     = 10
+placement = file
+positions = bend.positions
+channel.sigma = 0
+
+routing      = flood
+routing.hops = 9
+mac           = aloha
+mac.max_delay = 500 ms
+
+traffic.interval  = 10 min
+traffic.len       = 16..48
+traffic.broadcast = 0.5
+
+duration = 1 h
+deadline = 30 s

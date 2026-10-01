@@ -113,7 +113,33 @@ static void shadowing_holds_at_any_finite_position(void) {
     CHECK(isfinite(tsim_channel_shadowing(&p, 0, edge, 1, far)));
 }
 
+/* Meshtasticator's models 5 and 6, against its own estimate_path_loss(). */
+static void the_3gpp_models_match_meshtasticator(void) {
+    struct tsim_channel_params p = tsim_channel_default(1);
+    p.model = TSIM_PATH_3GPP_SUBURBAN;
+    p.freq_mhz = 908.75;
+    p.height_m = 1.0;
+    static const struct {
+        double d, suburban;
+    } at[] = {{100, 102.95215040407338}, {1000, 147.85215040407337}, {5000, 179.23590359876061}};
+    for (size_t i = 0; i < sizeof at / sizeof at[0]; i++) {
+        p.model = TSIM_PATH_3GPP_SUBURBAN;
+        CHECK(fabs(tsim_channel_median_loss(&p, at[i].d) - at[i].suburban) < 1e-9);
+        p.model = TSIM_PATH_3GPP_URBAN;
+        CHECK(fabs(tsim_channel_median_loss(&p, at[i].d) - (at[i].suburban + 3.0)) < 1e-9);
+    }
+    p.model = TSIM_PATH_3GPP_SUBURBAN;
+    p.freq_mhz = 868.0;
+    p.height_m = 2.5;
+    CHECK(fabs(tsim_channel_median_loss(&p, 1000) - 137.86944929067553) < 1e-9);
+    /* The shadowing is added the same way whatever the model. */
+    struct tsim_pos a = {0, 0}, b = {1000, 0};
+    CHECK(fabs(tsim_channel_loss(&p, 0, a, 1, b) - tsim_channel_median_loss(&p, 1000) -
+               tsim_channel_shadowing(&p, 0, a, 1, b)) < 1e-9);
+}
+
 int main(void) {
+    RUN(the_3gpp_models_match_meshtasticator);
     RUN(median_loss_follows_log_distance);
     RUN(shadowing_is_symmetric_and_repeatable);
     RUN(shadowing_has_the_configured_spread);

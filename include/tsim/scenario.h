@@ -40,6 +40,7 @@ enum tsim_placement {
     TSIM_PLACEMENT_UNIFORM,
     TSIM_PLACEMENT_GRID,
     TSIM_PLACEMENT_LINE,
+    TSIM_PLACEMENT_FILE, /* where a positions file says */
 };
 
 /* What a plugin's radio settings start from. */
@@ -62,6 +63,10 @@ struct tsim_scenario {
     double width_m; /* uniform */
     double height_m;
     double spacing_m; /* grid and line */
+    /* file: the path as written, and the positions the driver read from it, `nodes` of them, with
+     * tsim_scenario_read_positions(). The scenario does not own them. */
+    char positions_file[256];
+    const struct tsim_pos *positions;
 
     struct tsim_channel_params channel; /* its seed is the run's */
     struct tsim_net_params net;         /* its listen settings and seed are the run's */
@@ -93,12 +98,20 @@ struct tsim_scenario_error {
 bool tsim_scenario_parse(struct tsim_scenario *scenario, const char *text,
                          struct tsim_scenario_error *err);
 
+/* Reads a positions file for a scenario placed from one: a node per line, in node order, as its
+ * x and y in metres separated by spaces or a comma. A '#' starts a comment, and blank lines are
+ * skipped. Returns false, saying which line and why, unless there are exactly `nodes` positions,
+ * each finite and within a billion channel.decorrelation cells of the origin. */
+bool tsim_scenario_read_positions(const struct tsim_scenario *scenario, const char *text,
+                                  struct tsim_pos *out, struct tsim_scenario_error *err);
+
 /* The plugins' names, for messages and reports. */
 const char *tsim_scenario_routing_name(const struct tsim_scenario *scenario);
 const char *tsim_scenario_mac_name(const struct tsim_scenario *scenario);
 
 /* Runs the scenario from start to finish and reports on it. Returns false if it could not be set
- * up: memory ran out, or a plugin refused its configuration. */
+ * up: memory ran out, a plugin refused its configuration, or it is placed from a file and has
+ * no positions. */
 bool tsim_scenario_run(const struct tsim_scenario *scenario, struct tsim_report *report);
 
 #endif

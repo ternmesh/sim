@@ -85,9 +85,12 @@ static double field_correlation(const struct blend *a, const struct blend *b) {
 
 struct tsim_channel_params tsim_channel_default(uint64_t seed) {
     return (struct tsim_channel_params){
+        .model = TSIM_PATH_LOG_DISTANCE,
         .pl0_db = 128.95,
         .d0_m = 1000.0,
         .exponent = 2.32,
+        .freq_mhz = 915.0,
+        .height_m = 1.0,
         .sigma_db = 7.8,
         .node_share = 0.5,
         .decorrelation_m = 100.0,
@@ -99,7 +102,13 @@ double tsim_channel_median_loss(const struct tsim_channel_params *p, double dist
     if (distance_m < 1.0) {
         distance_m = 1.0;
     }
-    return p->pl0_db + 10.0 * p->exponent * log10(distance_m / p->d0_m);
+    if (p->model == TSIM_PATH_LOG_DISTANCE) {
+        return p->pl0_db + 10.0 * p->exponent * log10(distance_m / p->d0_m);
+    }
+    double h = p->height_m;
+    double urban = p->model == TSIM_PATH_3GPP_URBAN ? 3.0 : 0.0;
+    return (44.9 - 6.55 * log10(h)) * (log10(distance_m) - 3.0) + 45.5 +
+           (35.46 - 1.1 * h) * log10(p->freq_mhz) - 13.82 * log10(h) + 0.7 * h + urban;
 }
 
 double tsim_channel_shadowing(const struct tsim_channel_params *p, uint32_t a, struct tsim_pos pa,

@@ -1,5 +1,6 @@
 #include "tsim/scenario.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "tsim/baseline.h"
@@ -159,6 +160,20 @@ static void problems_say_where_they_are(void) {
          0, "mac meshtastic: slot is too long"},
         {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.processing = 2000000 h\n", 4,
          "too long for the clock"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nphy.fading = -1\n", 4, "dB from 0 to 1000"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nphy.pairwise = maybe\n", 4, "yes or no"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nphy.capture_anytime = 1\n", 4, "yes or no"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nphy.cad_margin = nan\n", 4, "dB from -1000"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nphy.cad_delay = 5\n", 4, "expected a time"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nchannel.model = okumura\n", 4,
+         "log_distance, 3gpp_suburban or 3gpp_urban"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nchannel.freq = 0\n", 4, "MHz above 0"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nchannel.height = -1\n", 4, "metres above 0"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nplacement = file\n", 0, "positions is not set"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nmac.busy_chance = 2\n", 4,
+         "fraction from 0 to 1"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.noise = loud\n", 4,
+         "dBm from -1000 to 1000"},
         {"nodes = 2\n\n# a comment\njust some words\n", 4, "key = value"},
         {"nodes = 2\n = 3\n", 2, "no setting"},
         {"nodes = 2\nseed =   # nothing\n", 2, "seed has no value"},
@@ -294,6 +309,88 @@ static void airtime_past_what_a_time_holds_still_adds_up(void) {
     CHECK(rep.duty_mean > 0 && rep.duty_mean <= 1.0);
 }
 
+/* The settings that reproduce LoRaSim's and Meshtasticator's simplifications. */
+static void compatibility_settings_read(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 2\nrouting = meshtastic\nmac = meshtastic\n"
+                    "phy.fading = 2\nphy.pairwise = yes\nphy.capture_anytime = yes\n"
+                    "phy.cad_margin = 3\nphy.cad_delay = 28 ms\n"
+                    "channel.model = 3gpp_suburban\nchannel.freq = 908.75\nchannel.height = 1.5\n"
+                    "routing.noise = -119.25\nmac.busy_chance = 0.1\n"
+                    "placement = file\npositions = here.positions\n"));
+    CHECK(s.net.phy.fading_db == 2 && s.net.phy.pairwise && s.net.phy.capture_anytime);
+    CHECK(s.net.phy.cad_margin_db == 3 && s.net.phy.cad_delay == TSIM_MS(28));
+    CHECK(s.channel.model == TSIM_PATH_3GPP_SUBURBAN);
+    CHECK(s.channel.freq_mhz == 908.75 && s.channel.height_m == 1.5);
+    CHECK(meshtastic_of(&s)->noise_dbm == -119.25);
+    CHECK(meshtastic_mac_of(&s)->busy_chance == 0.1);
+    CHECK(s.placement == TSIM_PLACEMENT_FILE && strcmp(s.positions_file, "here.positions") == 0);
+    CHECK(s.positions == NULL);
+
+    CHECK(parse(&s,
+                "nodes = 2\nrouting = meshtastic\nmac = meshtastic\nchannel.model = 3gpp_urban\n"));
+    CHECK(s.channel.model == TSIM_PATH_3GPP_URBAN && !s.net.phy.pairwise);
+    CHECK(isnan(meshtastic_of(&s)->noise_dbm));
+}
+
+static void positions_read_from_text(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 3\nrouting = flood\nmac = aloha\nplacement = file\npositions = p\n"));
+    struct tsim_pos pos[3];
+    struct tsim_scenario_error err;
+    CHECK(tsim_scenario_read_positions(&s, "# x y\n0 0\n\n 1500.5, -20   # a comment\n3e3 4e3", pos,
+                                       &err));
+    CHECK(pos[0].x == 0 && pos[0].y == 0);
+    CHECK(pos[1].x == 1500.5 && pos[1].y == -20);
+    CHECK(pos[2].x == 3000 && pos[2].y == 4000);
+
+    static const struct {
+        const char *text;
+        int line;
+        const char *says;
+    } bad[] = {
+        {"0 0\n1 1\n", 0, "2 positions for 3 nodes"},
+        {"0 0\n1 1\n2 2\n3 3\n", 4, "more positions than the 3 nodes"},
+        {"0 0\n1\n2 2\n", 2, "x y in metres"},
+        {"0 0\n1 1 1\n2 2\n", 2, "x y in metres"},
+        {"0 0\nnorth south\n2 2\n", 2, "x y in metres"},
+        {"0 0\ninf 1\n2 2\n", 2, "billion"},
+        {"0 0\nnan 1\n2 2\n", 2, "billion"},
+        {"0 0\n1 1e12\n2 2\n", 2, "billion"},
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        bool ok = tsim_scenario_read_positions(&s, bad[i].text, pos, &err);
+        CHECK(!ok);
+        if (!ok && (err.line != bad[i].line || !strstr(err.message, bad[i].says))) {
+            fprintf(stderr, "  case %zu: line %d: %s\n", i, err.line, err.message);
+            CHECK(false);
+        }
+    }
+}
+
+/* A scenario placed from a file runs where its positions say, and not without them. */
+static void a_run_placed_from_a_file_uses_its_positions(void) {
+    struct tsim_scenario s;
+    const char *line =
+        "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
+        "routing = flood\nmac = aloha\ntraffic.interval = 5 min\nduration = 30 min\n";
+    CHECK(parse(&s, line));
+    struct tsim_report want, got;
+    CHECK(tsim_scenario_run(&s, &want));
+
+    char text[2048];
+    snprintf(text, sizeof text, "%s placement = file\npositions = line.positions\n", line);
+    CHECK(parse(&s, text));
+    CHECK(!tsim_scenario_run(&s, &got));
+    struct tsim_pos pos[6];
+    struct tsim_scenario_error err;
+    CHECK(tsim_scenario_read_positions(&s, "0 0\n2000 0\n4000 0\n6000 0\n8000 0\n10000 0\n", pos,
+                                       &err));
+    s.positions = pos;
+    CHECK(tsim_scenario_run(&s, &got));
+    CHECK(same_report(&want, &got));
+}
+
 static void a_run_repeats_with_its_seed(void) {
     struct tsim_scenario s;
     struct tsim_report a, b, c;
@@ -317,6 +414,9 @@ int main(void) {
     RUN(a_run_relays_across_its_map);
     RUN(a_meshtastic_run_floods_a_line);
     RUN(a_run_repeats_with_its_seed);
+    RUN(compatibility_settings_read);
+    RUN(positions_read_from_text);
+    RUN(a_run_placed_from_a_file_uses_its_positions);
     RUN(airtime_past_what_a_time_holds_still_adds_up);
     return CHECK_DONE();
 }

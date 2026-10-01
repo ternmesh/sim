@@ -1,5 +1,7 @@
 #include "tsim/meshtastic.h"
 
+#include <math.h>
+
 #include "tsim/net.h"
 
 #include "check.h"
@@ -277,10 +279,12 @@ static void a_nodes_own_frame_waits_up_to_two_to_the_cw_min_slots(void) {
 }
 
 /* The wait node 1 drew before rebroadcasting what node 0 sent, in slots. */
-static tsim_time relay_wait(enum tsim_meshtastic_role role, double loss, uint64_t seed) {
+static tsim_time relay_wait_by(enum tsim_meshtastic_role role, double loss, double noise_dbm,
+                               uint64_t seed) {
     struct rig r;
     rig_init(&r);
     r.rc.role = role;
+    r.rc.noise_dbm = noise_dbm;
     build(&r, 3, seed);
     link(&r, 0, 1, loss);
     link(&r, 1, 2, LOSS_LOUD);
@@ -295,6 +299,10 @@ static tsim_time relay_wait(enum tsim_meshtastic_role role, double loss, uint64_
     tsim_time slot = r.mc.window.slot;
     CHECK(wait % slot == 0);
     return wait / slot;
+}
+
+static tsim_time relay_wait(enum tsim_meshtastic_role role, double loss, uint64_t seed) {
+    return relay_wait_by(role, loss, NAN, seed);
 }
 
 static void a_rebroadcast_waits_longer_the_louder_it_was_heard(void) {
@@ -313,6 +321,37 @@ static void a_rebroadcast_waits_longer_the_louder_it_was_heard(void) {
     }
     CHECK(loud_max > 16 + 8);
     CHECK(faint_max > 16);
+}
+
+/* Reckoned from a noise floor 31 dB under its RSSI, a faint rebroadcast waits as a loud one does.
+ */
+static void a_rebroadcasts_snr_can_be_reckoned_from_a_fixed_noise_floor(void) {
+    double noise = 14.0 - LOSS_FAINT - 31.0;
+    tsim_time most = 0;
+    for (uint64_t seed = 1; seed <= 40; seed++) {
+        tsim_time w = relay_wait_by(TSIM_MESHTASTIC_CLIENT, LOSS_FAINT, noise, seed);
+        CHECK(w >= 16 && w <= 16 + 256);
+        most = w > most ? w : most;
+    }
+    CHECK(most > 16 + 8); /* past the faint window's 8 slots */
+}
+
+/* How many frames node 0 sends in a minute, when the channel looks busy with this chance. */
+static uint64_t sent_when_busy(double chance) {
+    struct rig r;
+    rig_init(&r);
+    r.mc.busy_chance = chance;
+    line(&r, 2, 1);
+    tsim_net_originate(r.net, 0, TSIM_BROADCAST, 10);
+    tsim_sched_run_until(r.sched, TSIM_S(60));
+    uint64_t sent = frames(&r, 0, TSIM_PURPOSE_DATA);
+    rig_close(&r);
+    return sent;
+}
+
+static void outside_traffic_holds_the_mac_off(void) {
+    CHECK_EQ_U64(sent_when_busy(1.0), 0);
+    CHECK_EQ_U64(sent_when_busy(0.5), 1);
 }
 
 /* Node 1 has a frame of its own to send while node 0's long frame is coming in: it waits for it. */
@@ -382,6 +421,12 @@ static void bad_configs_are_refused(void) {
     rig_init(&r);
     r.rc.processing = TSIM_MESHTASTIC_WAIT_MAX + 1;
     CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
+    rig_init(&r);
+    r.rc.noise_dbm = INFINITY;
+    CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
+    rig_init(&r);
+    r.mc.busy_chance = 1.5;
+    CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
     tsim_sched_destroy(sched);
 }
 
@@ -435,6 +480,8 @@ int main(void) {
     RUN(a_busy_channel_always_moves_the_wait_on);
     RUN(a_nodes_own_frame_waits_up_to_two_to_the_cw_min_slots);
     RUN(a_rebroadcast_waits_longer_the_louder_it_was_heard);
+    RUN(a_rebroadcasts_snr_can_be_reckoned_from_a_fixed_noise_floor);
+    RUN(outside_traffic_holds_the_mac_off);
     RUN(the_mac_holds_off_while_the_radio_is_receiving);
     RUN(a_seed_repeats_a_run);
     RUN(bad_configs_are_refused);
