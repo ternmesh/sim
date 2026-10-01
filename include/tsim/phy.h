@@ -114,9 +114,9 @@ struct tsim_phy_stats {
     uint64_t rx_lost;      /* decoded to the end, then failed on interference */
     uint64_t rx_preempted; /* taken by a louder frame during the preamble */
     uint64_t rx_aborted;   /* cut short by transmitting or retuning */
-    /* Frames it could have decoded that began while it was receiving another, and did not take it.
-     * One that the radio still catches when that reception ends, early enough in its preamble, is
-     * counted here and again by how that reception ends. */
+    /* Frames it could have decoded that began while it was receiving another, and that it neither
+     * took nor caught when that reception ended, early enough in their preamble. With the four
+     * above, each frame a radio could have decoded and was not sending over counts once. */
     uint64_t rx_missed;
     /* Time spent on frames it was receiving, however each reception ended: what the radio was busy
      * with, which is all a radio's own channel utilisation counter can know of what it heard. */

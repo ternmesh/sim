@@ -233,9 +233,12 @@ struct awaiting {
     uint32_t id;
     uint8_t retries; /* left */
     bool acked;      /* polling: an acknowledgement has come, to be noticed when the wait ends */
-    uint64_t handle; /* of its frame in the queue or on the air, or 0 once sent */
     struct tsim_timer *timer;
     struct tsim_tx tx;
+    /* Its copies in the queue or on the air. Waiting from the queue, a retry can be queued before
+     * the copy ahead of it has gone, so there can be one for every send, retries + 1. */
+    uint16_t queued_count;
+    uint64_t queued[];
 };
 
 struct router {
@@ -391,8 +394,11 @@ static void finish(struct awaiting *a) {
  * queue refuses it, it waits as though it had gone. */
 static void send_awaited(struct awaiting *a) {
     struct router *r = a->owner;
-    a->handle = tsim_node_send(r->node, &a->tx);
-    if (a->handle == 0 || r->config.ack_poll) {
+    uint64_t handle = tsim_node_send(r->node, &a->tx);
+    if (handle) {
+        a->queued[a->queued_count++] = handle;
+    }
+    if (handle == 0 || r->config.ack_poll) {
         tsim_timer_start(a->timer, ack_wait(r, &a->tx));
     }
 }
@@ -410,9 +416,8 @@ static void ack_timeout(void *ctx) {
 static void acknowledged(struct router *r, uint32_t id) {
     for (struct awaiting *a = r->awaiting; a; a = a->next) {
         if (a->id == id) {
-            if (a->handle) {
-                withdraw(r, a->handle);
-                a->handle = 0;
+            while (a->queued_count > 0) {
+                withdraw(r, a->queued[--a->queued_count]);
             }
             if (r->config.ack_poll) {
                 a->acked = true;
@@ -441,7 +446,7 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
         tsim_node_finished(r->node, id);
         return true;
     }
-    struct awaiting *a = calloc(1, sizeof *a);
+    struct awaiting *a = calloc(1, sizeof *a + ((size_t)r->config.retries + 1) * sizeof(uint64_t));
     if (a) {
         a->timer = tsim_timer_create(r->node, ack_timeout, a);
     }
@@ -549,12 +554,14 @@ static void router_tx_done(void *self, uint64_t handle) {
         }
     }
     for (struct awaiting *a = r->awaiting; a; a = a->next) {
-        if (a->handle == handle) {
-            a->handle = 0;
-            if (!r->config.ack_poll) {
-                tsim_timer_start(a->timer, ack_wait(r, &a->tx));
+        for (uint16_t i = 0; i < a->queued_count; i++) {
+            if (a->queued[i] == handle) {
+                a->queued[i] = a->queued[--a->queued_count];
+                if (!r->config.ack_poll) {
+                    tsim_timer_start(a->timer, ack_wait(r, &a->tx));
+                }
+                return;
             }
-            return;
         }
     }
 }

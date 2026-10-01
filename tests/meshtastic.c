@@ -398,6 +398,65 @@ static void polling_waits_from_the_queue_and_notices_an_acknowledgement_at_the_e
     CHECK(f.count == 1 && f.at == 2 * quiet_ack_wait());
 }
 
+/* A MAC that sends only when the test does. */
+static void *idle_create(struct tsim_node *node, const void *config) {
+    (void)config;
+    return node;
+}
+
+static void idle_destroy(void *self) { (void)self; }
+
+static void idle_kick(void *self) { (void)self; }
+
+static const struct tsim_mac idle_mac = {
+    .name = "idle",
+    .create = idle_create,
+    .destroy = idle_destroy,
+    .kick = idle_kick,
+};
+
+/* Polling, node 0's direct message times out twice while its first copy is still queued, so three
+ * copies wait. The first goes, node 1 acknowledges it, and that has to take back both the others,
+ * not only the latest: cancelling them at once, or, cancelling late, as each comes to be sent. */
+static void an_acknowledgement_takes_back_every_queued_copy(bool cancel_late) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.ack_poll = true;
+    r.rc.cancel_late = cancel_late;
+    struct tsim_net_params p = tsim_net_defaults(1);
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 2, &tsim_meshtastic, &r.rc, &idle_mac, NULL);
+    link(&r, 0, 1, LOSS_LOUD);
+    tsim_net_start(r.net);
+    struct tsim_node *n0 = tsim_net_node(r.net, 0);
+    struct tsim_node *n1 = tsim_net_node(r.net, 1);
+    uint64_t m = tsim_net_originate(r.net, 0, 1, 10);
+    tsim_sched_run_until(r.sched, 2 * quiet_ack_wait() + TSIM_MS(1));
+    CHECK(tsim_node_queue_length(n0) == 3);
+
+    CHECK(tsim_node_transmit(n0));
+    tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + airtime(TSIM_MESHTASTIC_OVERHEAD + 10) +
+                                      TSIM_MS(1));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    CHECK(tsim_node_transmit(n1)); /* the acknowledgement */
+    tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + airtime(TSIM_MESHTASTIC_OVERHEAD + 4) +
+                                      TSIM_MS(1));
+    if (cancel_late) {
+        CHECK(tsim_node_queue_length(n0) == 2);
+        CHECK(!tsim_node_transmit(n0));
+        CHECK(!tsim_node_transmit(n0));
+    }
+    CHECK(tsim_node_queue_length(n0) == 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->cancelled, 2);
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 1);
+    rig_close(&r);
+}
+
+static void an_acknowledgement_takes_back_every_queued_copy_now_or_late(void) {
+    an_acknowledgement_takes_back_every_queued_copy(false);
+    an_acknowledgement_takes_back_every_queued_copy(true);
+}
+
 /* Five clients that all hear each other: once the first rebroadcast has been heard, the other
  * three are no longer wanted. Are they still queued, and how many were cancelled, then and at the
  * end? */
@@ -607,6 +666,7 @@ int main(void) {
     RUN(a_message_is_finished_when_acknowledged_or_given_up_on);
     RUN(polling_waits_from_the_queue_and_notices_an_acknowledgement_at_the_end);
     RUN(cancelling_late_waits_for_the_frames_turn);
+    RUN(an_acknowledgement_takes_back_every_queued_copy_now_or_late);
     RUN(a_seed_repeats_a_run);
     RUN(bad_configs_are_refused);
     RUN(the_longest_window_fits_the_clock);

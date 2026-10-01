@@ -23,10 +23,13 @@ struct node {
     enum radio_state state;
     uint16_t channel;
     struct tsim_lora tuned;
-    uint64_t frame;         /* RECEIVE: the frame it is on; TRANSMIT: the frame it is sending */
-    double frame_dbm;       /* RECEIVE: that frame's power here */
-    tsim_time since;        /* RECEIVE: when it started listening to that frame */
-    tsim_time lock_at;      /* RECEIVE: until then, a louder frame can take the receiver */
+    uint64_t frame;    /* RECEIVE: the frame it is on; TRANSMIT: the frame it is sending */
+    double frame_dbm;  /* RECEIVE: that frame's power here */
+    tsim_time since;   /* RECEIVE: when it started listening to that frame */
+    tsim_time lock_at; /* RECEIVE: until then, a louder frame can take the receiver */
+    /* When its present run of receptions began - a louder frame taking over does not end one - or
+     * NEVER outside one. A frame that began since then was missed, and is counted so. */
+    tsim_time receiving_since;
     struct tsim_event wake; /* TRANSMIT: the frame's end; RETUNE: listening again */
     struct tsim_phy_stats stats;
 };
@@ -53,6 +56,8 @@ struct tsim_phy {
     uint64_t first_id; /* the id of air[head] */
     uint64_t next_id;
 };
+
+#define NEVER INT64_MAX
 
 static double mw(double dbm) { return pow(10.0, dbm / 10.0); }
 
@@ -103,6 +108,9 @@ static void count_reception(struct node *nd) {
 
 static void sync_to(struct node *nd, const struct tsim_frame *f, double dbm) {
     tsim_time now = tsim_sched_now(nd->phy->sched);
+    if (nd->receiving_since == NEVER) {
+        nd->receiving_since = now;
+    }
     nd->state = RECEIVE;
     nd->frame = f->id;
     nd->frame_dbm = dbm;
@@ -131,7 +139,14 @@ static void listen(struct node *nd) {
         }
     }
     if (best) {
+        /* Caught after all, its preamble not yet over: it counts by how this reception ends, not
+         * as missed too. */
+        if (best->start >= nd->receiving_since) {
+            nd->stats.rx_missed--;
+        }
         sync_to(nd, best, best_dbm);
+    } else {
+        nd->receiving_since = NEVER;
     }
 }
 
@@ -150,6 +165,7 @@ static void begin_retune(struct node *nd) {
         return;
     }
     nd->state = RETUNE;
+    nd->receiving_since = NEVER;
     nd->wake = tsim_sched_after(phy->sched, phy->params.retune, retune_done, nd);
 }
 
@@ -368,6 +384,7 @@ struct tsim_phy *tsim_phy_create(struct tsim_sched *sched, const struct tsim_phy
             .state = LISTEN,
             .channel = channel,
             .tuned = *listen_on,
+            .receiving_since = NEVER,
         };
     }
     return phy;
@@ -453,6 +470,7 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
         tsim_sched_cancel(phy->sched, tx->wake);
     }
     tx->state = TRANSMIT;
+    tx->receiving_since = NEVER;
     tx->frame = f->id;
     tx->wake = end;
     tx->stats.tx++;

@@ -261,6 +261,127 @@ static void missed_counts_only_frames_it_could_have_decoded(void) {
     world_free(w);
 }
 
+/* B begins 1 ms before A ends, while node 0 is on A: missed then, but caught when A ends, early in
+ * its preamble. It counts once, as received. */
+static void a_frame_caught_after_all_is_not_missed(void) {
+    struct world *w = world_new(3, NULL);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -80.0);
+    struct send a;
+    struct send b;
+    send_at(w, &a, 0, 1, &w->sf7);
+    send_at(w, &b, SF7_FRAME - TSIM_MS(1), 2, &w->sf7);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(received(w, 0, 1) && received(w, 0, 2));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_ok, 2);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_missed, 0);
+    world_free(w);
+}
+
+/* The same, but node 0 is sending A: B was never counted missed, so catching it takes nothing
+ * back. */
+static void a_frame_caught_after_sending_was_never_missed(void) {
+    struct world *w = world_new(3, NULL);
+    arrive(w, 2, 0, -80.0);
+    struct send a;
+    struct send b;
+    send_at(w, &a, 0, 0, &w->sf7);
+    send_at(w, &b, SF7_FRAME - TSIM_MS(1), 2, &w->sf7);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(received(w, 0, 2));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_ok, 1);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_missed, 0);
+    world_free(w);
+}
+
+static void tune_now(struct tsim_sched *s, void *ctx);
+
+/* Node 0 gives up A to send its own frame; B begins in the last 1 ms of it, while node 0 is
+ * sending, so it was never missed, and catching it takes nothing back. */
+static void a_send_ends_a_run_of_receptions(void) {
+    struct world *w = world_new(3, NULL);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -80.0);
+    struct send a;
+    struct send own;
+    struct send b;
+    send_at(w, &a, 0, 1, &w->sf7);
+    send_at(w, &own, TSIM_MS(10), 0, &w->sf7);
+    send_at(w, &b, TSIM_MS(10) + SF7_FRAME - TSIM_MS(1), 2, &w->sf7);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(received(w, 0, 3));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_aborted, 1);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_missed, 0);
+    world_free(w);
+}
+
+/* Node 0 has finished with A and is listening on SF7 when B begins on SF9; it retunes, at no cost,
+ * in time to catch B. B began while it was idle, not receiving, so it was never missed. */
+static void listening_ends_a_run_of_receptions(void) {
+    struct tsim_phy_params p = tsim_phy_defaults();
+    p.retune = 0;
+    struct world *w = world_new(3, &p);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -80.0);
+    struct send a;
+    struct send b;
+    send_at(w, &a, 0, 1, &w->sf7);
+    send_at(w, &b, SF7_FRAME + TSIM_MS(10), 2, &w->sf9);
+    tsim_sched_at(w->sched, SF7_FRAME + TSIM_MS(11), tune_now, w);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(received(w, 0, 1) && received(w, 0, 2));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_missed, 0);
+    world_free(w);
+}
+
+/* Node 0 leaves A to retune to SF9, deaf for 1 ms, and B begins on SF9 in that millisecond: it was
+ * never missed, so catching it when the retune ends takes nothing back. */
+static void a_retune_ends_a_run_of_receptions(void) {
+    struct world *w = world_new(3, NULL);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -80.0);
+    struct send a;
+    struct send b;
+    send_at(w, &a, 0, 1, &w->sf7);
+    tsim_sched_at(w->sched, TSIM_MS(10), tune_now, w);
+    send_at(w, &b, TSIM_US(10500), 2, &w->sf9);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(received(w, 0, 2));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_aborted, 1);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_missed, 0);
+    world_free(w);
+}
+
+/* A louder frame taking the receiver does not start a new run. X, with a long preamble, begins
+ * while node 0 is on A and is missed; then B, short and 10 dB louder, takes the receiver; when B
+ * ends, X's preamble still has time to run and node 0 catches it. X began in the run, so it is
+ * taken back from missed. */
+static void a_capture_continues_a_run_of_receptions(void) {
+    struct tsim_phy_params p = tsim_phy_defaults();
+    p.capture_anytime = true;
+    struct world *w = world_new(4, &p);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -80.0);
+    arrive(w, 3, 0, -70.0);
+    struct tsim_lora long_preamble = w->sf7;
+    long_preamble.preamble = 32;
+    struct tsim_lora short_preamble = w->sf7;
+    short_preamble.preamble = 6;
+    struct send a;
+    struct send x;
+    struct send b;
+    send_at(w, &a, 0, 1, &w->sf7);
+    send_at(w, &x, TSIM_MS(10), 2, &long_preamble);
+    send_at(w, &b, TSIM_MS(11), 3, &short_preamble);
+    b.len = 1; /* 23.25 symbols, so it ends inside X's 31.25 */
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(received(w, 0, 3));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_preempted, 1);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_ok + tsim_phy_stats(w->phy, 0)->rx_lost, 2);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_missed, 0);
+    world_free(w);
+}
+
 static void quieter_late_frame_is_survived(void) {
     struct world *w = world_new(3, NULL);
     arrive(w, 1, 0, -70.0);
@@ -779,6 +900,12 @@ int main(void) {
     RUN(louder_frame_during_the_preamble_takes_the_receiver);
     RUN(slightly_louder_frame_does_not_take_the_receiver);
     RUN(missed_counts_only_frames_it_could_have_decoded);
+    RUN(a_frame_caught_after_all_is_not_missed);
+    RUN(a_frame_caught_after_sending_was_never_missed);
+    RUN(a_send_ends_a_run_of_receptions);
+    RUN(listening_ends_a_run_of_receptions);
+    RUN(a_retune_ends_a_run_of_receptions);
+    RUN(a_capture_continues_a_run_of_receptions);
     RUN(quieter_late_frame_is_survived);
     RUN(interference_is_summed);
     RUN(interference_is_weighted_by_overlap);

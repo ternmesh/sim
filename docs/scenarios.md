@@ -130,7 +130,7 @@ The run's CPU time goes to stderr, because it differs between runs.
 | `airtime_s`, `frames` | totals, broken down by declared purpose: data, relay, control, announce |
 | `queue_dropped` | frames refused because a node's queue was full |
 | `rx_ok`, `rx_lost`, `rx_preempted`, `rx_aborted` | reception outcomes summed over every radio; see `tsim/phy.h` |
-| `rx_missed` | frames a radio could have decoded that began while it was receiving another, summed over every radio |
+| `rx_missed` | frames a radio could have decoded that began while it was receiving another, and that it never caught, summed over every radio; with the four above, each frame counts once at each radio |
 
 Unicast and broadcast are reported separately. A broadcast has a destination in every other node,
 so in a combined total broadcasts would swamp the unicasts, and unicast is what path routing is
