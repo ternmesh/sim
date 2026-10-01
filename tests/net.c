@@ -389,35 +389,116 @@ static void send_refuses_what_cannot_go_on_air(void) {
     rig_close(&r);
 }
 
+/* Puts message `msg` on the air from `from`, as a frame carrying its content and nothing else, and
+ * lets it arrive. */
+static bool carry(struct rig *r, uint32_t from, uint64_t msg) {
+    const struct tsim_message *m = &tsim_net_message(r->net, msg)->msg;
+    struct tsim_tx tx = frame(TSIM_PURPOSE_DATA, 0, m->len);
+    memcpy(tx.bytes, m->content, m->len);
+    tx.carries = msg;
+    bool queued = tsim_node_send(tsim_net_node(r->net, from), &tx) != 0;
+    bool sent = tsim_node_transmit(tsim_net_node(r->net, from));
+    run_for(r, TSIM_S(1));
+    return queued && sent;
+}
+
 static void delivery_counts_each_destination_once(void) {
     struct rig r;
     rig_open(&r, tsim_net_defaults(1), 4);
+    tsim_phy_set_loss(tsim_net_phy(r.net), 0, 2, 100.0);
+    tsim_phy_set_loss(tsim_net_phy(r.net), 0, 3, 100.0);
     uint64_t u = tsim_net_originate(r.net, 0, 2, 5);
-    run_for(&r, TSIM_MS(1));
-    CHECK(!tsim_node_deliver(tsim_net_node(r.net, 1), u)); /* not its destination */
+    CHECK(carry(&r, 0, u));
+    tsim_time t = tsim_sched_now(r.sched);
+    CHECK(!tsim_node_deliver(tsim_net_node(r.net, 1), u)); /* holds it, not its destination */
     CHECK(tsim_node_deliver(tsim_net_node(r.net, 2), u));
     CHECK(!tsim_node_deliver(tsim_net_node(r.net, 2), u));
     const struct tsim_message_record *m = tsim_net_message(r.net, u);
     CHECK(m->wanted == 1 && m->delivered == 1);
-    CHECK_EQ_I64(m->first, TSIM_MS(1));
+    CHECK_EQ_I64(m->first, t);
 
     uint64_t b = tsim_net_originate(r.net, 0, TSIM_BROADCAST, 5);
     CHECK(!tsim_node_deliver(tsim_net_node(r.net, 0), b)); /* its source */
-    run_for(&r, TSIM_MS(1));
+    CHECK(carry(&r, 0, b));
+    t = tsim_sched_now(r.sched);
     CHECK(tsim_node_deliver(tsim_net_node(r.net, 1), b));
     run_for(&r, TSIM_MS(1));
     CHECK(tsim_node_deliver(tsim_net_node(r.net, 3), b));
     CHECK(!tsim_node_deliver(tsim_net_node(r.net, 1), b));
     m = tsim_net_message(r.net, b);
     CHECK(m->wanted == 3 && m->delivered == 2);
-    CHECK_EQ_I64(m->first, TSIM_MS(2));
-    CHECK_EQ_I64(m->last, TSIM_MS(3));
+    CHECK_EQ_I64(m->first, t);
+    CHECK_EQ_I64(m->last, t + TSIM_MS(1));
 
     CHECK(!tsim_node_deliver(tsim_net_node(r.net, 1), 0));
     CHECK(!tsim_node_deliver(tsim_net_node(r.net, 1), 3));
     CHECK(tsim_net_message(r.net, 3) == NULL);
     CHECK_EQ_U64(tsim_net_stats(r.net, 1)->delivered, 1);
     CHECK_EQ_U64(tsim_net_stats(r.net, 2)->delivered, 1);
+    rig_close(&r);
+}
+
+/* Message ids are sequential, so a plugin could name every one; naming one is not having it. */
+static void delivery_needs_the_message_to_have_arrived(void) {
+    struct rig r;
+    rig_open(&r, tsim_net_defaults(1), 3);
+    uint64_t to1 = tsim_net_originate(r.net, 0, 1, 5);
+    uint64_t to2 = tsim_net_originate(r.net, 0, 2, 5);
+    for (uint64_t id = 0; id <= 10; id++) {
+        CHECK(!tsim_node_deliver(tsim_net_node(r.net, 1), id));
+        CHECK(!tsim_node_deliver(tsim_net_node(r.net, 2), id));
+    }
+    CHECK(tsim_net_message(r.net, to1)->delivered == 0);
+
+    /* A frame with the content in it, but not marked as carrying the message, does not count. */
+    const struct tsim_message *m = &tsim_net_message(r.net, to1)->msg;
+    struct tsim_tx bare = frame(TSIM_PURPOSE_DATA, 0, m->len);
+    memcpy(bare.bytes, m->content, m->len);
+    tsim_node_send(tsim_net_node(r.net, 0), &bare);
+    tsim_node_transmit(tsim_net_node(r.net, 0));
+    run_for(&r, TSIM_S(1));
+    CHECK(r.log.rx[1] == 1);
+    CHECK(!tsim_node_deliver(tsim_net_node(r.net, 1), to1));
+
+    CHECK(carry(&r, 0, to1));
+    CHECK(tsim_node_deliver(tsim_net_node(r.net, 1), to1));
+    CHECK(!tsim_node_deliver(tsim_net_node(r.net, 2), to2)); /* out of range: never had it */
+    CHECK_EQ_U64(tsim_net_stats(r.net, 2)->delivered, 0);
+    rig_close(&r);
+}
+
+static void a_frame_must_carry_what_it_claims(void) {
+    struct rig r;
+    rig_open(&r, tsim_net_defaults(1), 2);
+    uint64_t id = tsim_net_originate(r.net, 0, 1, 8);
+    const struct tsim_message *m = &tsim_net_message(r.net, id)->msg;
+    struct tsim_node *n0 = tsim_net_node(r.net, 0);
+    struct tsim_tx tx = frame(TSIM_PURPOSE_DATA, 0, 12);
+    memcpy(tx.bytes + 4, m->content, 8);
+    tx.carries = id;
+    tx.carries_at = 4;
+
+    struct tsim_tx wrong = tx;
+    wrong.bytes[7] ^= 1;
+    CHECK_EQ_U64(tsim_node_send(n0, &wrong), 0);
+    struct tsim_tx short_frame = tx;
+    short_frame.len = 11; /* one byte of content missing */
+    CHECK_EQ_U64(tsim_node_send(n0, &short_frame), 0);
+    struct tsim_tx past_end = tx;
+    past_end.carries_at = 13;
+    CHECK_EQ_U64(tsim_node_send(n0, &past_end), 0);
+    struct tsim_tx unknown = tx;
+    unknown.carries = 99;
+    CHECK_EQ_U64(tsim_node_send(n0, &unknown), 0);
+    /* The right bytes from a node that never received them. */
+    CHECK_EQ_U64(tsim_node_send(tsim_net_node(r.net, 1), &tx), 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->queued, 0);
+
+    CHECK(tsim_node_send(n0, &tx) != 0);
+    /* Once it has arrived, the receiver may forward it too. */
+    CHECK(tsim_node_transmit(n0));
+    run_for(&r, TSIM_S(1));
+    CHECK(tsim_node_send(tsim_net_node(r.net, 1), &tx) != 0);
     rig_close(&r);
 }
 
@@ -465,6 +546,8 @@ int main(void) {
     RUN(a_full_queue_drops);
     RUN(send_refuses_what_cannot_go_on_air);
     RUN(delivery_counts_each_destination_once);
+    RUN(delivery_needs_the_message_to_have_arrived);
+    RUN(a_frame_must_carry_what_it_claims);
     RUN(streams_are_separate_and_repeatable);
     RUN(timers_fire_once_at_their_time);
     RUN(a_timer_may_destroy_itself_when_it_fires);

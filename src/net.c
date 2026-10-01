@@ -36,8 +36,14 @@ struct tsim_timer {
 
 struct record {
     struct tsim_message_record r;
+    uint8_t *content; /* r.msg.content points here */
+    uint8_t *held;    /* nodes that hold it: one bit per node */
     uint8_t *got; /* a broadcast's destinations that have it: one bit per node, made on first use */
 };
+
+static bool bit_get(const uint8_t *bits, uint32_t i) { return bits[i / 8] & (1u << (i % 8)); }
+
+static void bit_set(uint8_t *bits, uint32_t i) { bits[i / 8] |= (uint8_t)(1u << (i % 8)); }
 
 struct tsim_net {
     struct tsim_sched *sched;
@@ -65,6 +71,9 @@ static void on_rx(void *ctx, uint32_t node, const struct tsim_frame *frame, doub
         .rssi_dbm = rssi_dbm,
         .snr_db = snr_db,
     };
+    if (sent->tx.carries) {
+        bit_set(net->messages[sent->tx.carries - 1].held, node);
+    }
     struct tsim_node *nd = &net->nodes[node];
     net->routing->rx(nd->routing, &rx);
     net->mac->kick(nd->mac);
@@ -162,6 +171,8 @@ void tsim_net_destroy(struct tsim_net *net) {
     }
     tsim_phy_destroy(net->phy);
     for (size_t i = 0; i < net->message_count; i++) {
+        free(net->messages[i].content);
+        free(net->messages[i].held);
         free(net->messages[i].got);
     }
     free(net->messages);
@@ -193,15 +204,37 @@ uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, ui
         net->messages = grown;
         net->message_cap = cap;
     }
+    uint64_t id = net->message_count + 1;
+    uint8_t *content = malloc(len ? len : 1);
+    uint8_t *held = calloc((net->n + 7) / 8, 1);
+    if (!content || !held) {
+        free(content);
+        free(held);
+        return 0;
+    }
+    /* Random, so that no plugin can produce a message's content without having received it. Its
+     * own stream space, apart from every node's. */
+    struct tsim_rng rng;
+    tsim_rng_init(&rng, net->params.seed, UINT64_C(0xC0) << 56 | id);
+    for (uint32_t i = 0; i < len; i += 8) {
+        uint64_t r = tsim_rng_next(&rng);
+        for (uint32_t k = i; k < len && k < i + 8; k++) {
+            content[k] = (uint8_t)(r >> (8 * (k - i)));
+        }
+    }
+    bit_set(held, src);
     struct tsim_message msg = {
-        .id = net->message_count + 1,
+        .id = id,
         .src = src,
         .dst = dst,
         .len = len,
         .created = tsim_sched_now(net->sched),
+        .content = content,
     };
     net->messages[net->message_count++] = (struct record){
         .r = {.msg = msg, .wanted = dst == TSIM_BROADCAST ? net->n - 1 : 1},
+        .content = content,
+        .held = held,
     };
     if (!net->routing->originate(net->nodes[src].routing, &msg)) {
         net->messages[msg.id - 1].r.refused = true;
@@ -299,10 +332,30 @@ void tsim_node_rng(const struct tsim_node *node, enum tsim_stream stream, struct
     tsim_rng_init(rng, node->net->params.seed, ((uint64_t)stream << 32) | node->index);
 }
 
+/* The record of a message the node holds, or NULL. */
+static struct record *held_by(const struct tsim_node *nd, uint64_t msg) {
+    struct tsim_net *net = nd->net;
+    if (msg == 0 || msg > net->message_count || !bit_get(net->messages[msg - 1].held, nd->index)) {
+        return NULL;
+    }
+    return &net->messages[msg - 1];
+}
+
+/* A frame that names a message must come from a node holding it and contain its content. */
+static bool carries_what_it_claims(const struct tsim_node *nd, const struct tsim_tx *tx) {
+    if (tx->carries == 0) {
+        return true;
+    }
+    const struct record *rec = held_by(nd, tx->carries);
+    uint32_t len = rec ? rec->r.msg.len : 0;
+    return rec && tx->carries_at <= tx->len && len <= tx->len - tx->carries_at &&
+           memcmp(tx->bytes + tx->carries_at, rec->content, len) == 0;
+}
+
 uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
     struct tsim_net *net = nd->net;
     if ((int)tx->purpose < 0 || tx->purpose >= TSIM_PURPOSE_COUNT || tx->len > TSIM_FRAME_MAX ||
-        tsim_lora_airtime(&tx->lora, tx->len) < 0) {
+        tsim_lora_airtime(&tx->lora, tx->len) < 0 || !carries_what_it_claims(nd, tx)) {
         return 0;
     }
     if (net->params.queue_limit && nd->queue_len >= net->params.queue_limit) {
@@ -352,10 +405,10 @@ bool tsim_node_cancel(struct tsim_node *nd, uint64_t handle) {
 bool tsim_node_deliver(struct tsim_node *nd, uint64_t msg) {
     struct tsim_net *net = nd->net;
     uint32_t node = nd->index;
-    if (msg == 0 || msg > net->message_count) {
+    struct record *rec = held_by(nd, msg);
+    if (!rec) {
         return false;
     }
-    struct record *rec = &net->messages[msg - 1];
     const struct tsim_message *m = &rec->r.msg;
     if (m->dst == TSIM_BROADCAST) {
         if (node == m->src) {

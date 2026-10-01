@@ -133,6 +133,9 @@ static bool flood_originate(void *self, const struct tsim_message *msg) {
     put32(tx.bytes + 4, msg->src);
     put32(tx.bytes + 8, msg->dst);
     tx.bytes[12] = fl->config.hops;
+    memcpy(tx.bytes + TSIM_FLOOD_HEADER, msg->content, msg->len);
+    tx.carries = msg->id;
+    tx.carries_at = TSIM_FLOOD_HEADER;
     tx.len = TSIM_FLOOD_HEADER + msg->len;
     tsim_node_send(fl->node, &tx);
     return true;
@@ -159,6 +162,8 @@ static void flood_rx(void *self, const struct tsim_rx *rx) {
     memcpy(tx.bytes, rx->bytes, rx->len);
     tx.bytes[12] = (uint8_t)(hops - 1);
     tx.len = rx->len;
+    tx.carries = id;
+    tx.carries_at = TSIM_FLOOD_HEADER;
     tsim_node_send(fl->node, &tx);
 }
 

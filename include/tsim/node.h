@@ -31,7 +31,11 @@
  *  - every frame goes on the air through the queue and is charged to the airtime ledger when it
  *    does, under the purpose its sender declared. A plugin can misfile airtime but not hide it:
  *    the totals count every frame;
- *  - a message is delivered at most once to each of its destinations, and only to them.
+ *  - a message is delivered at most once to each of its destinations, only to them, and only by a
+ *    node that holds it. A node holds a message once it has originated it or received a frame
+ *    that carried it, and a frame carries a message only if the message's content is in its
+ *    bytes - the network checks - so a plugin cannot deliver what never reached it, and cannot
+ *    claim to forward a message in a frame too short to hold it.
  *
  * The driver's side - building the network, setting losses, reading the books - is tsim/net.h. */
 
@@ -54,6 +58,10 @@ struct tsim_tx {
     double tx_dbm;
     enum tsim_purpose purpose;
     uint8_t priority; /* higher goes first; equal priorities go in the order queued */
+    /* The message this frame carries, whose content is at bytes[carries_at], or 0 for none. The
+     * sender must hold it. Receivers that decode the frame then hold it too. */
+    uint64_t carries;
+    uint32_t carries_at;
     uint32_t len;
     uint8_t bytes[TSIM_FRAME_MAX];
 };
@@ -68,15 +76,17 @@ struct tsim_rx {
     double snr_db;
 };
 
-/* A message the application at `src` hands its routing: `len` bytes for `dst`, or for every
- * other node when `dst` is TSIM_BROADCAST. The id is from 1 in the order messages were made; a
- * plugin carries it on the air in whatever field it would carry a packet id in. */
+/* A message the application at `src` hands its routing: `len` bytes of content for `dst`, or for
+ * every other node when `dst` is TSIM_BROADCAST. The id is from 1 in the order messages were made;
+ * a plugin carries it on the air in whatever field it would carry a packet id in. The content is
+ * random bytes the network made, and a frame that carries the message carries them. */
 struct tsim_message {
     uint64_t id;
     uint32_t src;
     uint32_t dst;
     uint32_t len;
     tsim_time created;
+    const uint8_t *content; /* valid for the call it is passed to */
 };
 
 struct tsim_node;
@@ -145,15 +155,16 @@ void tsim_node_rng(const struct tsim_node *node, enum tsim_stream stream, struct
 /* --- What routing calls --- */
 
 /* Queues a frame. Returns a handle, or 0 if the frame is invalid (no airtime for that modulation
- * and length, or an unknown purpose) or the queue is full, which counts as a drop. */
+ * and length, an unknown purpose, or a message it claims to carry that the node does not hold or
+ * whose content is not where it says) or the queue is full, which counts as a drop. */
 uint64_t tsim_node_send(struct tsim_node *node, const struct tsim_tx *tx);
 
 /* Takes a frame back out of the queue. Returns false once it is on the air, or if it never was
  * queued. */
 bool tsim_node_cancel(struct tsim_node *node, uint64_t handle);
 
-/* Hands a message to this node's application. Returns true if this delivered it: the node is one
- * of its destinations and had not had it yet. */
+/* Hands a message to this node's application. Returns true if this delivered it: the node holds
+ * the message, is one of its destinations, and had not had it yet. */
 bool tsim_node_deliver(struct tsim_node *node, uint64_t msg);
 
 /* --- What the MAC calls --- */
