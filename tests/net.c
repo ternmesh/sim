@@ -239,7 +239,86 @@ static void cancel_takes_back_only_what_is_queued(void) {
     const struct tsim_net_stats *s = tsim_net_stats(r.net, 0);
     CHECK_EQ_U64(s->queued, 2);
     CHECK_EQ_U64(s->cancelled, 1);
+    CHECK(r.log.kicks[0] == 3); /* two sends and the cancel that took something back */
     rig_close(&r);
+}
+
+struct fired {
+    struct tsim_node *node;
+    struct tsim_timer *timer;
+    int count;
+    tsim_time at;
+    bool self_destruct;
+};
+
+static void on_fire(void *ctx) {
+    struct fired *f = ctx;
+    f->count++;
+    f->at = tsim_node_now(f->node);
+    if (f->self_destruct) {
+        tsim_timer_destroy(f->timer);
+    }
+}
+
+static void timers_fire_once_at_their_time(void) {
+    struct rig r;
+    rig_open(&r, tsim_net_defaults(1), 2);
+    struct fired f = {.node = tsim_net_node(r.net, 0)};
+    f.timer = tsim_timer_create(f.node, on_fire, &f);
+    CHECK(!tsim_timer_pending(f.timer));
+    CHECK(tsim_timer_start(f.timer, TSIM_MS(5)));
+    CHECK(tsim_timer_pending(f.timer));
+    run_for(&r, TSIM_MS(4));
+    CHECK(f.count == 0);
+    run_for(&r, TSIM_MS(1));
+    CHECK(f.count == 1);
+    CHECK_EQ_I64(f.at, TSIM_MS(5));
+    CHECK(!tsim_timer_pending(f.timer));
+
+    /* Starting again replaces the time it was set to. */
+    tsim_timer_start(f.timer, TSIM_MS(10));
+    tsim_timer_start(f.timer, TSIM_MS(2));
+    run_for(&r, TSIM_MS(20));
+    CHECK(f.count == 2);
+    CHECK_EQ_I64(f.at, TSIM_MS(7));
+
+    tsim_timer_start(f.timer, TSIM_MS(1));
+    tsim_timer_stop(f.timer);
+    CHECK(!tsim_timer_start(f.timer, -1));
+    CHECK(!tsim_timer_pending(f.timer));
+    run_for(&r, TSIM_MS(20));
+    CHECK(f.count == 2);
+    tsim_timer_destroy(f.timer);
+    rig_close(&r);
+}
+
+static void a_timer_may_destroy_itself_when_it_fires(void) {
+    struct rig r;
+    rig_open(&r, tsim_net_defaults(1), 2);
+    struct fired f = {.node = tsim_net_node(r.net, 1), .self_destruct = true};
+    f.timer = tsim_timer_create(f.node, on_fire, &f);
+    tsim_timer_start(f.timer, TSIM_MS(1));
+    run_for(&r, TSIM_MS(5));
+    CHECK(f.count == 1);
+    rig_close(&r);
+}
+
+/* Timers a plugin leaves running are stopped and freed with the network. */
+static void destroy_frees_timers_left_running(void) {
+    struct rig r;
+    rig_open(&r, tsim_net_defaults(1), 2);
+    struct fired f[3] = {{.node = tsim_net_node(r.net, 0)},
+                         {.node = tsim_net_node(r.net, 0)},
+                         {.node = tsim_net_node(r.net, 1)}};
+    for (int i = 0; i < 3; i++) {
+        f[i].timer = tsim_timer_create(f[i].node, on_fire, &f[i]);
+        tsim_timer_start(f[i].timer, TSIM_MS(1 + i));
+    }
+    tsim_net_destroy(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(1));
+    CHECK(f[0].count + f[1].count + f[2].count == 0);
+    CHECK(tsim_sched_size(r.sched) == 0);
+    tsim_sched_destroy(r.sched);
 }
 
 /* A MAC that sends from inside the kick moves the queue before send returns: here the new frame
@@ -375,6 +454,9 @@ int main(void) {
     RUN(send_refuses_what_cannot_go_on_air);
     RUN(delivery_counts_each_destination_once);
     RUN(streams_are_separate_and_repeatable);
+    RUN(timers_fire_once_at_their_time);
+    RUN(a_timer_may_destroy_itself_when_it_fires);
+    RUN(destroy_frees_timers_left_running);
     RUN(destroy_leaves_the_scheduler_runnable);
     return CHECK_DONE();
 }

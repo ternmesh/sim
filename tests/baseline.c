@@ -158,6 +158,38 @@ static void a_seed_repeats_a_run(void) {
     CHECK_EQ_I64(last[0], last[1]);
 }
 
+/* A start drawn for a frame that is then cancelled is dropped with it: the next frame draws its
+ * own. The test stands in for routing and drives node 0's queue directly. */
+static void aloha_drops_its_start_when_the_queue_empties(void) {
+    const tsim_time max_delay = TSIM_S(1);
+    struct rig r;
+    rig_open(&r, 2, 3, max_delay, 1);
+    struct tsim_node *n0 = tsim_net_node(r.net, 0);
+    struct tsim_rng rng;
+    tsim_node_rng(n0, TSIM_STREAM_MAC, &rng);
+    tsim_time first = (tsim_time)tsim_rng_below(&rng, (uint64_t)max_delay + 1);
+    tsim_time second = (tsim_time)tsim_rng_below(&rng, (uint64_t)max_delay + 1);
+    CHECK(first != second);
+
+    struct tsim_tx tx = {
+        .lora = tsim_lora_default(7, 125000),
+        .tx_dbm = 14.0,
+        .purpose = TSIM_PURPOSE_DATA,
+        .len = 10,
+    };
+    uint64_t h = tsim_node_send(n0, &tx);
+    CHECK(tsim_sched_size(r.sched) == 1);
+    CHECK(tsim_node_cancel(n0, h));
+    CHECK(tsim_sched_size(r.sched) == 0);
+
+    tsim_node_send(n0, &tx);
+    tsim_sched_run_until(r.sched, second - 1);
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 0);
+    tsim_sched_run_until(r.sched, second);
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 1);
+    rig_close(&r);
+}
+
 /* Pending random starts and frames on the air both hold events that point into the network. */
 static void destroy_mid_flood_leaves_the_scheduler_runnable(void) {
     struct rig r;
@@ -182,6 +214,7 @@ int main(void) {
     RUN(relays_at_the_same_instant_collide);
     RUN(a_random_start_separates_them);
     RUN(a_seed_repeats_a_run);
+    RUN(aloha_drops_its_start_when_the_queue_empties);
     RUN(destroy_mid_flood_leaves_the_scheduler_runnable);
     return CHECK_DONE();
 }

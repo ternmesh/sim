@@ -11,29 +11,30 @@ struct aloha {
     struct tsim_node *node;
     struct tsim_aloha_config config;
     struct tsim_rng rng;
-    struct tsim_event timer;
+    struct tsim_timer *timer;
 };
 
-static void aloha_fire(struct tsim_sched *sched, void *ctx) {
-    (void)sched;
+static void aloha_fire(void *ctx) {
     struct aloha *a = ctx;
-    a->timer = (struct tsim_event){0};
-    /* Still sending: the frame's end kicks again. Queue emptied by a cancel: nothing to do. */
+    /* Still sending: the frame's end kicks again. */
     tsim_node_transmit(a->node);
 }
 
 static void aloha_kick(void *self) {
     struct aloha *a = self;
-    struct tsim_sched *sched = tsim_node_sched(a->node);
-    if (tsim_sched_pending(sched, a->timer) || tsim_node_sending(a->node) ||
-        !tsim_node_head(a->node)) {
+    /* Nothing left to send: the start drawn for a cancelled frame is not the next frame's. */
+    if (!tsim_node_head(a->node)) {
+        tsim_timer_stop(a->timer);
+        return;
+    }
+    if (tsim_timer_pending(a->timer) || tsim_node_sending(a->node)) {
         return;
     }
     tsim_time delay = 0;
     if (a->config.max_delay > 0) {
         delay = (tsim_time)tsim_rng_below(&a->rng, (uint64_t)a->config.max_delay + 1);
     }
-    a->timer = tsim_sched_after(sched, delay, aloha_fire, a);
+    tsim_timer_start(a->timer, delay);
 }
 
 static void *aloha_create(struct tsim_node *node, const void *config) {
@@ -44,12 +45,17 @@ static void *aloha_create(struct tsim_node *node, const void *config) {
     a->node = node;
     a->config = *(const struct tsim_aloha_config *)config;
     tsim_node_rng(node, TSIM_STREAM_MAC, &a->rng);
+    a->timer = tsim_timer_create(node, aloha_fire, a);
+    if (!a->timer) {
+        free(a);
+        return NULL;
+    }
     return a;
 }
 
 static void aloha_destroy(void *self) {
     struct aloha *a = self;
-    tsim_sched_cancel(tsim_node_sched(a->node), a->timer);
+    tsim_timer_destroy(a->timer);
     free(a);
 }
 

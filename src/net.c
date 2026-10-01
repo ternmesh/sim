@@ -22,6 +22,16 @@ struct tsim_node {
     struct queued air;
     struct tsim_ledger ledger;
     struct tsim_net_stats stats;
+    struct tsim_timer *timers; /* every timer its plugins hold, so destroy can free them */
+};
+
+struct tsim_timer {
+    struct tsim_node *node;
+    void (*fn)(void *ctx);
+    void *ctx;
+    struct tsim_event event;
+    struct tsim_timer *prev;
+    struct tsim_timer *next;
 };
 
 struct record {
@@ -146,6 +156,9 @@ void tsim_net_destroy(struct tsim_net *net) {
             net->mac->destroy(net->nodes[i].mac);
         }
         free(net->nodes[i].queue);
+        while (net->nodes[i].timers) {
+            tsim_timer_destroy(net->nodes[i].timers);
+        }
     }
     tsim_phy_destroy(net->phy);
     for (size_t i = 0; i < net->message_count; i++) {
@@ -223,7 +236,61 @@ uint64_t tsim_net_message_count(const struct tsim_net *net) { return net->messag
 
 uint32_t tsim_node_index(const struct tsim_node *node) { return node->index; }
 
-struct tsim_sched *tsim_node_sched(struct tsim_node *node) { return node->net->sched; }
+tsim_time tsim_node_now(const struct tsim_node *node) { return tsim_sched_now(node->net->sched); }
+
+static void timer_fire(struct tsim_sched *sched, void *ctx) {
+    (void)sched;
+    struct tsim_timer *t = ctx;
+    t->event = (struct tsim_event){0};
+    t->fn(t->ctx); /* last: it may destroy the timer */
+}
+
+struct tsim_timer *tsim_timer_create(struct tsim_node *node, void (*fn)(void *ctx), void *ctx) {
+    struct tsim_timer *t = calloc(1, sizeof *t);
+    if (!t) {
+        return NULL;
+    }
+    *t = (struct tsim_timer){.node = node, .fn = fn, .ctx = ctx, .next = node->timers};
+    if (node->timers) {
+        node->timers->prev = t;
+    }
+    node->timers = t;
+    return t;
+}
+
+void tsim_timer_destroy(struct tsim_timer *t) {
+    if (!t) {
+        return;
+    }
+    tsim_timer_stop(t);
+    if (t->prev) {
+        t->prev->next = t->next;
+    } else {
+        t->node->timers = t->next;
+    }
+    if (t->next) {
+        t->next->prev = t->prev;
+    }
+    free(t);
+}
+
+bool tsim_timer_start(struct tsim_timer *t, tsim_time delay) {
+    tsim_timer_stop(t);
+    if (delay < 0) {
+        return false;
+    }
+    t->event = tsim_sched_after(t->node->net->sched, delay, timer_fire, t);
+    return t->event.slot != 0;
+}
+
+void tsim_timer_stop(struct tsim_timer *t) {
+    tsim_sched_cancel(t->node->net->sched, t->event);
+    t->event = (struct tsim_event){0};
+}
+
+bool tsim_timer_pending(const struct tsim_timer *t) {
+    return tsim_sched_pending(t->node->net->sched, t->event);
+}
 
 void tsim_node_rng(const struct tsim_node *node, enum tsim_stream stream, struct tsim_rng *rng) {
     tsim_rng_init(rng, node->net->params.seed, ((uint64_t)stream << 32) | node->index);
@@ -272,6 +339,7 @@ bool tsim_node_cancel(struct tsim_node *nd, uint64_t handle) {
         if (nd->queue[i].handle == handle) {
             remove_at(nd, i);
             nd->stats.cancelled++;
+            nd->net->mac->kick(nd->mac);
             return true;
         }
     }

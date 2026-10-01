@@ -7,7 +7,6 @@
 
 #include "tsim/lora.h"
 #include "tsim/rng.h"
-#include "tsim/sched.h"
 #include "tsim/time.h"
 
 /* One node, as its plugins see it: everything a routing plugin or a MAC may do, and nothing else.
@@ -83,7 +82,7 @@ struct tsim_message {
 struct tsim_node;
 
 /* A routing plugin. Each node gets its own instance from create(); start, if given, runs once
- * every node has one. A plugin that schedules events cancels them in destroy(). */
+ * every node has one. */
 struct tsim_routing {
     const char *name;
     void *(*create)(struct tsim_node *node, const void *config);
@@ -94,9 +93,9 @@ struct tsim_routing {
     void (*tx_done)(void *self, uint64_t handle); /* optional: a queued frame has been sent */
 };
 
-/* A MAC. kick() is called whenever there may be something to send: a frame was queued, the
- * node's frame finished, or it received one. It may be called when there is nothing to do, and
- * it may transmit or cancel from inside the call. */
+/* A MAC. kick() is called whenever the queue or the radio may have changed: a frame was queued or
+ * cancelled, the node's frame finished, or it received one. It may be called when there is
+ * nothing to do, and it may transmit or cancel from inside the call. */
 struct tsim_mac {
     const char *name;
     void *(*create)(struct tsim_node *node, const void *config);
@@ -109,8 +108,27 @@ struct tsim_mac {
 /* The node's index, which a protocol may use as its address. */
 uint32_t tsim_node_index(const struct tsim_node *node);
 
-/* The scheduler, for timers. */
-struct tsim_sched *tsim_node_sched(struct tsim_node *node);
+/* The current simulated time. */
+tsim_time tsim_node_now(const struct tsim_node *node);
+
+/* A timer belonging to one node. The run's scheduler is not a plugin's to touch - it would show
+ * every other node's activity and could run their events - so a plugin gets timers instead. A
+ * timer lives until tsim_timer_destroy() or until the network is destroyed, which stops and frees
+ * any a plugin left behind. */
+struct tsim_timer;
+
+/* A stopped timer that calls fn(ctx) when it fires. Returns NULL when memory runs out. */
+struct tsim_timer *tsim_timer_create(struct tsim_node *node, void (*fn)(void *ctx), void *ctx);
+void tsim_timer_destroy(struct tsim_timer *timer);
+
+/* Sets the timer to fire `delay` from now, replacing any time it was set to. Returns false, and
+ * leaves it stopped, for a negative delay or when memory runs out. */
+bool tsim_timer_start(struct tsim_timer *timer, tsim_time delay);
+
+/* Stops the timer if it is set. */
+void tsim_timer_stop(struct tsim_timer *timer);
+
+bool tsim_timer_pending(const struct tsim_timer *timer);
 
 /* Which random stream a draw comes from, so that one layer's draws never shift another's. */
 enum tsim_stream {
