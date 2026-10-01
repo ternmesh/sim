@@ -71,6 +71,22 @@ static void flood_crosses_a_line(void) {
     rig_close(&r);
 }
 
+/* 13 bytes of header leave 242 for the payload; a longer message is refused, not lost quietly. */
+static void flood_refuses_what_one_frame_cannot_carry(void) {
+    struct rig r;
+    line(&r, 3, 3);
+    uint64_t fits = tsim_net_originate(r.net, 0, 1, TSIM_FRAME_MAX - TSIM_FLOOD_HEADER);
+    uint64_t over = tsim_net_originate(r.net, 0, 1, TSIM_FRAME_MAX - TSIM_FLOOD_HEADER + 1);
+    tsim_sched_run_until(r.sched, TSIM_S(10));
+    CHECK(!tsim_net_message(r.net, fits)->refused);
+    CHECK(tsim_net_message(r.net, fits)->delivered == 1);
+    CHECK(tsim_net_message(r.net, over)->refused);
+    CHECK(tsim_net_message(r.net, over)->delivered == 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->refused, 1);
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 1);
+    rig_close(&r);
+}
+
 static void hop_limit_stops_the_flood(void) {
     struct rig r;
     line(&r, 5, 2);
@@ -210,6 +226,7 @@ static void destroy_mid_flood_leaves_the_scheduler_runnable(void) {
 int main(void) {
     RUN(flood_crosses_a_line);
     RUN(hop_limit_stops_the_flood);
+    RUN(flood_refuses_what_one_frame_cannot_carry);
     RUN(unicast_stops_at_its_destination);
     RUN(relays_at_the_same_instant_collide);
     RUN(a_random_start_separates_them);

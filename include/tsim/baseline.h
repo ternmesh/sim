@@ -21,8 +21,8 @@ extern const struct tsim_mac tsim_aloha;
 /* Naive flooding. Every node rebroadcasts every message it has not seen before, as long as hops
  * are left, except the message's destination, which keeps it. The header is the message id, the
  * origin, the destination (4 bytes each) and the hops left (1), so a message costs 13 bytes more
- * than its payload. A node remembers every id it has seen, so a full cache never sets off a
- * second flood. */
+ * than its payload, and a payload over 242 bytes is refused: it does not fragment. A node
+ * remembers every id it has seen, so a full cache never sets off a second flood. */
 struct tsim_flood_config {
     uint16_t channel;
     struct tsim_lora lora;

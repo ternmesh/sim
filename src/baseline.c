@@ -121,10 +121,10 @@ static struct tsim_tx frame_for(const struct flood *fl, enum tsim_purpose purpos
     };
 }
 
-static void flood_originate(void *self, const struct tsim_message *msg) {
+static bool flood_originate(void *self, const struct tsim_message *msg) {
     struct flood *fl = self;
     if (msg->len > TSIM_FRAME_MAX - TSIM_FLOOD_HEADER) {
-        return;
+        return false; /* one frame or nothing: it does not fragment */
     }
     uint32_t id = (uint32_t)msg->id;
     first_sight(fl, id);
@@ -135,6 +135,7 @@ static void flood_originate(void *self, const struct tsim_message *msg) {
     tx.bytes[12] = fl->config.hops;
     tx.len = TSIM_FLOOD_HEADER + msg->len;
     tsim_node_send(fl->node, &tx);
+    return true;
 }
 
 static void flood_rx(void *self, const struct tsim_rx *rx) {

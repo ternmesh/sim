@@ -23,6 +23,7 @@ struct log {
     uint64_t done[MAX_NODES];
     int kicks[MAX_NODES];
     bool eager;
+    bool refuse;
 };
 
 struct self {
@@ -43,10 +44,11 @@ static void self_destroy(void *self) { free(self); }
 
 static void rec_start(void *self) { ((struct self *)self)->log->starts++; }
 
-static void rec_originate(void *self, const struct tsim_message *msg) {
+static bool rec_originate(void *self, const struct tsim_message *msg) {
     struct log *log = ((struct self *)self)->log;
     log->originated++;
     log->msg = *msg;
+    return !log->refuse;
 }
 
 static void rec_rx(void *self, const struct tsim_rx *rx) {
@@ -144,6 +146,16 @@ static void originate_hands_the_message_to_its_routing(void) {
     CHECK_EQ_U64(tsim_net_originate(r.net, 0, TSIM_BROADCAST, TSIM_FRAME_MAX + 1), 0);
     CHECK(r.log.originated == 1);
     CHECK_EQ_U64(tsim_net_message_count(r.net), 1);
+    CHECK(!tsim_net_message(r.net, 1)->refused);
+
+    /* A message its routing cannot carry is still originated, and counted against it. */
+    r.log.refuse = true;
+    uint64_t refused = tsim_net_originate(r.net, 0, 2, 10);
+    CHECK_EQ_U64(refused, 2);
+    CHECK(tsim_net_message(r.net, refused)->refused);
+    CHECK(tsim_net_message(r.net, refused)->wanted == 1);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->refused, 1);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 1)->refused, 0);
     rig_close(&r);
 }
 

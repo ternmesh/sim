@@ -1,6 +1,7 @@
 #ifndef TSIM_NET_H
 #define TSIM_NET_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "tsim/lora.h"
@@ -44,7 +45,9 @@ uint32_t tsim_net_nodes(const struct tsim_net *net);
 struct tsim_node *tsim_net_node(struct tsim_net *net, uint32_t node);
 
 /* Makes a message at `src` and hands it to its routing. Returns its id, or 0 if a node is out of
- * range, `dst` is `src`, or `len` is over TSIM_FRAME_MAX. */
+ * range, `dst` is `src`, or `len` is over TSIM_FRAME_MAX. A message the routing refuses keeps its
+ * record, marked refused: it stays in every delivery ratio's denominator, so a protocol that
+ * cannot carry a workload's messages is charged for them rather than excused. */
 uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len);
 
 /* Airtime a node has spent, by purpose. */
@@ -62,6 +65,7 @@ struct tsim_net_stats {
     uint64_t queued;
     uint64_t dropped; /* refused because the queue was full */
     uint64_t cancelled;
+    uint64_t refused;   /* messages originated here that its routing could not carry */
     uint64_t delivered; /* messages delivered to this node's application */
 };
 
@@ -74,6 +78,7 @@ struct tsim_message_record {
     uint32_t delivered; /* destinations that have it */
     tsim_time first;    /* when the first and the latest of them got it */
     tsim_time last;
+    bool refused; /* the source's routing could not carry it */
 };
 
 /* The record for a message id, or NULL. Valid until the next message is originated. */

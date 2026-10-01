@@ -88,7 +88,9 @@ struct tsim_routing {
     void *(*create)(struct tsim_node *node, const void *config);
     void (*destroy)(void *self);
     void (*start)(void *self);
-    void (*originate)(void *self, const struct tsim_message *msg);
+    /* Returns false if the protocol cannot carry the message at all - too long for what it
+     * fragments, say. The message still counts as originated, and as refused. */
+    bool (*originate)(void *self, const struct tsim_message *msg);
     void (*rx)(void *self, const struct tsim_rx *rx);
     void (*tx_done)(void *self, uint64_t handle); /* optional: a queued frame has been sent */
 };

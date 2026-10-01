@@ -203,7 +203,10 @@ uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, ui
     net->messages[net->message_count++] = (struct record){
         .r = {.msg = msg, .wanted = dst == TSIM_BROADCAST ? net->n - 1 : 1},
     };
-    net->routing->originate(net->nodes[src].routing, &msg);
+    if (!net->routing->originate(net->nodes[src].routing, &msg)) {
+        net->messages[msg.id - 1].r.refused = true;
+        net->nodes[src].stats.refused++;
+    }
     return msg.id;
 }
 
