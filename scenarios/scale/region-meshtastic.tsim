@@ -1,0 +1,22 @@
+# The scale check under candidate 1: region.tsim with Meshtastic's managed flood and MAC in place of
+# naive flooding over ALOHA. Listen-before-talk adds an event every time a node defers, so this is
+# the run whose timing a slow MAC would show first.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf       = 9
+radio.bw       = 125000
+radio.tx_dbm   = 20
+radio.preamble = 16   # what Meshtastic programs
+
+routing      = meshtastic
+mac          = meshtastic
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+warmup   = 1 min
+duration = 1 h
+deadline = 60 s

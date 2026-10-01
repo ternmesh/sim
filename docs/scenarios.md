@@ -44,8 +44,8 @@ Airtime and duty cycles are measured over all three parts.
 | Setting | Default | Meaning |
 |---|---|---|
 | `nodes` | required | number of nodes, 1 to 1048576 |
-| `routing` | required | routing plugin: `flood` |
-| `mac` | required | MAC plugin: `aloha` |
+| `routing` | required | routing plugin: `flood` or `meshtastic` |
+| `mac` | required | MAC plugin: `aloha` or `meshtastic` |
 | `seed` | 1 | the seed for every random draw in the run: positions, shadowing, traffic, message content, plugins |
 | `placement` | `uniform` | `uniform`, `grid` or `line` |
 | `area` | `5000 x 5000` | metres, for `uniform` |
@@ -83,6 +83,19 @@ until the bench rig measures real radios; see `tsim/phy.h`.
 |---|---|---|
 | `routing.hops` (`flood`) | 3 | how many times a message can be rebroadcast along any path |
 | `mac.max_delay` (`aloha`) | `1 s` | longest random wait before sending |
+| `routing.role` (`meshtastic`) | `client` | `client`, `client_mute` (never rebroadcasts) or `router` (waits less to rebroadcast, and cancels on the third copy heard, not the second) |
+| `routing.hop_limit` (`meshtastic`) | 3 | rebroadcasts a packet may have, 0 to 7 |
+| `routing.want_ack` (`meshtastic`) | `yes` | whether a message wants an acknowledgement (`yes` or `no`); broadcasts take an implicit one |
+| `routing.retries` (`meshtastic`) | 3 | sends after the first, for a message that is not acknowledged |
+| `routing.processing` (`meshtastic`) | `4.5 s` | added to the wait for an acknowledgement |
+| `routing.slot`, `mac.slot` (`meshtastic`) | from the radio | the contention slot: 2.5 symbols plus 7.6 ms |
+| `routing.cw_min`, `mac.cw_min` (`meshtastic`) | 3 | smallest contention window, as a power of two |
+| `routing.cw_max`, `mac.cw_max` (`meshtastic`) | 8 | largest, at most 15 |
+| `mac.snr_min`, `mac.snr_max` (`meshtastic`) | -20, 10 | the SNR range, in dB, over which a rebroadcast's window grows from `cw_min` to `cw_max` |
+
+The routing and the MAC each keep their own copy of the window: the routing sizes its
+acknowledgement wait by it. Settings that bound each other, such as `cw_min` and `cw_max`, are
+checked once every setting is in, so they can be written in any order.
 
 ## The report
 
@@ -114,4 +127,5 @@ The latency percentiles are rounded down by at most 1.6%. The maximum latency is
 - **`scenarios/*.tsim`:** CTest runs each of these through `tsim`, so a scenario that stops parsing
   or running fails CI.
 - **`scenarios/scale/*.tsim`:** these are too large for a sanitized debug build. CI's `scale` job
-  runs `region.tsim` (1000 nodes, one hour of traffic) as a release build with a 60-second budget.
+  runs `region.tsim` (1000 nodes, one hour of traffic) and `region-meshtastic.tsim` (the same,
+  under candidate 1) as a release build with a 60-second budget.
