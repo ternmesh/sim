@@ -621,6 +621,33 @@ static void pairwise_forgives_a_preamble_overlap(void) {
     }
 }
 
+static void tune_back(struct tsim_sched *s, void *ctx) {
+    (void)s;
+    struct world *w = ctx;
+    tsim_phy_tune(w->phy, 0, 0, &w->sf7);
+}
+
+/* The grace is for the later frame's first symbols, not for any short overlap. Node 0 is deaf
+ * from a retune until 2 ms before B ends, then catches A, which started 4 ms before that - long
+ * enough ago that A's 3-symbol grace has passed. B's last 2 ms are payload overlapping A's
+ * payload, 3 dB under it: a collision, however short. */
+static void pairwise_grace_covers_only_the_preamble(void) {
+    struct tsim_phy_params p = with_pairwise();
+    struct world *w = world_new(3, &p);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -83.0);
+    struct send a, b;
+    send_at(w, &b, 0, 2, &w->sf7);                      /* ends at SF7_FRAME */
+    send_at(w, &a, SF7_FRAME - TSIM_MS(6), 1, &w->sf7); /* grace over at SF7_FRAME - 2.928 ms */
+    tsim_sched_at(w->sched, SF7_FRAME - TSIM_US(3100), tune_now, w);
+    tsim_sched_at(w->sched, SF7_FRAME - TSIM_US(3000), tune_back, w); /* listening 1 ms later */
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(!received(w, 0, 2));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_lost, 1); /* it caught A, and lost it */
+    CHECK(!received(w, 0, 1));
+    world_free(w);
+}
+
 /* With capture_anytime, a frame 10 dB louder 20 ms in - long after the lock - takes the receiver,
  * as it would only during the preamble otherwise. */
 static void capture_anytime_lets_a_louder_frame_take_the_receiver_late(void) {
@@ -746,6 +773,7 @@ int main(void) {
     RUN(pairwise_does_not_weigh_by_overlap);
     RUN(pairwise_ignores_what_the_receiver_could_not_hear);
     RUN(pairwise_forgives_a_preamble_overlap);
+    RUN(pairwise_grace_covers_only_the_preamble);
     RUN(capture_anytime_lets_a_louder_frame_take_the_receiver_late);
     RUN(fading_varies_each_frame_at_each_receiver_and_repeats);
     RUN(cad_has_a_margin_and_a_delay);

@@ -168,7 +168,11 @@ static bool survives_pairwise(const struct tsim_phy *phy, const struct tsim_fram
         tsim_time hi = g->end < f->end ? g->end : f->end;
         const struct tsim_frame *later = g->start > f->start ? g : f;
         int64_t grace = (int64_t)later->lora.preamble - (int64_t)phy->params.lock_symbols;
-        if (hi - lo <= (grace > 0 ? grace : 0) * tsim_lora_symbol(&later->lora)) {
+        /* The overlap starts no earlier than the later frame does; it is forgiven only if it is
+         * over by the end of that frame's grace, wherever the receiver came in. */
+        tsim_time grace_end =
+            later->start + (grace > 0 ? grace : 0) * tsim_lora_symbol(&later->lora);
+        if (hi <= lo || hi <= grace_end) {
             continue;
         }
         double other = rx_dbm(phy, g, node);
