@@ -359,14 +359,21 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
         return 0;
     }
     tsim_time airtime = tsim_lora_airtime(lora, len);
-    if (airtime < 0) {
+    tsim_time now = tsim_sched_now(phy->sched);
+    if (airtime < 0 || airtime > INT64_MAX - now) {
+        return 0;
+    }
+    /* Everything that can fail goes first, so a refused frame leaves nothing behind. */
+    struct node *tx = &phy->nodes[node];
+    struct tsim_event end = tsim_sched_after(phy->sched, airtime, frame_end, tx);
+    if (end.slot == 0) {
         return 0;
     }
     struct air *a = push(phy);
     if (!a) {
+        tsim_sched_cancel(phy->sched, end);
         return 0;
     }
-    tsim_time now = tsim_sched_now(phy->sched);
     a->on_air = true;
     a->f = (struct tsim_frame){
         .id = phy->next_id++,
@@ -381,7 +388,6 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
     };
     const struct tsim_frame *f = &a->f;
 
-    struct node *tx = &phy->nodes[node];
     if (tx->state == RECEIVE) {
         tx->stats.rx_aborted++;
     } else if (tx->state == RETUNE) {
@@ -389,7 +395,7 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
     }
     tx->state = TRANSMIT;
     tx->frame = f->id;
-    tx->wake = tsim_sched_after(phy->sched, airtime, frame_end, tx);
+    tx->wake = end;
     tx->stats.tx++;
     tx->stats.tx_airtime += airtime;
 

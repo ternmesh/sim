@@ -108,8 +108,9 @@ double tsim_phy_loss(const struct tsim_phy *phy, uint32_t a, uint32_t b);
 void tsim_phy_set_losses(struct tsim_phy *phy, const struct tsim_channel_params *channel,
                          const struct tsim_pos *pos);
 
-/* Puts a frame on the air now. Returns its id, or 0 if the node is already transmitting or the
- * modulation and length have no airtime. */
+/* Puts a frame on the air now. Returns its id, or 0 - leaving every radio as it was - if the node
+ * is already transmitting, the modulation and length have no airtime, the frame would end past
+ * the end of the clock, or memory runs out. */
 uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel,
                            const struct tsim_lora *lora, uint32_t len, double tx_dbm,
                            void *payload);

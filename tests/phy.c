@@ -455,6 +455,20 @@ static void losses_from_the_channel_model(void) {
     tsim_sched_destroy(s);
 }
 
+/* A frame that would end past the last representable time is refused, and leaves the radio and
+ * the queue as they were. */
+static void refuses_a_frame_past_the_end_of_the_clock(void) {
+    struct world *w = world_new(2, NULL);
+    arrive(w, 1, 0, -80.0);
+    tsim_sched_run_until(w->sched, INT64_MAX - TSIM_MS(10));
+    CHECK_EQ_I64(tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL), 0);
+    CHECK(!tsim_phy_transmitting(w->phy, 1));
+    CHECK(!tsim_phy_receiving(w->phy, 0));
+    CHECK_EQ_I64(tsim_sched_size(w->sched), 0);
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 1)->tx, 0);
+    world_free(w);
+}
+
 /* The scheduler can outlive the medium: destroying it with a frame on the air and a retune under
  * way leaves no event behind that points into it. */
 static void destroy_cancels_pending_radio_events(void) {
@@ -488,6 +502,7 @@ int main(void) {
     RUN(listens_again_after_a_reception);
     RUN(hooks_may_transmit);
     RUN(losses_from_the_channel_model);
+    RUN(refuses_a_frame_past_the_end_of_the_clock);
     RUN(destroy_cancels_pending_radio_events);
     return CHECK_DONE();
 }
