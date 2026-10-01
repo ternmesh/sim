@@ -83,6 +83,11 @@ static bool can_lock(const struct tsim_phy *phy, const struct tsim_frame *f, tsi
     return quarters >= 0 && now <= f->start + tsim_lora_symbol(&f->lora) * quarters / 4;
 }
 
+/* Charges the time a reception that is ending spent on its frame. */
+static void count_reception(struct node *nd) {
+    nd->stats.rx_airtime += tsim_sched_now(nd->phy->sched) - nd->since;
+}
+
 static void sync_to(struct node *nd, const struct tsim_frame *f, double dbm) {
     tsim_time now = tsim_sched_now(nd->phy->sched);
     nd->state = RECEIVE;
@@ -201,6 +206,7 @@ static void frame_end(struct tsim_sched *sched, void *ctx) {
             continue;
         }
         bool ok = survives(phy, &f, i, nd->frame_dbm, nd->since);
+        count_reception(nd);
         if (ok) {
             nd->stats.rx_ok++;
         } else {
@@ -389,6 +395,7 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
     const struct tsim_frame *f = &a->f;
 
     if (tx->state == RECEIVE) {
+        count_reception(tx);
         tx->stats.rx_aborted++;
     } else if (tx->state == RETUNE) {
         tsim_sched_cancel(phy->sched, tx->wake);
@@ -412,6 +419,7 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
         } else if (nd->state == RECEIVE && now < nd->lock_at) {
             double dbm = rx_dbm(phy, f, i);
             if (decodable(phy, f, dbm) && dbm >= nd->frame_dbm + phy->params.capture_db) {
+                count_reception(nd);
                 nd->stats.rx_preempted++;
                 sync_to(nd, f, dbm);
             }
@@ -434,6 +442,7 @@ bool tsim_phy_tune(struct tsim_phy *phy, uint32_t node, uint16_t channel,
         return true;
     }
     if (nd->state == RECEIVE) {
+        count_reception(nd);
         nd->stats.rx_aborted++;
     }
     begin_retune(nd);
@@ -465,4 +474,13 @@ bool tsim_phy_cad(const struct tsim_phy *phy, uint32_t node) {
 
 const struct tsim_phy_stats *tsim_phy_stats(const struct tsim_phy *phy, uint32_t node) {
     return &phy->nodes[node].stats;
+}
+
+tsim_time tsim_phy_rx_airtime(const struct tsim_phy *phy, uint32_t node) {
+    const struct node *nd = &phy->nodes[node];
+    tsim_time t = nd->stats.rx_airtime;
+    if (nd->state == RECEIVE) {
+        t += tsim_sched_now(phy->sched) - nd->since;
+    }
+    return t;
 }

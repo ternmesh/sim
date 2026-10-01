@@ -58,6 +58,10 @@ struct tsim_tx {
     double tx_dbm;
     enum tsim_purpose purpose;
     uint8_t priority; /* higher goes first; equal priorities go in the order queued */
+    /* Not on the air: whatever a candidate's routing tells its own MAC about this frame - the
+     * SNR a relayed frame was heard at, say. The network never reads it, and a MAC written for
+     * no routing in particular ignores it. */
+    uint32_t hint;
     /* The message this frame carries, whose content is at bytes[carries_at], or 0 for none. The
      * sender must hold it. Receivers that decode the frame then hold it too. */
     uint64_t carries;
@@ -174,6 +178,10 @@ bool tsim_node_deliver(struct tsim_node *node, uint64_t msg);
 const struct tsim_tx *tsim_node_head(const struct tsim_node *node);
 size_t tsim_node_queue_length(const struct tsim_node *node);
 
+/* The handle tsim_node_send() returned for the frame at the head of the queue, or 0 for none: how
+ * a MAC tells the frame it drew a wait for from one that has taken its place. */
+uint64_t tsim_node_head_handle(const struct tsim_node *node);
+
 /* Whether the node's last frame is still on the air. */
 bool tsim_node_sending(const struct tsim_node *node);
 
@@ -188,6 +196,12 @@ bool tsim_node_cad(const struct tsim_node *node);
 
 /* Whether the radio is part-way through receiving a frame. */
 bool tsim_node_receiving(const struct tsim_node *node);
+
+/* Time the radio has spent transmitting, and receiving, up to now: what a radio's own channel
+ * utilisation counter sees. A frame part-way out or in counts for the part gone by; see
+ * tsim_phy_rx_airtime() for which receptions count. */
+tsim_time tsim_node_tx_airtime(const struct tsim_node *node);
+tsim_time tsim_node_rx_airtime(const struct tsim_node *node);
 
 /* Retunes the receiver; see tsim_phy_tune(). */
 bool tsim_node_tune(struct tsim_node *node, uint16_t channel, const struct tsim_lora *listen);
