@@ -26,6 +26,20 @@ jobs:
       - run: cmake --build build
       - run: ctest --test-dir build --output-on-failure
 
+  # The acceptance bar for the simulator core: a 1000-node, one-hour run finishes in minutes, so the
+  # comparison can be swept over seeds and parameters. Locally it takes about 7 s; the budget leaves
+  # room for a slower runner, not for a slower simulator.
+  scale:
+    name: scale (1000 nodes)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+      - run: cmake --build build
+      - name: Run scenarios/scale/region.tsim within 60 s
+        run: timeout 60 ./build/tsim scenarios/scale/region.tsim
+
   format:
     runs-on: ubuntu-24.04
     steps:

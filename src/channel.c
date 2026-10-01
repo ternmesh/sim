@@ -11,8 +11,8 @@
 enum { FIELD_DOMAIN = 1, LINK_DOMAIN = 2 };
 
 struct blend {
-    int64_t ix[4];
-    int64_t iy[4];
+    uint32_t ix[4]; /* grid cells, modulo 2^32 */
+    uint32_t iy[4];
     double w[4]; /* scaled so the squares sum to 1 */
 };
 
@@ -25,6 +25,17 @@ static double keyed_normal(uint64_t seed, uint64_t domain, uint64_t key) {
     return tsim_rng_normal(&r);
 }
 
+/* A grid cell's index modulo 2^32, which is all the field's key keeps of it. fmod is exact, so a
+ * coordinate too large for any integer type still names a cell - the same one, for every
+ * coordinate an int64_t could hold, as casting and truncating did. */
+static uint32_t cell(double floored) {
+    double m = fmod(floored, 4294967296.0);
+    if (m != m) {
+        return 0; /* an infinite coordinate */
+    }
+    return (uint32_t)(m < 0 ? m + 4294967296.0 : m);
+}
+
 static struct blend blend_at(const struct tsim_channel_params *p, struct tsim_pos at) {
     double gx = at.x / p->decorrelation_m;
     double gy = at.y / p->decorrelation_m;
@@ -32,8 +43,8 @@ static struct blend blend_at(const struct tsim_channel_params *p, struct tsim_po
     double fy = floor(gy);
     double tx = gx - fx;
     double ty = gy - fy;
-    int64_t x0 = (int64_t)fx;
-    int64_t y0 = (int64_t)fy;
+    uint32_t x0 = cell(fx);
+    uint32_t y0 = cell(fy);
     struct blend b = {
         .ix = {x0, x0 + 1, x0, x0 + 1},
         .iy = {y0, y0, y0 + 1, y0 + 1},
@@ -53,7 +64,7 @@ static struct blend blend_at(const struct tsim_channel_params *p, struct tsim_po
 static double field_value(const struct tsim_channel_params *p, const struct blend *b) {
     double v = 0;
     for (int i = 0; i < 4; i++) {
-        uint64_t key = ((uint64_t)(uint32_t)b->ix[i] << 32) | (uint32_t)b->iy[i];
+        uint64_t key = ((uint64_t)b->ix[i] << 32) | b->iy[i];
         v += b->w[i] * keyed_normal(p->seed, FIELD_DOMAIN, key);
     }
     return v;

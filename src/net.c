@@ -20,6 +20,7 @@ struct tsim_node {
      * put until the radio reports the frame done, after every receiver has had it. */
     bool sending;
     struct queued air;
+    tsim_time air_end;
     struct tsim_ledger ledger;
     struct tsim_net_stats stats;
     struct tsim_timer *timers; /* every timer its plugins hold, so destroy can free them */
@@ -57,6 +58,9 @@ struct tsim_net {
     struct record *messages;
     size_t message_count;
     size_t message_cap;
+    bool started;
+    tsim_net_delivered_fn observer;
+    void *observer_ctx;
 };
 
 static void on_rx(void *ctx, uint32_t node, const struct tsim_frame *frame, double rssi_dbm,
@@ -143,12 +147,19 @@ struct tsim_net *tsim_net_create(struct tsim_sched *sched, const struct tsim_net
             return NULL;
         }
     }
-    if (routing->start) {
-        for (uint32_t i = 0; i < nodes; i++) {
-            routing->start(net->nodes[i].routing);
+    return net;
+}
+
+void tsim_net_start(struct tsim_net *net) {
+    if (net->started) {
+        return;
+    }
+    net->started = true;
+    if (net->routing->start) {
+        for (uint32_t i = 0; i < net->n; i++) {
+            net->routing->start(net->nodes[i].routing);
         }
     }
-    return net;
 }
 
 void tsim_net_destroy(struct tsim_net *net) {
@@ -247,6 +258,15 @@ const struct tsim_ledger *tsim_net_ledger(const struct tsim_net *net, uint32_t n
     return &net->nodes[node].ledger;
 }
 
+void tsim_net_ledger_now(const struct tsim_net *net, uint32_t node, struct tsim_ledger *out) {
+    const struct tsim_node *nd = &net->nodes[node];
+    *out = nd->ledger;
+    tsim_time ahead = nd->air_end - tsim_sched_now(net->sched);
+    if (nd->sending && ahead > 0) {
+        out->airtime[nd->air.tx.purpose] -= ahead;
+    }
+}
+
 tsim_time tsim_ledger_airtime(const struct tsim_ledger *ledger) {
     tsim_time total = 0;
     for (int p = 0; p < TSIM_PURPOSE_COUNT; p++) {
@@ -267,6 +287,11 @@ const struct tsim_message_record *tsim_net_message(const struct tsim_net *net, u
 }
 
 uint64_t tsim_net_message_count(const struct tsim_net *net) { return net->message_count; }
+
+void tsim_net_observe(struct tsim_net *net, tsim_net_delivered_fn fn, void *ctx) {
+    net->observer = fn;
+    net->observer_ctx = ctx;
+}
 
 /* --- A node, as its plugins see it --- */
 
@@ -435,6 +460,9 @@ bool tsim_node_deliver(struct tsim_node *nd, uint64_t msg) {
     rec->r.last = now;
     rec->r.delivered++;
     nd->stats.delivered++;
+    if (net->observer) {
+        net->observer(net->observer_ctx, &rec->r, node);
+    }
     return true;
 }
 
@@ -459,7 +487,9 @@ bool tsim_node_transmit(struct tsim_node *nd) {
     remove_at(nd, 0);
     nd->sending = true;
     nd->ledger.frames[tx->purpose]++;
-    nd->ledger.airtime[tx->purpose] += tsim_lora_airtime(&tx->lora, tx->len);
+    tsim_time airtime = tsim_lora_airtime(&tx->lora, tx->len);
+    nd->air_end = tsim_sched_now(nd->net->sched) + airtime;
+    nd->ledger.airtime[tx->purpose] += airtime;
     return true;
 }
 

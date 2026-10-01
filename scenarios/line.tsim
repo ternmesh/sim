@@ -1,0 +1,19 @@
+# Ten nodes in a row, 2 km apart. At SF7/125 kHz and 14 dBm a node hears its neighbours (136 dB
+# away) and nothing further (143 dB), so every message crosses the line by relaying. No
+# shadowing, so that is exactly the topology.
+nodes     = 10
+placement = line
+spacing   = 2000
+channel.sigma = 0
+
+routing      = flood
+routing.hops = 9
+mac           = aloha
+mac.max_delay = 500 ms
+
+traffic.interval  = 10 min
+traffic.len       = 16..48
+traffic.broadcast = 0.5
+
+duration = 1 h
+deadline = 30 s

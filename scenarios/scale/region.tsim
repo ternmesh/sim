@@ -1,0 +1,24 @@
+# The scale check: 1000 nodes over 18 km - the town scenario's density, five times over - for an
+# hour of traffic. CI's timing job runs it in a release build and fails if it takes longer than
+# its budget: the simulator has to finish a 1000-node run in minutes for the comparison to be
+# swept over seeds and parameters at all.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf     = 9
+radio.bw     = 125000
+radio.tx_dbm = 20
+
+routing      = flood
+routing.hops = 3
+mac           = aloha
+mac.max_delay = 2 s
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+warmup   = 1 min
+duration = 1 h
+deadline = 60 s
