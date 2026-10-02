@@ -141,6 +141,9 @@ void tsim_phy_set_loss(struct tsim_phy *phy, uint32_t a, uint32_t b, double loss
 void tsim_phy_set_loss_from(struct tsim_phy *phy, uint32_t from, uint32_t to, double loss_db);
 double tsim_phy_loss(const struct tsim_phy *phy, uint32_t a, uint32_t b);
 
+/* How many radios it has. */
+uint32_t tsim_phy_nodes(const struct tsim_phy *phy);
+
 /* How connected the medium is at one modulation and power. A link is a pair of nodes that each
  * decode the other with nothing else on the air: the mean loss, no fading, at least the SF's
  * demodulation floor. That is the most any routing can use; interference only takes from it. */
@@ -150,6 +153,10 @@ struct tsim_phy_links {
     uint32_t degree_max;
     uint32_t component_max; /* nodes in the largest set the links join */
 };
+
+/* The weakest a frame at `lora` is decoded at, in dBm, with nothing else on the air and no fading:
+ * the noise in its bandwidth and the SF's demodulation floor. NAN for an invalid modulation. */
+double tsim_phy_floor_dbm(const struct tsim_phy *phy, const struct tsim_lora *lora);
 
 /* The links every node has, sending at `tx_dbm` with `lora`. Returns false, leaving `out` zero,
  * when memory runs out or the modulation is invalid. Takes time and memory in proportion to the

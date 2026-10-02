@@ -495,6 +495,16 @@ static uint32_t root(uint32_t *up, uint32_t x) {
     return x;
 }
 
+uint32_t tsim_phy_nodes(const struct tsim_phy *phy) { return phy->n; }
+
+double tsim_phy_floor_dbm(const struct tsim_phy *phy, const struct tsim_lora *lora) {
+    if (!tsim_lora_valid(lora) || lora->sf < TSIM_SF_MIN ||
+        lora->sf >= TSIM_SF_MIN + TSIM_SF_COUNT) {
+        return NAN;
+    }
+    return noise_dbm(phy, lora->bw_hz) + phy->params.snr_min_db[lora->sf - TSIM_SF_MIN];
+}
+
 bool tsim_phy_links(const struct tsim_phy *phy, const struct tsim_lora *lora, double tx_dbm,
                     struct tsim_phy_links *out) {
     *out = (struct tsim_phy_links){0};
@@ -511,8 +521,7 @@ bool tsim_phy_links(const struct tsim_phy *phy, const struct tsim_lora *lora, do
         return false;
     }
     /* Received at least this far below the sender: the floor, as decodable() has it. */
-    double budget =
-        tx_dbm - noise_dbm(phy, lora->bw_hz) - phy->params.snr_min_db[lora->sf - TSIM_SF_MIN];
+    double budget = tx_dbm - tsim_phy_floor_dbm(phy, lora);
     for (uint32_t a = 0; a < n; a++) {
         up[a] = a;
     }

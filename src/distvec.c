@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "tsim/nodeset.h"
+#include "tsim/phy.h"
 #include "tsim/rng.h"
 
 #define INF TSIM_DISTVEC_METRIC_INF
@@ -198,7 +199,8 @@ struct router {
     bool infra;
     uint32_t ann_head; /* an announce's head, and a data frame's: longer with power control */
     uint32_t data_head;
-    double node_dbm; /* what frames for every neighbour go at */
+    double node_dbm;                          /* what frames for every neighbour go at */
+    const struct tsim_distvec_oracle *oracle; /* routes handed down, or NULL */
     struct tsim_distvec_config config;
     struct tsim_rng rng;
     double ref_ms; /* the reference frame's airtime */
@@ -300,6 +302,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .step_db = 3,
         .snr_floor_db = -7.5 - 2.5 * (lora->sf - 7), /* Semtech's */
         .power_k = 8,
+        .oracle_margin_db = 3,
     };
 }
 
@@ -337,6 +340,9 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
          !(c->step_db >= 0 && c->step_db <= 60) || !isfinite(c->snr_floor_db))) {
         return "with power control, tx_dbm and tx_min_dbm are not whole dBm apart within -128 to "
                "127, or a margin is out of range";
+    }
+    if (c->oracle && !(c->oracle_margin_db >= 0 && c->oracle_margin_db <= 60)) {
+        return "oracle_margin is out of range";
     }
     if (c->hop_max < 1 || c->bcast_hops > 254) {
         return "hop_max is 0, or bcast_hops is over 254";
@@ -404,6 +410,18 @@ static double power_for(const struct router *r, const struct neighbour *n, doubl
     }
     double lo = ceil(c->tx_min_dbm);
     p = ceil(p);
+    return p < lo ? lo : p > c->tx_dbm ? c->tx_dbm : p;
+}
+
+/* What a frame to `dst` goes at under the oracle: what its next hop needs, and loud enough too for
+ * the node the frame answers, as power_for(). */
+static double oracle_power(const struct router *r, uint32_t dst, double back) {
+    const struct tsim_distvec_config *c = &r->config;
+    double p = r->oracle->route[(size_t)r->self * r->nodes + dst].dbm;
+    if (!isnan(back) && ceil(back + c->margin_db) > p) {
+        p = ceil(back + c->margin_db);
+    }
+    double lo = ceil(c->tx_min_dbm);
     return p < lo ? lo : p > c->tx_dbm ? c->tx_dbm : p;
 }
 
@@ -656,6 +674,9 @@ static void ask(struct router *r, uint32_t d) {
  * unless it asked within request_interval, and then again every request_interval, REQUEST_TRIES
  * times in all, until a route comes: a request is a single frame, and as easily lost as any. */
 static void starved(struct router *r, uint32_t d) {
+    if (r->oracle) {
+        return; /* no route is no path */
+    }
     struct dest *ds = &r->dest[d];
     if (ds->tries == 0) {
         if (r->starving_count == r->starving_cap) {
@@ -1512,12 +1533,21 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
                         uint8_t hops, const uint8_t *content, uint32_t len,
                         enum tsim_purpose purpose, uint64_t carries, double back,
                         uint64_t *queued) {
-    struct dest *ds = &r->dest[dst];
-    if (!ds->sel) {
-        return false;
+    const struct neighbour *n = NULL;
+    uint32_t next;
+    if (r->oracle) {
+        next = r->oracle->route[(size_t)r->self * r->nodes + dst].next;
+        if (next == TSIM_BROADCAST) {
+            return false;
+        }
+    } else {
+        struct dest *ds = &r->dest[dst];
+        if (!ds->sel) {
+            return false;
+        }
+        n = slot(r, ds->sel);
+        next = n->id;
     }
-    const struct neighbour *n = slot(r, ds->sel);
-    uint32_t next = n->id;
     struct tsim_tx tx = frame(r, purpose,
                               type == TYPE_ACK               ? PRIORITY_CONTROL
                               : purpose == TSIM_PURPOSE_DATA ? PRIORITY_DATA
@@ -1529,7 +1559,7 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
     put32(tx.bytes + 13, id);
     tx.bytes[17] = hops;
     if (r->config.power) {
-        tx.tx_dbm = power_for(r, n, back);
+        tx.tx_dbm = n ? power_for(r, n, back) : oracle_power(r, dst, back);
         tx.bytes[18] = power_byte(tx.tx_dbm);
     }
     if (len) {
@@ -1572,7 +1602,9 @@ static void send_attempt(struct awaiting *a) {
     uint64_t handle = 0;
     if (route_frame(r, TYPE_DATA, r->self, a->dst, a->id, r->config.hop_max, a->content, a->len,
                     TSIM_PURPOSE_DATA, a->id, NAN, &handle)) {
-        uint16_t metric = total(entry_by(ds, ds->sel)->metric, slot(r, ds->sel)->cost);
+        double metric =
+            r->oracle ? r->oracle->route[(size_t)r->self * r->nodes + a->dst].hops * ceil(r->ref_ms)
+                      : total(entry_by(ds, ds->sel)->metric, slot(r, ds->sel)->cost);
         wait += (tsim_time)(r->config.ack_factor * metric * (double)TSIM_MS(1));
         if (handle) {
             /* The wait starts when the frame goes: however long it queues behind other traffic,
@@ -1943,6 +1975,10 @@ static void house_fire(void *ctx) {
 
 static void router_start(void *self) {
     struct router *r = self;
+    if (r->oracle) {
+        r->node_dbm = r->config.power ? r->oracle->node_dbm[r->self] : r->config.tx_dbm;
+        return; /* nothing to announce, and no neighbours to keep */
+    }
     trickle_begin(r);
     tsim_timer_start(r->house, house_period(r));
 }
@@ -1987,6 +2023,11 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->nodes = tsim_node_count(node);
     r->infra = tsim_nodeset_contains(c->relays, r->self) == 1;
     r->config = *c;
+    r->oracle = c->oracle ? c->oracle_routes : NULL;
+    if (c->oracle && !r->oracle) { /* the routes themselves come once the links are laid */
+        free(r);
+        return NULL;
+    }
     r->ann_head = ANNOUNCE_HEAD + (c->power ? 1 : 0);
     r->data_head = DATA_HEAD + (c->power ? 1 : 0);
     node_power(r);
@@ -2037,6 +2078,20 @@ const struct tsim_routing tsim_distvec = {
 
 bool tsim_distvec_route(const void *self, uint32_t dst, uint32_t *next, uint16_t *metric) {
     const struct router *r = self;
+    if (r->oracle && dst < r->nodes && dst != r->self) {
+        const struct tsim_distvec_oracle_route *o =
+            &r->oracle->route[(size_t)r->self * r->nodes + dst];
+        if (o->next == TSIM_BROADCAST) {
+            return false;
+        }
+        if (next) {
+            *next = o->next;
+        }
+        if (metric) {
+            *metric = (uint16_t)(o->hops * ceil(r->ref_ms));
+        }
+        return true;
+    }
     if (dst >= r->nodes || dst == r->self || !r->dest[dst].sel) {
         return false;
     }
@@ -2081,4 +2136,126 @@ double tsim_distvec_node_power(const void *self) { return ((const struct router 
 
 tsim_time tsim_distvec_interval(const void *self) {
     return ((const struct router *)self)->interval;
+}
+
+/* --- The oracle --- */
+
+void tsim_distvec_oracle_free(struct tsim_distvec_oracle *o) {
+    free(o->route);
+    free(o->node_dbm);
+    *o = (struct tsim_distvec_oracle){0};
+}
+
+static int by_float(const void *a, const void *b) {
+    float x = *(const float *)a, y = *(const float *)b;
+    return (x > y) - (x < y);
+}
+
+bool tsim_distvec_oracle_build(struct tsim_distvec_oracle *o, const struct tsim_phy *phy,
+                               const struct tsim_distvec_config *c) {
+    *o = (struct tsim_distvec_oracle){0};
+    double floor_dbm = tsim_phy_floor_dbm(phy, &c->lora);
+    uint32_t n = tsim_phy_nodes(phy);
+    if (isnan(floor_dbm) || n == 0) {
+        return false;
+    }
+    /* need[a * n + b]: what a frame from a needs to be decoded at b, by the mean loss. */
+    float *need = malloc((size_t)n * n * sizeof *need);
+    uint32_t *start = calloc((size_t)n + 1, sizeof *start);
+    uint32_t *dist = malloc(n * sizeof *dist), *queue = malloc(n * sizeof *queue);
+    o->route = malloc((size_t)n * n * sizeof *o->route);
+    o->node_dbm = malloc(n * sizeof *o->node_dbm);
+    float *near = malloc(n * sizeof *near);
+    uint32_t *adj = NULL;
+    bool ok = false;
+    if (!need || !start || !dist || !queue || !o->route || !o->node_dbm || !near) {
+        goto done;
+    }
+    for (uint32_t a = 0; a < n; a++) {
+        for (uint32_t b = 0; b < n; b++) {
+            need[(size_t)a * n + b] = (float)(tsim_phy_loss(phy, a, b) + floor_dbm);
+        }
+    }
+    double top = c->tx_dbm - c->oracle_margin_db;
+    for (uint32_t a = 0; a < n; a++) {
+        for (uint32_t b = 0; b < n; b++) {
+            start[a + 1] +=
+                a != b && need[(size_t)a * n + b] <= top && need[(size_t)b * n + a] <= top;
+        }
+        start[a + 1] += start[a];
+    }
+    adj = malloc((size_t)start[n] * sizeof *adj + 1);
+    if (!adj) {
+        goto done;
+    }
+    double lo = ceil(c->tx_min_dbm);
+    for (uint32_t a = 0; a < n; a++) {
+        uint32_t k = 0;
+        for (uint32_t b = 0; b < n; b++) {
+            if (a != b && need[(size_t)a * n + b] <= top && need[(size_t)b * n + a] <= top) {
+                near[k] = need[(size_t)a * n + b];
+                adj[start[a] + k++] = b;
+            }
+        }
+        /* What power control would settle on knowing every floor: power_k of them, with margin. */
+        double p = c->tx_dbm;
+        if (c->power && c->power_k && k >= c->power_k) {
+            qsort(near, k, sizeof *near, by_float);
+            p = ceil(near[c->power_k - 1] + c->margin_db);
+            p = p < lo ? lo : p > c->tx_dbm ? c->tx_dbm : p;
+        }
+        o->node_dbm[a] = (float)p;
+    }
+    for (uint32_t d = 0; d < n; d++) {
+        for (uint32_t a = 0; a < n; a++) {
+            dist[a] = UINT32_MAX;
+        }
+        size_t head = 0, tail = 0;
+        dist[d] = 0;
+        queue[tail++] = d;
+        while (head < tail) {
+            uint32_t a = queue[head++];
+            if (a != d && tsim_nodeset_contains(c->relays, a) != 1) {
+                continue; /* a leaf can be reached, but never passes anything on */
+            }
+            for (uint32_t i = start[a]; i < start[a + 1]; i++) {
+                if (dist[adj[i]] == UINT32_MAX) {
+                    dist[adj[i]] = dist[a] + 1;
+                    queue[tail++] = adj[i];
+                }
+            }
+        }
+        for (uint32_t a = 0; a < n; a++) {
+            struct tsim_distvec_oracle_route *rt = &o->route[(size_t)a * n + d];
+            *rt = (struct tsim_distvec_oracle_route){.next = TSIM_BROADCAST};
+            if (a == d || dist[a] == UINT32_MAX) {
+                continue;
+            }
+            float best = INFINITY;
+            for (uint32_t i = start[a]; i < start[a + 1]; i++) {
+                uint32_t b = adj[i];
+                bool passes = b == d || tsim_nodeset_contains(c->relays, b) == 1;
+                if (passes && dist[b] + 1 == dist[a] && need[(size_t)a * n + b] < best) {
+                    best = need[(size_t)a * n + b];
+                    rt->next = b;
+                }
+            }
+            rt->hops = dist[a] > UINT8_MAX ? UINT8_MAX : (uint8_t)dist[a];
+            double p = c->power ? ceil(best + c->margin_db) : c->tx_dbm;
+            rt->dbm = (float)(p < lo ? lo : p > c->tx_dbm ? c->tx_dbm : p);
+        }
+    }
+    o->nodes = n;
+    ok = true;
+done:
+    free(need);
+    free(start);
+    free(dist);
+    free(queue);
+    free(near);
+    free(adj);
+    if (!ok) {
+        tsim_distvec_oracle_free(o);
+    }
+    return ok;
 }

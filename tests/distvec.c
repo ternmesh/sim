@@ -1157,6 +1157,66 @@ static void the_config_is_checked(void) {
     CHECK(tsim_distvec_check(&slow) == NULL);
 }
 
+/* The oracle's routes come from the links themselves: the fewest hops over links with its margin
+ * to spare, and nothing announced or asked for. Nodes 0 to 4 are a line with a shortcut from 0 to
+ * 2; the link from 0 to 4 is decoded, at 14 - 137 = -123 dBm over a -124.5 dBm floor, but with
+ * less than the 3 dB margin, so it is not used; node 5 hears no one. */
+static void the_oracle_routes_by_the_fewest_hops_and_announces_nothing(void) {
+    struct rig r;
+    struct tsim_distvec_oracle o = {0};
+    rig_init(&r);
+    r.rc.oracle = true;
+    r.rc.oracle_routes = &o;
+    build(&r, 6, 1);
+    for (uint32_t i = 0; i + 1 < 5; i++) {
+        link(&r, i, i + 1, LOSS_LOUD);
+    }
+    link(&r, 0, 2, LOSS_LOUD);
+    link(&r, 0, 4, 137);
+    CHECK(tsim_distvec_oracle_build(&o, tsim_net_phy(r.net), &r.rc));
+    tsim_net_start(r.net);
+    uint32_t next = 0;
+    CHECK(route(&r, 0, 4, &next) && next == 2);
+    CHECK(route(&r, 4, 0, &next) && next == 3);
+    CHECK(route(&r, 1, 3, &next) && next == 2);
+    CHECK_EQ_U64(o.route[0 * 6 + 4].hops, 3);
+    CHECK(!route(&r, 0, 5, &next));
+    uint64_t m = tsim_net_originate(r.net, 0, 4, 40);
+    uint64_t lost = tsim_net_originate(r.net, 1, 5, 40);
+    tsim_sched_run_until(r.sched, TSIM_S(600));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK_EQ_U64(tsim_net_message(r.net, lost)->delivered, 0);
+    CHECK(tsim_net_message(r.net, lost)->finished);
+    CHECK_EQ_U64(frames(&r, 1, TSIM_PURPOSE_RELAY), 0); /* the shortcut, not the line */
+    for (uint32_t i = 0; i < 6; i++) {
+        CHECK_EQ_U64(frames(&r, i, TSIM_PURPOSE_ANNOUNCE), 0);
+    }
+    CHECK_EQ_U64(frames(&r, 1, TSIM_PURPOSE_CONTROL), 0); /* no requests for node 5 */
+    rig_close(&r);
+    tsim_distvec_oracle_free(&o);
+
+    /* With only the ends relays, the line's middle passes nothing on: no route across it. */
+    rig_init(&r);
+    r.rc.oracle = true;
+    r.rc.oracle_routes = &o;
+    strcpy(r.rc.relays, "0,2");
+    build(&r, 3, 1);
+    link(&r, 0, 1, LOSS_LOUD);
+    link(&r, 1, 2, LOSS_LOUD);
+    CHECK(tsim_distvec_oracle_build(&o, tsim_net_phy(r.net), &r.rc));
+    tsim_net_start(r.net);
+    CHECK(!route(&r, 0, 2, &next));
+    CHECK(route(&r, 0, 1, &next) && next == 1);
+    CHECK(route(&r, 1, 2, &next) && next == 2);
+    rig_close(&r);
+    tsim_distvec_oracle_free(&o);
+
+    struct tsim_distvec_config bad = r.rc;
+    bad.oracle_margin_db = -1;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+}
+
 /* With power control, SF7 and 14 dBm: a neighbour at loss L is heard at SNR 131 - L, so its floor
  * is L - 124.5 dBm, and a frame to it goes at L - 114.5, rounded up, between -9 and 14. */
 static void power_rig(struct rig *r, uint32_t nodes, const double *losses) {
@@ -1294,6 +1354,7 @@ static void power_settings_are_checked(void) {
 
 int main(void) {
     RUN(a_line_converges_on_its_one_path);
+    RUN(the_oracle_routes_by_the_fewest_hops_and_announces_nothing);
     RUN(a_near_neighbour_is_sent_to_quieter_than_a_far_one);
     RUN(a_relay_goes_loud_enough_for_the_hop_before);
     RUN(a_hop_lost_at_its_power_is_tried_again_louder);
