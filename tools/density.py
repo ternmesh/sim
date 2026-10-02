@@ -13,7 +13,9 @@ of:
            nothing else on the air, which is the most any routing can use
   unicast  unicasts delivered on time, as a share of those sent
   bcast    broadcast destinations reached on time, as a share of those wanted
-  per_s    on-time deliveries, unicast and broadcast, per second of airtime
+  per_s    on-time deliveries, unicast and broadcast, per second of airtime after the warmup
+  reach    for a candidate that keeps routes, the share of ordered pairs of nodes its routes
+           connected when the warmup ended, followed node to node: whether it had settled
 
 Power stands in for density. Under the log-distance channel, sending Δ dB quieter loses as much as
 standing 10^(Δ/10n) times further apart (n = 2.32 by default, so 5 dB is 1.64 times), and keeps
@@ -26,7 +28,7 @@ traffic.reply=0.5` gives each node three regular correspondents who answer half 
 is what lets a routed candidate use a route more than once.
 
 The sweep is too long for CI, which runs each region scenario once, at 20 dBm. It wants a release
-build: each run takes 5 to 60 s of CPU there, and the runs go in parallel.
+build: each run takes 5 to 60 s of CPU there, the warmup included, and the runs go in parallel.
 """
 
 import argparse
@@ -46,7 +48,7 @@ CANDIDATES = [
     ("2 meshcore", "region-meshcore.tsim"),
     ("3 distvec", "region-distvec.tsim"),
 ]
-METRICS = ["links", "unicast", "bcast", "per_s"]
+METRICS = ["links", "unicast", "bcast", "per_s", "reach"]
 
 
 def run(tsim, scenario, power, seed, sets):
@@ -62,6 +64,7 @@ def run(tsim, scenario, power, seed, sets):
         "unicast": 100.0 * u["on_time"] / u["wanted"] if u["wanted"] else 0.0,
         "bcast": 100.0 * b["on_time"] / b["wanted"] if b["wanted"] else 0.0,
         "per_s": r["on_time_per_airtime_s"],
+        "reach": 100.0 * r["warmup"]["reach"],
     }
 
 
@@ -71,6 +74,8 @@ def cell(rows, metric):
     sd = statistics.stdev(values) if len(values) > 1 else 0.0
     if metric == "links":
         return "%.0f ±%.0f" % (m, sd)
+    if metric == "reach" and m < 0:
+        return "-"
     if metric == "per_s":
         return "%.2f ±%.2f" % (m, sd)
     return "%.1f%% ±%.1f" % (m, sd)

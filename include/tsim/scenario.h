@@ -35,7 +35,8 @@
  *
  * The run's clock: a warmup with no traffic, for protocols that announce themselves before they
  * can route; `duration` of traffic; then `deadline` more with none, so the last messages have as
- * long to arrive as the first. Every airtime and duty cycle counts all three. */
+ * long to arrive as the first. Every airtime and duty cycle counts the last two: the warmup is for
+ * settling, and what it cost is reported apart, with how many routes it left the nodes holding. */
 
 enum tsim_placement {
     TSIM_PLACEMENT_UNIFORM,

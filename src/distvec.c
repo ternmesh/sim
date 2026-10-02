@@ -2016,6 +2016,11 @@ static void *router_create(struct tsim_node *node, const void *config) {
     return r;
 }
 
+static bool router_next_hop(const void *self, uint32_t dst, uint32_t *next) {
+    uint16_t metric;
+    return tsim_distvec_route(self, dst, next, &metric);
+}
+
 const struct tsim_routing tsim_distvec = {
     .name = "distvec",
     .create = router_create,
@@ -2025,6 +2030,7 @@ const struct tsim_routing tsim_distvec = {
     .rx = router_rx,
     .tx_done = router_tx_done,
     .reports_finished = true,
+    .next_hop = router_next_hop,
 };
 
 /* --- For tests and reports --- */

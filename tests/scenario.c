@@ -286,7 +286,7 @@ static bool same_report(const struct tsim_report *a, const struct tsim_report *b
 }
 
 /* Six nodes in a row that hear only their neighbours: whatever arrives was relayed there, and the
- * run's clock is the warmup, the traffic and the deadline. */
+ * window measured is the traffic and the deadline, after the warmup. */
 static const struct tsim_meshtastic_config *meshtastic_of(const struct tsim_scenario *s) {
     return (const struct tsim_meshtastic_config *)s->routing_config;
 }
@@ -338,11 +338,40 @@ static void a_run_relays_across_its_map(void) {
     CHECK(parse(&s, line_text));
     struct tsim_report rep;
     CHECK(tsim_scenario_run(&s, &rep));
-    CHECK_EQ_I64(rep.elapsed, TSIM_S(10 + 30 * 60 + 20));
+    CHECK_EQ_I64(rep.elapsed, TSIM_S(30 * 60 + 20));
+    CHECK_EQ_I64(rep.warmup, TSIM_S(10));
+    CHECK(rep.warmup_airtime_s == 0); /* flooding sends nothing until there is traffic */
+    CHECK(rep.routes == -1 && rep.routes_reach == -1); /* and keeps no routes */
     CHECK(rep.unicast.messages + rep.broadcast.messages > 20);
     CHECK(rep.frames[TSIM_PURPOSE_RELAY] > 0);
     CHECK(rep.broadcast.delivered > rep.broadcast.wanted / 2);
     CHECK(rep.on_time_per_airtime_s > 0);
+}
+
+/* Candidate 3 announces through its warmup: what that cost is reported apart from the window, which
+ * it leaves every node on the line holding a route to every other, and each route reaching. */
+static void a_warmup_is_reported_apart(void) {
+    struct tsim_scenario s;
+    const char *text = "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
+                       "routing = distvec\nmac = meshcore\ntraffic.interval = 24 h\n"
+                       "warmup = %s\nduration = 10 min\n";
+    char buf[512];
+    snprintf(buf, sizeof buf, text, "30 min");
+    CHECK(parse(&s, buf));
+    struct tsim_report settled;
+    CHECK(tsim_scenario_run(&s, &settled));
+    CHECK_EQ_I64(settled.warmup, TSIM_S(30 * 60));
+    CHECK(settled.warmup_airtime_s > 0);
+    CHECK(settled.routes == 1.0 && settled.routes_reach == 1.0);
+    /* The window's airtime is what a run without the warmup would add after it. */
+    snprintf(buf, sizeof buf, text, "0 s");
+    CHECK(parse(&s, buf));
+    struct tsim_report cold;
+    CHECK(tsim_scenario_run(&s, &cold));
+    CHECK_EQ_I64(cold.warmup, 0);
+    CHECK(cold.warmup_airtime_s == 0);
+    CHECK(cold.routes == 0.0 && cold.routes_reach == 0.0);
+    CHECK(settled.airtime_total_s < cold.airtime_total_s); /* settled, it announces less */
 }
 
 /* Peers and answers reach the traffic: four nodes with one peer each, every unicast answered. */
@@ -640,6 +669,7 @@ int main(void) {
     RUN(problems_say_where_they_are);
     RUN(meshtastic_settings_read_in_any_order);
     RUN(a_run_relays_across_its_map);
+    RUN(a_warmup_is_reported_apart);
     RUN(a_run_reports_its_links);
     RUN(a_run_talks_to_its_peers_and_answers);
     RUN(a_meshtastic_run_floods_a_line);

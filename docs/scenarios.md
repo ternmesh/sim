@@ -37,7 +37,9 @@ A run has three parts:
 3. **Deadline:** a final period with no new traffic, so the last messages have as long to arrive as
    the first.
 
-Airtime and duty cycles are measured over all three parts.
+Airtime and duty cycles are measured over the last two: the warmup is for settling, and what it
+cost is reported apart. The town and region scenarios give every candidate the same warmup, long
+enough for candidate 3's route tables to fill: 3 h on the town, 6 h on the region.
 
 ## Settings
 
@@ -168,8 +170,9 @@ The run's CPU time goes to stderr, because it differs between runs.
 | Field | Meaning |
 |---|---|
 | `links` | how connected the map is at the scenario's `radio.*` modulation and power: `degree_mean`, `degree_min` and `degree_max` links per node, and `component_max`, the nodes in the largest set the links join. A link is two nodes that each decode the other with nothing else on the air (mean loss, no fading). Read every other figure against it: a protocol ranks differently where nodes hear a dozen others and where they hear hundreds |
+| `warmup` | the warmup's length `s`, its airtime over all nodes `airtime_s`, and, for routing that keeps routes, how far they had got when it ended: `routes`, the share of ordered pairs of nodes where the source held a route to the destination, and `reach`, where following each node's route in turn got there. Both are -1 for routing that keeps none |
 | `on_time_per_airtime_s` | **the headline:** deliveries that arrived within the deadline, per second of airtime spent by all nodes for any purpose |
-| `duty_max`, `duty_max_node` | the busiest node's airtime as a fraction of the run, and which node that is (the lowest-numbered, if several tie) |
+| `duty_max`, `duty_max_node` | the busiest node's airtime after the warmup as a fraction of that time, and which node that is (the lowest-numbered, if several tie) |
 | `duty_mean` | the average across all nodes |
 | `unicast`, `broadcast` | for each kind of message: `messages` originated, how many the routing `refused`, destinations `wanted`, `delivered` and delivered `on_time`, and latency at the 50th and 95th percentiles and the maximum |
 | `airtime_s`, `frames` | totals, broken down by declared purpose: data, relay, control, announce |
@@ -200,7 +203,7 @@ The latency percentiles are rounded down by at most 1.6%. The maximum latency is
   `fife.tsim` for each seed and arm and fails if a mean is too far from MeshBench's; the script says
   how the reference was made.
 - **`scenarios/scale/*.tsim`:** these are too large for a sanitized debug build. CI's `scale` job
-  runs `region.tsim` (1000 nodes, one hour of traffic), and the same under each candidate
+  runs `region.tsim` (1000 nodes, six hours' warmup, one hour of traffic), and the same under each candidate
   (`region-meshtastic.tsim`, `region-meshcore.tsim`, `region-distvec.tsim`), as a release build with
   a 60-second budget each. At their 20 dBm the region is close to one collision domain, about 470
   links per node; `tools/density.py --tsim build/tsim` runs all four at several powers and seeds,

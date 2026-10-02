@@ -114,6 +114,10 @@ struct tsim_routing {
     /* Whether it calls tsim_node_finished() for every message it originates and does not refuse.
      * If not, a message is finished as soon as originate() returns. */
     bool reports_finished;
+    /* Optional, for reports: the neighbour it would send a message for `dst` to now, if it holds a
+     * route to it. For a protocol that keeps routes before it has traffic to carry - what shows
+     * whether a warmup was long enough for its tables to fill. */
+    bool (*next_hop)(const void *self, uint32_t dst, uint32_t *next);
 };
 
 /* A MAC. kick() is called whenever the queue or the radio may have changed: a frame was queued or

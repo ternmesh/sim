@@ -1381,6 +1381,8 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         goto done;
     }
     tsim_net_start(net);
+    tsim_sched_run_until(sched, s->warmup);
+    tsim_metrics_begin(metrics);
     tsim_sched_run_until(sched, s->warmup + s->duration + s->deadline);
     tsim_metrics_report(metrics, report);
     ok = tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);

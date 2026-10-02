@@ -38,25 +38,34 @@ struct tsim_delivery {
 };
 
 struct tsim_report {
-    tsim_time elapsed; /* the run so far, which every duty cycle is a fraction of */
+    tsim_time elapsed; /* the measured window so far, which every duty cycle is a fraction of */
     tsim_time deadline;
+    tsim_time warmup; /* the run before the window: see tsim_metrics_begin() */
     struct tsim_delivery unicast;
     struct tsim_delivery broadcast;
 
     uint64_t frames[TSIM_PURPOSE_COUNT];
-    /* Seconds of airtime, every node, by purpose, up to now: a frame still on the air counts for
-     * the part of it sent. Doubles, because one node's airtime is no longer than the run but the
-     * sum over nodes can be longer than a tsim_time holds. Summed in nanoseconds, so exact up to
-     * 2^53 ns, which is 104 days. */
+    /* Seconds of airtime, every node, by purpose, over the window: a frame still on the air counts
+     * for the part of it sent. Doubles, because one node's airtime is no longer than the run but
+     * the sum over nodes can be longer than a tsim_time holds. Summed in nanoseconds, so exact up
+     * to 2^53 ns, which is 104 days. */
     double airtime_s[TSIM_PURPOSE_COUNT];
     double airtime_total_s;
 
     /* On-time deliveries, unicast and broadcast, per second of total airtime; 0 with no airtime. */
     double on_time_per_airtime_s;
 
-    double duty_max;        /* the busiest node's airtime over elapsed */
+    double duty_max;        /* the busiest node's airtime in the window over elapsed */
     uint32_t duty_max_node; /* the lowest-numbered node with that duty cycle */
     double duty_mean;
+
+    /* What starting up cost, and how far it got: airtime before the window, every node, and, as
+     * the window began, the share of ordered pairs of nodes where the source held a route to the
+     * destination, and where following each node's route in turn would get there. The shares are
+     * -1 for routing that keeps no routes to ask, and with no window begun. */
+    double warmup_airtime_s;
+    double routes;
+    double routes_reach;
 
     uint64_t queue_dropped; /* frames refused for a full queue, every node */
     uint64_t rx_ok;         /* receptions by every radio: see struct tsim_phy_stats */
@@ -80,6 +89,12 @@ struct tsim_metrics *tsim_metrics_create(struct tsim_net *net, tsim_time deadlin
 
 /* Stops watching and frees it. */
 void tsim_metrics_destroy(struct tsim_metrics *metrics);
+
+/* Starts the measured window now, once its routing has had its warmup: from here on are the
+ * airtime, frames, duty cycles, queue drops and receptions reported, so a protocol that takes hours
+ * to settle can be judged settled; the airtime before goes in warmup_airtime_s, and the routes held
+ * now in routes and routes_reach. Called at most once; without it, the window is the whole run. */
+void tsim_metrics_begin(struct tsim_metrics *metrics);
 
 /* The run so far. */
 void tsim_metrics_report(const struct tsim_metrics *metrics, struct tsim_report *report);
