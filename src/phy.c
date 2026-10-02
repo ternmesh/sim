@@ -27,12 +27,21 @@ struct node {
     double frame_dbm;  /* RECEIVE: that frame's power here */
     tsim_time since;   /* RECEIVE: when it started listening to that frame */
     tsim_time lock_at; /* RECEIVE: until then, a louder frame can take the receiver */
-    /* Frames it has counted in rx_missed that it may yet catch, while their preambles last. */
-    uint64_t *missed;
-    uint32_t missed_count;
-    uint32_t missed_cap;
+    /* Frames it has given an outcome that it may yet catch, while their preambles last. */
+    struct unsettled *unsettled;
+    uint32_t unsettled_count;
+    uint32_t unsettled_cap;
     struct tsim_event wake; /* TRANSMIT: the frame's end; RETUNE: listening again */
     struct tsim_phy_stats stats;
+};
+
+/* A frame a radio counted as missed, taken from it or cut short, but whose preamble is not yet
+ * over, so the radio may catch it yet: the outcome is taken back then, and the frame counts by how
+ * that reception ends. */
+struct unsettled {
+    uint64_t frame;
+    tsim_time lock_by; /* the frame's; see lock_by() */
+    uint64_t *counter; /* in the node's stats */
 };
 
 struct outcome {
@@ -92,12 +101,17 @@ static bool decodable(const struct tsim_phy *phy, const struct tsim_frame *f, do
     return dbm - noise_dbm(phy, f->lora.bw_hz) >= phy->params.snr_min_db[f->lora.sf - TSIM_SF_MIN];
 }
 
-/* Whether a receiver that starts listening at `now` can still lock on to the frame: it needs
+/* The last instant a receiver that starts listening can still lock on to the frame: it needs
  * lock_symbols of preamble, which on air is the programmed length plus 4.25 symbols. A preamble
- * shorter than lock_symbols can never be locked on, even from its first symbol. */
-static bool can_lock(const struct tsim_phy *phy, const struct tsim_frame *f, tsim_time now) {
+ * shorter than lock_symbols can never be locked on, even from its first symbol, so for one of
+ * those it is before the frame begins. It is always before the frame ends. */
+static tsim_time lock_by(const struct tsim_phy *phy, const struct tsim_frame *f) {
     int64_t quarters = 4 * (int64_t)f->lora.preamble + 17 - 4 * (int64_t)phy->params.lock_symbols;
-    return quarters >= 0 && now <= f->start + tsim_lora_symbol(&f->lora) * quarters / 4;
+    return quarters >= 0 ? f->start + tsim_lora_symbol(&f->lora) * quarters / 4 : f->start - 1;
+}
+
+static bool can_lock(const struct tsim_phy *phy, const struct tsim_frame *f, tsim_time now) {
+    return now <= lock_by(phy, f);
 }
 
 /* Charges the time a reception that is ending spent on its frame. */
@@ -114,39 +128,38 @@ static void sync_to(struct node *nd, const struct tsim_frame *f, double dbm) {
     nd->lock_at = now + tsim_lora_symbol(&f->lora) * (tsim_time)nd->phy->params.lock_symbols;
 }
 
-/* Whether a frame can still be caught: on the air, and early enough in its preamble. */
-static bool catchable(const struct tsim_phy *phy, uint64_t id, tsim_time now) {
-    if (id < phy->first_id) {
-        return false;
+/* Forgets the outcomes of frames that can no longer be caught: they stand. */
+static void forget_settled(struct node *nd) {
+    tsim_time now = tsim_sched_now(nd->phy->sched);
+    uint32_t kept = 0;
+    for (uint32_t k = 0; k < nd->unsettled_count; k++) {
+        if (nd->unsettled[k].lock_by >= now) {
+            nd->unsettled[kept++] = nd->unsettled[k];
+        }
     }
-    const struct air *a = &phy->air[phy->head + (id - phy->first_id)];
-    return a->on_air && can_lock(phy, &a->f, now);
+    nd->unsettled_count = kept;
 }
 
-/* Counts a frame the node could have decoded, but was busy receiving another when it began, and
- * remembers it, so that catching it later can take it back. One it cannot remember, for want of
- * memory, is not counted either: it might yet be caught, and then it would count twice. */
-static void count_missed(struct tsim_phy *phy, struct node *nd, uint64_t id, tsim_time now) {
-    if (nd->missed_count == nd->missed_cap) {
-        uint32_t kept = 0;
-        for (uint32_t k = 0; k < nd->missed_count; k++) {
-            if (catchable(phy, nd->missed[k], now)) {
-                nd->missed[kept++] = nd->missed[k];
-            }
-        }
-        nd->missed_count = kept;
+/* Counts an outcome for a frame at this node - missed, taken by a louder one, or cut short - and
+ * remembers it until the frame's lock_by, so that catching the frame after all can take the
+ * outcome back. Only frames that can no longer be caught are forgotten, whatever the radio is
+ * tuned to meanwhile. Out of memory, the outcome stands, and a frame caught after all counts
+ * twice. */
+static void settle(struct node *nd, uint64_t frame, tsim_time frame_lock_by, uint64_t *counter) {
+    (*counter)++;
+    if (nd->unsettled_count == nd->unsettled_cap) {
+        forget_settled(nd);
     }
-    if (nd->missed_count == nd->missed_cap) {
-        uint32_t cap = nd->missed_cap ? 2 * nd->missed_cap : 4;
-        uint64_t *grown = realloc(nd->missed, cap * sizeof *grown);
+    if (nd->unsettled_count == nd->unsettled_cap) {
+        uint32_t cap = nd->unsettled_cap ? 2 * nd->unsettled_cap : 4;
+        struct unsettled *grown = realloc(nd->unsettled, cap * sizeof *grown);
         if (!grown) {
             return;
         }
-        nd->missed = grown;
-        nd->missed_cap = cap;
+        nd->unsettled = grown;
+        nd->unsettled_cap = cap;
     }
-    nd->missed[nd->missed_count++] = id;
-    nd->stats.rx_missed++;
+    nd->unsettled[nd->unsettled_count++] = (struct unsettled){frame, frame_lock_by, counter};
 }
 
 /* Starts listening, catching the loudest matching frame whose preamble is still long enough to
@@ -170,15 +183,15 @@ static void listen(struct node *nd) {
         }
     }
     if (!best) {
-        nd->missed_count = 0; /* nothing left to catch */
+        forget_settled(nd); /* idle, so a short list for the next catch to look through */
         return;
     }
-    /* Caught after all, its preamble not yet over: if it was counted missed, it counts by how this
-     * reception ends instead. */
-    for (uint32_t k = 0; k < nd->missed_count; k++) {
-        if (nd->missed[k] == best->id) {
-            nd->missed[k] = nd->missed[--nd->missed_count];
-            nd->stats.rx_missed--;
+    /* Caught after all, its preamble not yet over: whatever it was counted as, it counts by how
+     * this reception ends instead. */
+    for (uint32_t k = 0; k < nd->unsettled_count; k++) {
+        if (nd->unsettled[k].frame == best->id) {
+            (*nd->unsettled[k].counter)--;
+            nd->unsettled[k] = nd->unsettled[--nd->unsettled_count];
             break;
         }
     }
@@ -434,7 +447,7 @@ void tsim_phy_destroy(struct tsim_phy *phy) {
         if (nd->state == TRANSMIT || nd->state == RETUNE) {
             tsim_sched_cancel(phy->sched, nd->wake);
         }
-        free(nd->missed);
+        free(nd->unsettled);
     }
     free(phy->nodes);
     free(phy->loss);
@@ -499,7 +512,7 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
 
     if (tx->state == RECEIVE) {
         count_reception(tx);
-        tx->stats.rx_aborted++;
+        settle(tx, tx->frame, lock_by(phy, &find(phy, tx->frame)->f), &tx->stats.rx_aborted);
     } else if (tx->state == RETUNE) {
         tsim_sched_cancel(phy->sched, tx->wake);
     }
@@ -512,7 +525,8 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
     /* decodable(), with what it works out the same for every receiver worked out once. */
     double noise = noise_dbm(phy, f->lora.bw_hz);
     double snr_min = phy->params.snr_min_db[f->lora.sf - TSIM_SF_MIN];
-    uint32_t receivers = can_lock(phy, f, now) ? phy->n : 0;
+    tsim_time f_lock_by = lock_by(phy, f);
+    uint32_t receivers = now <= f_lock_by ? phy->n : 0;
     for (uint32_t i = 0; i < receivers; i++) {
         struct node *nd = &phy->nodes[i];
         if (i == node || !tuned_to(nd, f)) {
@@ -531,10 +545,11 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
             if ((phy->params.capture_anytime || now < nd->lock_at) &&
                 dbm >= nd->frame_dbm + phy->params.capture_db) {
                 count_reception(nd);
-                nd->stats.rx_preempted++;
+                settle(nd, nd->frame, lock_by(phy, &find(phy, nd->frame)->f),
+                       &nd->stats.rx_preempted);
                 sync_to(nd, f, dbm);
             } else {
-                count_missed(phy, nd, f->id, now);
+                settle(nd, f->id, f_lock_by, &nd->stats.rx_missed);
             }
         }
     }
@@ -556,7 +571,7 @@ bool tsim_phy_tune(struct tsim_phy *phy, uint32_t node, uint16_t channel,
     }
     if (nd->state == RECEIVE) {
         count_reception(nd);
-        nd->stats.rx_aborted++;
+        settle(nd, nd->frame, lock_by(phy, &find(phy, nd->frame)->f), &nd->stats.rx_aborted);
     }
     begin_retune(nd);
     return true;

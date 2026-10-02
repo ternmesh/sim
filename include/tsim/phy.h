@@ -110,14 +110,14 @@ struct tsim_phy_hooks {
 struct tsim_phy_stats {
     uint64_t tx;
     tsim_time tx_airtime;
+    /* What became of each frame the radio could have decoded, other than its own: each counts once,
+     * by how it last ended here. A frame taken, cut short or missed that the radio catches after
+     * all, its preamble not yet over, counts by how that reception ends instead. */
     uint64_t rx_ok;
     uint64_t rx_lost;      /* decoded to the end, then failed on interference */
-    uint64_t rx_preempted; /* taken by a louder frame during the preamble */
+    uint64_t rx_preempted; /* taken by a louder frame */
     uint64_t rx_aborted;   /* cut short by transmitting or retuning */
-    /* Frames it could have decoded that began while it was receiving another, and that it neither
-     * took nor caught when that reception ended, early enough in their preamble. With the four
-     * above, each frame a radio could have decoded and was not sending over counts once. */
-    uint64_t rx_missed;
+    uint64_t rx_missed;    /* began while it was receiving another, which it kept */
     /* Time spent on frames it was receiving, however each reception ended: what the radio was busy
      * with, which is all a radio's own channel utilisation counter can know of what it heard. */
     tsim_time rx_airtime;
