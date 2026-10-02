@@ -414,6 +414,28 @@ static void a_message_a_frame_cannot_carry_is_refused(void) {
 }
 
 /* The firmware's airtime at 4/5 shortens the window at 4/8 by the ratio of the two. */
+/* A scoped relay carries four bytes of region codes, but the firmware reckons its delay from the
+ * path and payload only, so the window is the unscoped one's. */
+static void a_scoped_relay_waits_as_long_as_an_unscoped_one(void) {
+    struct tsim_lora l = lora();
+    uint32_t t = ms(tsim_lora_airtime(&l, broadcast_len(20, 1))) / 2;
+    uint32_t longest = 0;
+    for (uint64_t seed = 1; seed <= 40; seed++) {
+        struct rig r;
+        rig_init(&r);
+        r.rc.scoped = true;
+        line(&r, 3, seed);
+        uint64_t b = tsim_net_originate(r.net, 0, TSIM_BROADCAST, 20);
+        tsim_sched_run_until(r.sched, TSIM_S(60));
+        const struct tsim_message_record *m = tsim_net_message(r.net, b);
+        tsim_time wait = m->last - tsim_lora_airtime(&l, broadcast_len(20, 1) + 4) - m->first;
+        CHECK(wait >= 0 && wait <= (tsim_time)(5 * t) * TSIM_MS(1));
+        longest = ms(wait) > longest ? ms(wait) : longest;
+        rig_close(&r);
+    }
+    CHECK(longest > 4 * t);
+}
+
 static void estimate_cr_reckons_the_delays_at_another_coding_rate(void) {
     struct tsim_lora l = lora();
     l.cr = 4;
@@ -553,6 +575,7 @@ int main(void) {
     RUN(the_duty_cycle_budget_holds_a_node_back);
     RUN(a_repeater_adverts_every_interval_and_a_companion_never);
     RUN(a_message_a_frame_cannot_carry_is_refused);
+    RUN(a_scoped_relay_waits_as_long_as_an_unscoped_one);
     RUN(estimate_cr_reckons_the_delays_at_another_coding_rate);
     RUN(the_last_attempt_of_the_most_retries_still_ends);
     RUN(a_seed_repeats_a_run);

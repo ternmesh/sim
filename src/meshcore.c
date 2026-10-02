@@ -513,7 +513,12 @@ static void arm_out(struct router *r) {
     }
 }
 
-static void drop_held(struct router *r, size_t i) { r->held[i] = r->held[--r->held_count]; }
+/* Takes a frame out of the held list keeping the rest in order, since equals go first-queued first.
+ */
+static void drop_held(struct router *r, size_t i) {
+    r->held_count--;
+    memmove(&r->held[i], &r->held[i + 1], (r->held_count - i) * sizeof *r->held);
+}
 
 static void out_fire(void *ctx) {
     struct router *r = ctx;
@@ -849,6 +854,8 @@ static void relay_flood(struct router *r, const uint8_t *bytes, const struct pac
         tx.carries = carries;
         tx.carries_at = at + carries_at;
     }
+    /* The firmware's own length: path, payload and 2, never the region codes the relay carries
+     * (MyMesh::getRetransmitDelay). */
     uint32_t t =
         (uint32_t)(estimate_ms(&r->config, path_bytes + p->hash_size + p->payload_len + 2) *
                    r->config.tx_delay_factor);
@@ -938,6 +945,7 @@ static void process(struct router *r, const uint8_t *bytes, uint32_t len) {
             return;
         }
         uint32_t rest = (uint32_t)(p.count - 1) * p.hash_size;
+        /* As for a flood relay, the firmware's length (MyMesh::getDirectRetransmitDelay). */
         uint32_t t = (uint32_t)(estimate_ms(&r->config, rest + p.payload_len + 2) *
                                 r->config.direct_tx_delay_factor);
         uint32_t delay = (uint32_t)tsim_rng_below(&r->rng, 5 * (uint64_t)t + 1);
