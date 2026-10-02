@@ -32,8 +32,9 @@
  * source, an exponential delay of mean `reply_delay` after it was made. Whether, when and how long
  * are drawn with the message, from its sender's stream, and the answer is sent whether or not the
  * message arrived: a protocol that delivers more is not offered more. An answer is not answered,
- * and like any message it is sent only before stop. With both at 0 the draws are exactly those
- * of the plain process. */
+ * and like any message it is sent only before stop. Neither touches the scripted sends, which take
+ * no draws and so go to whom they name, unanswered: script the answer too. With both at 0 the
+ * draws are exactly those of the plain process. */
 
 /* A message sent at a set time, as well as or instead of the ones the process makes: to put one
  * flood through a network and count what it costs, say. It uses none of the process's draws. */
