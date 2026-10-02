@@ -92,6 +92,9 @@ static void print_report(const char *path, const struct tsim_scenario *s,
            s->seed, s->nodes, tsim_scenario_routing_name(s), tsim_scenario_mac_name(s));
     printf("  \"elapsed_s\": %.6f, \"deadline_s\": %.6f,\n", seconds(r->elapsed),
            seconds(r->deadline));
+    printf("  \"links\": {\"degree_mean\": %.6g, \"degree_min\": %" PRIu32
+           ", \"degree_max\": %" PRIu32 ", \"component_max\": %" PRIu32 "},\n",
+           r->links.degree_mean, r->links.degree_min, r->links.degree_max, r->links.component_max);
     printf("  \"on_time_per_airtime_s\": %.6g,\n", r->on_time_per_airtime_s);
     printf("  \"duty_max\": %.6g, \"duty_max_node\": %" PRIu32 ", \"duty_mean\": %.6g,\n",
            r->duty_max, r->duty_max_node, r->duty_mean);

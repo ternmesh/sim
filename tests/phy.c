@@ -1108,6 +1108,33 @@ static void create_refuses_bad_fading_and_cad(void) {
     tsim_sched_destroy(s);
 }
 
+/* A link needs both ends to decode each other at the floor. 0-1 do, comfortably; 1 hears 2 but
+ * 2 cannot hear 1; 2-3 are just above the floor, -124.53 dBm. */
+static void links_count_pairs_that_decode_both_ways(void) {
+    struct world *w = world_new(5, NULL);
+    arrive(w, 0, 1, -120);
+    tsim_phy_set_loss_from(w->phy, 2, 1, TX_DBM + 120);
+    tsim_phy_set_loss_from(w->phy, 1, 2, TX_DBM + 130);
+    arrive(w, 2, 3, -124.5);
+    arrive(w, 3, 4, -124.6);
+    struct tsim_phy_links l;
+    CHECK(tsim_phy_links(w->phy, &w->sf7, TX_DBM, &l));
+    CHECK(fabs(l.degree_mean - 4.0 / 5) < 1e-9);
+    CHECK_EQ_I64(l.degree_min, 0);
+    CHECK_EQ_I64(l.degree_max, 1);
+    CHECK_EQ_I64(l.component_max, 2);
+    /* 10 dB less power and nothing is a link; at SF9, 5 dB deeper, all of them are. */
+    CHECK(tsim_phy_links(w->phy, &w->sf7, TX_DBM - 10, &l));
+    CHECK(l.degree_mean == 0 && l.degree_max == 0 && l.component_max == 1);
+    arrive(w, 1, 2, -120);
+    CHECK(tsim_phy_links(w->phy, &w->sf9, TX_DBM, &l));
+    CHECK(fabs(l.degree_mean - 8.0 / 5) < 1e-9);
+    CHECK_EQ_I64(l.degree_min, 1);
+    CHECK_EQ_I64(l.degree_max, 2);
+    CHECK_EQ_I64(l.component_max, 5);
+    world_free(w);
+}
+
 int main(void) {
     RUN(delivers_at_the_end_of_the_frame);
     RUN(hears_down_to_the_demodulation_floor);
@@ -1156,5 +1183,6 @@ int main(void) {
     RUN(fading_varies_each_frame_at_each_receiver_and_repeats);
     RUN(cad_has_a_margin_and_a_delay);
     RUN(create_refuses_bad_fading_and_cad);
+    RUN(links_count_pairs_that_decode_both_ways);
     return CHECK_DONE();
 }

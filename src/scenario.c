@@ -1338,7 +1338,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     tsim_net_start(net);
     tsim_sched_run_until(sched, s->warmup + s->duration + s->deadline);
     tsim_metrics_report(metrics, report);
-    ok = true;
+    ok = tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);
 
 done:
     tsim_traffic_destroy(traffic);
