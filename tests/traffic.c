@@ -320,6 +320,20 @@ static void invalid_parameters_are_refused(void) {
     }
     p = params(), p.send_count = 1;
     CHECK(tsim_traffic_create(net, &p) == NULL);
+    p = params(), p.peers = 3; /* only two others */
+    CHECK(tsim_traffic_create(net, &p) == NULL);
+    p = params(), p.reply = -0.1;
+    CHECK(tsim_traffic_create(net, &p) == NULL);
+    p = params(), p.reply = 1.1;
+    CHECK(tsim_traffic_create(net, &p) == NULL);
+    p = params(), p.reply = 0.5, p.closed = true;
+    CHECK(tsim_traffic_create(net, &p) == NULL);
+    p = params(), p.reply_delay = -1;
+    CHECK(tsim_traffic_create(net, &p) == NULL);
+    p = params(), p.peers = 2, p.reply = 1, p.closed = false;
+    struct tsim_traffic *ok = tsim_traffic_create(net, &p);
+    CHECK(ok != NULL);
+    tsim_traffic_destroy(ok);
 
     tsim_net_destroy(net);
     tsim_sched_destroy(sched);
@@ -447,6 +461,145 @@ static void destroy_stops_the_traffic(void) {
     rig_close(&r);
 }
 
+/* Two picks each, made mutual: a node sends only to its peers, and to each of them, and they send
+ * back. 166 messages a node over at most a dozen peers leaves none unused. */
+static void peers_are_mutual_and_the_only_destinations(void) {
+    enum { N = 40 };
+    struct tsim_traffic_params p = params();
+    p.broadcast = 0.0;
+    p.peers = 2;
+    p.stop = TSIM_S(10000);
+    struct rig r;
+    rig_open(&r, N, &refuser, false, &p);
+    tsim_sched_run_until(r.sched, p.stop);
+    static bool sent[N][N];
+    uint64_t count = tsim_net_message_count(r.net);
+    CHECK(count > N * 100);
+    for (uint64_t id = 1; id <= count; id++) {
+        const struct tsim_message *m = &tsim_net_message(r.net, id)->msg;
+        CHECK(m->dst < N && m->dst != m->src);
+        if (m->dst < N) {
+            sent[m->src][m->dst] = true;
+        }
+    }
+    uint32_t pairs = 0;
+    for (uint32_t a = 0; a < N; a++) {
+        uint32_t mine = 0;
+        for (uint32_t b = 0; b < N; b++) {
+            CHECK(sent[a][b] == sent[b][a]);
+            mine += sent[a][b];
+        }
+        CHECK(mine >= 2);
+        pairs += mine;
+    }
+    /* 2 picks each, so 80 mutual pairs, less the picks two nodes made of each other. */
+    CHECK(pairs > 2 * 70 && pairs <= 2 * 80);
+    rig_close(&r);
+}
+
+/* With every unicast answered a millisecond or so later, each message is followed by its answer,
+ * from its destination back; the answer is not answered. Half answered, about half are. */
+static void unicasts_are_answered_and_answers_are_not(void) {
+    struct tsim_traffic_params p = params();
+    p.broadcast = 0.0;
+    p.reply = 1.0;
+    p.reply_delay = TSIM_MS(1);
+    struct rig r;
+    rig_open(&r, 5, &refuser, false, &p);
+    tsim_sched_run_until(r.sched, p.stop);
+    uint64_t count = tsim_net_message_count(r.net);
+    CHECK(count > 200 && count % 2 == 0);
+    for (uint64_t id = 1; id + 1 <= count; id += 2) {
+        const struct tsim_message *m = &tsim_net_message(r.net, id)->msg;
+        const struct tsim_message *a = &tsim_net_message(r.net, id + 1)->msg;
+        CHECK(a->src == m->dst && a->dst == m->src);
+        CHECK(a->created >= m->created && a->created - m->created < TSIM_S(1));
+    }
+    rig_close(&r);
+
+    p.reply = 0.5;
+    p.stop = TSIM_S(20000);
+    rig_open(&r, 5, &refuser, false, &p);
+    tsim_sched_run_until(r.sched, p.stop);
+    count = tsim_net_message_count(r.net);
+    uint64_t asked = 0, answered = 0;
+    for (uint64_t id = 1; id <= count; id++) {
+        const struct tsim_message *m = &tsim_net_message(r.net, id)->msg;
+        asked++;
+        if (id < count) {
+            const struct tsim_message *a = &tsim_net_message(r.net, id + 1)->msg;
+            if (a->src == m->dst && a->dst == m->src && a->created - m->created < TSIM_S(1)) {
+                answered++;
+                id++;
+            }
+        }
+    }
+    CHECK(asked > 1000);
+    CHECK(answered * 100 > asked * 45 && answered * 100 < asked * 55);
+    rig_close(&r);
+}
+
+/* An answer that would fall at or after stop is not sent. */
+static void an_answer_past_stop_is_not_sent(void) {
+    struct tsim_traffic_params p = params();
+    p.broadcast = 0.0;
+    p.reply = 1.0;
+    p.reply_delay = TSIM_S(1000000);
+    struct rig r;
+    rig_open(&r, 5, &refuser, false, &p);
+    tsim_sched_run_until(r.sched, p.stop + TSIM_S(10000000));
+    uint64_t count = tsim_net_message_count(r.net);
+    CHECK(count > 100);
+    for (uint64_t id = 1; id <= count; id++) {
+        CHECK(tsim_net_message(r.net, id)->msg.created < p.stop);
+    }
+    CHECK(tsim_sched_size(r.sched) == 0);
+    rig_close(&r);
+}
+
+/* Answers go whether or not the message arrived, so flooding and refusing are offered the same. */
+static void answers_do_not_depend_on_the_protocol(void) {
+    struct tsim_traffic_params p = params();
+    p.peers = 2;
+    p.reply = 0.5;
+    p.reply_delay = TSIM_S(20);
+    struct rig a, b;
+    rig_open(&a, 6, &tsim_flood, true, &p);
+    rig_open(&b, 6, &refuser, false, &p);
+    tsim_sched_run_until(a.sched, p.stop);
+    tsim_sched_run_until(b.sched, p.stop);
+    uint64_t count = tsim_net_message_count(a.net);
+    CHECK(count > 100);
+    CHECK_EQ_U64(tsim_net_message_count(b.net), count);
+    for (uint64_t id = 1; id <= count && id <= tsim_net_message_count(b.net); id++) {
+        const struct tsim_message *x = &tsim_net_message(a.net, id)->msg;
+        const struct tsim_message *y = &tsim_net_message(b.net, id)->msg;
+        CHECK(x->src == y->src && x->dst == y->dst && x->len == y->len);
+        CHECK_EQ_I64(x->created, y->created);
+    }
+    rig_close(&a);
+    rig_close(&b);
+}
+
+/* Destroyed with answers still to come, it sends none of them. */
+static void destroy_drops_the_answers_waiting(void) {
+    struct tsim_traffic_params p = params();
+    p.broadcast = 0.0;
+    p.reply = 1.0;
+    p.reply_delay = TSIM_S(600);
+    struct rig r;
+    rig_open(&r, 10, &refuser, false, &p);
+    tsim_sched_run_until(r.sched, TSIM_S(600));
+    uint64_t made = tsim_net_message_count(r.net);
+    CHECK(made > 0);
+    tsim_traffic_destroy(r.traffic);
+    r.traffic = NULL;
+    CHECK(tsim_sched_size(r.sched) == 0);
+    tsim_sched_run_until(r.sched, p.stop);
+    CHECK_EQ_U64(tsim_net_message_count(r.net), made);
+    rig_close(&r);
+}
+
 int main(void) {
     RUN(messages_come_at_the_configured_rate);
     RUN(messages_are_made_only_inside_the_window);
@@ -463,5 +616,10 @@ int main(void) {
     RUN(a_send_finished_as_it_is_made_starts_no_gap);
     RUN(a_lone_node_sends_nothing);
     RUN(destroy_stops_the_traffic);
+    RUN(peers_are_mutual_and_the_only_destinations);
+    RUN(unicasts_are_answered_and_answers_are_not);
+    RUN(an_answer_past_stop_is_not_sent);
+    RUN(answers_do_not_depend_on_the_protocol);
+    RUN(destroy_drops_the_answers_waiting);
     return CHECK_DONE();
 }

@@ -99,6 +99,9 @@ struct tsim_scenario {
     uint32_t len_max;
     double broadcast;
     bool closed;
+    uint32_t peers;
+    double reply;
+    tsim_time reply_delay;
     struct tsim_send sends[TSIM_SENDS_MAX];
     uint32_t send_count;
 
