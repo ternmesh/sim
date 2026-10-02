@@ -309,6 +309,67 @@ static void a_retraction_the_queue_refused_goes_later(void) {
     rig_close(&r);
 }
 
+/* Node 1 sends an announce as if from `sender`, which it is not: a sender is only bytes in the
+ * header, so one radio can stand in for any number of neighbours. The frame names node 0 as heard,
+ * says it names every node heard, promises another within ten minutes, and carries one route. */
+static void announce_as(struct rig *r, uint32_t sender, uint16_t ann_seq, uint32_t dst,
+                        uint16_t seq, uint16_t metric) {
+    struct tsim_tx tx = {
+        .lora = r->rc.lora,
+        .tx_dbm = r->rc.tx_dbm,
+        .purpose = TSIM_PURPOSE_ANNOUNCE,
+    };
+    uint8_t *b = tx.bytes;
+    uint8_t head[] = {
+        0x01, (uint8_t)sender, 0, 0, 0, (uint8_t)ann_seq, 0, 0, 0, 0x03, 0x58, 0x02, 1, 1};
+    memcpy(b, head, sizeof head);
+    uint8_t rest[] = {0,
+                      0,
+                      0,
+                      0,
+                      255,
+                      (uint8_t)dst,
+                      0,
+                      0,
+                      0,
+                      (uint8_t)seq,
+                      0,
+                      (uint8_t)metric,
+                      (uint8_t)(metric >> 8)};
+    memcpy(b + sizeof head, rest, sizeof rest);
+    tx.len = sizeof head + sizeof rest;
+    CHECK(tsim_node_send(tsim_net_node(r->net, 1), &tx) != 0);
+    tsim_sched_run_until(r->sched, tsim_sched_now(r->sched) + TSIM_S(5));
+}
+
+/* Node 0's four places for routes to node 7 hold routes that are cheap but infeasible, at an old
+ * seq. A newer route, dearer than any of them, has to take one of those places: it is the only one
+ * node 0 could select. */
+static void a_newer_route_displaces_infeasible_cheaper_ones(void) {
+    struct rig r;
+    rig_init(&r);
+    build(&r, 10, 10);
+    link(&r, 0, 1, LOSS_LOUD); /* nodes 2 to 9 are elsewhere: node 1 speaks for them */
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(30));
+    const uint32_t d = 7;
+    announce_as(&r, 6, 0, d, 0, 10); /* the best, selected and announced */
+    for (uint32_t v = 2; v <= 4; v++) {
+        announce_as(&r, v, 0, d, 0, 100);
+    }
+    tsim_sched_run_until(r.sched, TSIM_S(120)); /* node 0 announces it: feasibility distance ~82 */
+    uint32_t next;
+    CHECK(route(&r, 0, d, &next));
+    CHECK_EQ_U64(next, 6);
+    announce_as(&r, 6, 1, d, 0, TSIM_DISTVEC_METRIC_INF); /* retracted */
+    announce_as(&r, 5, 0, d, 0, 100);                     /* the fourth infeasible one */
+    CHECK(!route(&r, 0, d, &next));                       /* starved */
+    announce_as(&r, 8, 0, d, 1, 500);                     /* newer, dearer, feasible */
+    CHECK(route(&r, 0, d, &next));
+    CHECK_EQ_U64(next, 8);
+    rig_close(&r);
+}
+
 static void a_leaf_never_forwards(void) {
     struct rig r;
     rig_init(&r);
@@ -490,6 +551,7 @@ int main(void) {
     RUN(an_ihu_lost_is_sent_again_in_turn);
     RUN(a_link_gone_one_way_is_dropped_by_the_side_still_hearing);
     RUN(a_retraction_the_queue_refused_goes_later);
+    RUN(a_newer_route_displaces_infeasible_cheaper_ones);
     RUN(a_leaf_never_forwards);
     RUN(trickle_backs_off_and_resets_on_a_new_neighbour);
     RUN(announces_stay_under_the_cap);

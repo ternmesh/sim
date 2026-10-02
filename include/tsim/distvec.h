@@ -85,8 +85,9 @@
  * passes on. A starved node asks at once, unless it asked within request_interval, and again every
  * request_interval until it has a route, five times in all.
  *
- * Departures from Babel: a node keeps at most four routes per source - the best ones, and always
- * the selected one - as a node with a few kilobytes for its table would have to; there are no
+ * Departures from Babel: a node keeps at most four routes per source - always the selected one,
+ * and otherwise those it could select now before those it could not, then the newer seq, then the
+ * lower metric - as a node with a few kilobytes for its table would have to; there are no
  * route expiry timers, a route lasting as long as its neighbour does unless it is retracted; there
  * are no unicast hellos or IHU intervals of their own, everything riding on the announce; and the
  * announced metric is sticky, as above.

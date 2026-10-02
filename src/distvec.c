@@ -639,6 +639,33 @@ static void reselect(struct router *r, uint32_t d) {
     }
 }
 
+/* How much a cached route is worth keeping. */
+struct rank {
+    bool selectable; /* usable and feasible now */
+    uint16_t seq;
+    uint16_t total;
+};
+
+static struct rank rank_of(struct router *r, uint32_t d, const struct entry *e) {
+    uint16_t t = total(e->metric, slot(r, e->slot)->cost);
+    return (struct rank){
+        .selectable = t != INF && usable(r, e->slot, d) && feasible(&r->dest[d], e),
+        .seq = e->seq,
+        .total = t,
+    };
+}
+
+/* Whether `a` is worth less than `b`. */
+static bool below(struct rank a, struct rank b) {
+    if (a.selectable != b.selectable) {
+        return b.selectable;
+    }
+    if (a.seq != b.seq) {
+        return newer(b.seq, a.seq);
+    }
+    return a.total > b.total;
+}
+
 /* What the neighbour in slot `s` advertises about `d`. */
 static void update(struct router *r, uint32_t d, uint16_t seq, uint16_t metric, uint16_t s) {
     if (d == r->self || d >= r->nodes) {
@@ -655,23 +682,27 @@ static void update(struct router *r, uint32_t d, uint16_t seq, uint16_t metric, 
         e->seq = seq;
         e->metric = metric;
     } else {
-        /* A free place, or else the worst route that is not the selected one, if this beats it. */
-        uint16_t cost = slot(r, s)->cost;
+        /* A free place, or else the worst route that is not the selected one, if this beats it -
+         * worst by what makes a route worth keeping: one that could be selected now before one
+         * that could not, then the newer seq, then the lower metric. Ranked by metric alone, four
+         * stale routes cheaper than a newer one would keep it out, and the node starved. */
+        struct entry fresh = {.slot = s, .seq = seq, .metric = metric};
+        struct rank mine = rank_of(r, d, &fresh);
         struct entry *place = NULL;
-        uint16_t worst = 0;
+        struct rank worst = {0};
         for (int i = 0; i < ROUTES; i++) {
             struct entry *x = &ds->e[i];
             if (!x->slot) {
                 place = x;
                 break;
             }
-            uint16_t t = total(x->metric, slot(r, x->slot)->cost);
-            if (x->slot != ds->sel && t >= worst) {
-                worst = t;
+            struct rank k = rank_of(r, d, x);
+            if (x->slot != ds->sel && (!place || !below(worst, k))) {
+                worst = k;
                 place = x;
             }
         }
-        if (!place || (place->slot && total(metric, cost) >= worst)) {
+        if (!place || (place->slot && !below(worst, mine))) {
             return;
         }
         *place = (struct entry){.slot = s, .seq = seq, .metric = metric};
