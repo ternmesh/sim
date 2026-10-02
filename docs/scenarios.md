@@ -144,8 +144,9 @@ default.
 | `routing.cap_window` (`distvec`) | `1 min` | how much of its share each of the two buckets holds, at least one full-length frame |
 | `routing.burst` (`distvec`) | 4 | announce frames one announce event may send while changed routes are waiting, 1 to 16 |
 | `routing.ihu_max` (`distvec`) | 8 | neighbours an announce frame reports hearing, 0 to 48; the rest take their turn in later frames |
-| `routing.ref_len` (`distvec`) | 32 | bytes of the frame whose airtime, times the link's ETX, is the link's cost |
-| `routing.etx_max` (`distvec`) | 8 | links with a higher ETX are not used |
+| `routing.ref_len` (`distvec`) | 32 | bytes of the frame whose airtime, times the link's ETX with `routing.etx`, is the link's cost |
+| `routing.etx` (`distvec`) | `no` | `yes` costs each link its ETX, measured from the announces heard, times the reference frame's airtime; `no` costs every link heard both ways the same, so the metric counts hops. ETX measures the channel's load more than the link, and under traffic its routes starve (MSH-48) |
+| `routing.etx_max` (`distvec`) | 32 | links with a higher ETX are not used, whether or not `routing.etx` costs them by it |
 | `routing.hysteresis` (`distvec`) | 0.1 | how much better, as a share, another route has to be to replace the current one |
 | `routing.change` (`distvec`) | 0.25 | how far, as a share, a route's metric must move before it is announced at once, and within which the last metric announced is announced again |
 | `routing.request_interval` (`distvec`) | `10 s` | how often a node with no feasible route to a destination asks again, five times at most |
