@@ -384,6 +384,10 @@ static double floor_of(const struct router *r, uint8_t sent, double snr) {
     return (int8_t)sent - (snr - r->config.snr_floor_db);
 }
 
+/* What a frame says it went at: rounded up, so a receiver reckons its floor no lower than it is -
+ * tx_dbm, the one power that need not be whole, at worst under a dB high. */
+static uint8_t power_byte(double dbm) { return (uint8_t)(int8_t)ceil(dbm); }
+
 /* What a frame to a neighbour goes at: its floor and margin, and loud enough too for the node the
  * frame answers, whose floor is `back` - NAN for none. */
 static double power_for(const struct router *r, const struct neighbour *n, double back) {
@@ -392,15 +396,15 @@ static double power_for(const struct router *r, const struct neighbour *n, doubl
         return c->tx_dbm;
     }
     if (isnan(n->floor)) {
-        return floor(c->tx_dbm);
+        return c->tx_dbm;
     }
     double p = n->floor + c->margin_db + n->boost;
     if (!isnan(back) && back + c->margin_db > p) {
         p = back + c->margin_db;
     }
-    double lo = ceil(c->tx_min_dbm), hi = floor(c->tx_dbm);
+    double lo = ceil(c->tx_min_dbm);
     p = ceil(p);
-    return p < lo ? lo : p > hi ? hi : p;
+    return p < lo ? lo : p > c->tx_dbm ? c->tx_dbm : p;
 }
 
 /* The power frames for every neighbour go at: tx_dbm, or with power_k, loud enough for the
@@ -412,7 +416,7 @@ static void node_power(struct router *r) {
         r->node_dbm = c->tx_dbm;
         return;
     }
-    double hi = floor(c->tx_dbm), lo = ceil(c->tx_min_dbm);
+    double hi = c->tx_dbm, lo = ceil(c->tx_min_dbm);
     r->node_dbm = hi;
     if (!c->power_k) {
         return;
@@ -1050,7 +1054,7 @@ static uint32_t build(struct router *r, uint8_t *b) {
     uint32_t i = r->ann_head;
     b[0] = TYPE_ANNOUNCE;
     if (r->config.power) {
-        b[16] = (uint8_t)(int8_t)r->node_dbm;
+        b[16] = power_byte(r->node_dbm);
     }
     put32(b + 1, r->self);
     put16(b + 5, r->ann_seq);
@@ -1434,9 +1438,9 @@ static void hop_fire(void *ctx) {
             h->tries++;
             h->due = -1;
             if (r->config.power) {
-                double p = ceil(h->tx.tx_dbm + r->config.step_db), hi = floor(r->config.tx_dbm);
+                double p = ceil(h->tx.tx_dbm + r->config.step_db), hi = r->config.tx_dbm;
                 h->tx.tx_dbm = p > hi ? hi : p;
-                h->tx.bytes[18] = (uint8_t)(int8_t)lround(h->tx.tx_dbm);
+                h->tx.bytes[18] = power_byte(h->tx.tx_dbm);
             }
             h->handle = tsim_node_send(r->node, &h->tx);
             if (h->handle) {
@@ -1526,7 +1530,7 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
     tx.bytes[17] = hops;
     if (r->config.power) {
         tx.tx_dbm = power_for(r, n, back);
-        tx.bytes[18] = (uint8_t)(int8_t)lround(tx.tx_dbm);
+        tx.bytes[18] = power_byte(tx.tx_dbm);
     }
     if (len) {
         memcpy(tx.bytes + r->data_head, content, len);
@@ -2062,7 +2066,7 @@ uint32_t tsim_distvec_round(const void *self) { return ((const struct router *)s
 double tsim_distvec_power(const void *self, uint32_t nb) {
     const struct router *r = self;
     if (nb >= r->nodes || !r->slot_of[nb]) {
-        return r->config.power ? floor(r->config.tx_dbm) : r->config.tx_dbm;
+        return r->config.tx_dbm;
     }
     return power_for(r, &r->nb[r->slot_of[nb] - 1], NAN);
 }

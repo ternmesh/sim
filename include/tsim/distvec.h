@@ -180,21 +180,21 @@
  * acknowledgement's - goes only as loud as that neighbour needs, so it takes the channel from
  * fewer of the nodes around it: topology control, as in the ad-hoc literature. Announces, requests
  * and broadcasts still go at tx_dbm, since they are for every neighbour. Each announce then carries
- * the power it went at, one signed byte of dBm after the route count, which makes the head 17
- * bytes; and so does every data and acknowledgement frame, after the hops, which makes theirs 19.
- * The SNR a frame is heard at, less the SNR floor, is how much quieter it could have gone and
- * still been heard: what it went at less that is the neighbour's floor, the quietest it would
- * decode this node at, the channel's mean loss being the same both ways. A node keeps each
+ * the power it went at, one signed byte of dBm rounded up, after the route count, which makes the
+ * head 17 bytes; and so does every data and acknowledgement frame, after the hops, which makes
+ * theirs 19. The SNR a frame is heard at, less the SNR floor, is how much quieter it could have
+ * gone and still been heard: what it went at less that is the neighbour's floor, the quietest it
+ * would decode this node at, the channel's mean loss being the same both ways. A node keeps each
  * neighbour's floor, from its announces, as an average that weighs the latest a quarter.
  *
  * A frame to a neighbour goes at its floor plus margin_db plus the neighbour's boost, rounded up to
- * a whole dB and kept between tx_min_dbm and tx_dbm; at tx_dbm while the floor is unknown. A frame
- * sent on in answer to one received - a relay, or the destination's acknowledgement - goes loud
- * enough, too, for the node it came from, at that frame's floor plus margin_db: that node listens
- * for it, its implicit acknowledgement. Each try a hop sends again goes step_db louder, rounded up,
- * and a hop given up adds step_db to the neighbour's boost, which one heard passed on takes 1 dB
- * from: a link that loses frames at the power it was given gets more, and gives it back as they get
- * through.
+ * a whole dB and kept between tx_min_dbm and tx_dbm, which itself need not be whole; at tx_dbm
+ * while the floor is unknown. A frame sent on in answer to one received - a relay, or the
+ * destination's acknowledgement - goes loud enough, too, for the node it came from, at that frame's
+ * floor plus margin_db: that node listens for it, its implicit acknowledgement. Each try a hop
+ * sends again goes step_db louder, rounded up, and a hop given up adds step_db to the neighbour's
+ * boost, which one heard passed on takes 1 dB from: a link that loses frames at the power it was
+ * given gets more, and gives it back as they get through.
  *
  * With power_k, frames for every neighbour - announces, requests and broadcasts - go only as loud
  * as the power_k neighbours with the lowest floors need, with margin_db, rounded up and kept

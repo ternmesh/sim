@@ -1225,6 +1225,25 @@ static void power_k_reaches_the_k_nearest(void) {
     rig_close(&r);
 }
 
+/* A tx_dbm that is not a whole dBm is still what full power means: not rounded down. */
+static void a_fractional_tx_dbm_is_kept_at_the_top(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.power = true;
+    r.rc.power_k = 0;
+    r.rc.tx_dbm = 13.5;
+    build(&r, 3, 1);
+    link(&r, 0, 1, 100);
+    link(&r, 1, 2, 128); /* its floor 3.5 dBm: 13.5 with the margin */
+    tsim_net_start(r.net);
+    CHECK(tsim_distvec_power(at(&r, 1), 2) == 13.5); /* not heard yet */
+    CHECK(tsim_distvec_node_power(at(&r, 1)) == 13.5);
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    CHECK_EQ_I64((int64_t)tsim_distvec_power(at(&r, 1), 0), -9); /* 100 - 114.5, up to tx_min */
+    CHECK(tsim_distvec_power(at(&r, 1), 2) == 13.5);             /* 14 is over the top */
+    rig_close(&r);
+}
+
 static void power_settings_are_checked(void) {
     struct tsim_lora l = tsim_lora_default(9, 125000);
     struct tsim_distvec_config c = tsim_distvec_default(0, &l, 14.0);
@@ -1247,6 +1266,7 @@ int main(void) {
     RUN(a_relay_goes_loud_enough_for_the_hop_before);
     RUN(a_hop_lost_at_its_power_is_tried_again_louder);
     RUN(power_k_reaches_the_k_nearest);
+    RUN(a_fractional_tx_dbm_is_kept_at_the_top);
     RUN(power_settings_are_checked);
     RUN(a_message_crosses_the_line_and_is_acknowledged);
     RUN(every_node_of_a_grid_reaches_every_other);
