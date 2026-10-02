@@ -66,7 +66,7 @@ def cell(rows, metric):
     m = statistics.mean(values)
     sd = statistics.stdev(values) if len(values) > 1 else 0.0
     if metric == "links":
-        return "%.0f" % m
+        return "%.0f ±%.0f" % (m, sd)
     if metric == "per_s":
         return "%.2f ±%.2f" % (m, sd)
     return "%.1f%% ±%.1f" % (m, sd)
@@ -81,7 +81,7 @@ def main():
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="runs at once")
     parser.add_argument("--json", metavar="PATH", help="also write every run's figures here")
     parser.add_argument("-s", dest="set", action="append", default=[], metavar="KEY=VALUE",
-                        help="a setting to override in every scenario")
+                        help="a setting to override in every scenario, but seed and radio.tx_dbm")
     args = parser.parse_args()
     if args.seeds < 1:
         parser.error("--seeds must be at least 1")
@@ -89,6 +89,11 @@ def main():
         powers = [float(p) for p in args.power.split(",")]
     except ValueError:
         parser.error("--power takes numbers, such as -5,0,20")
+    for s in args.set:
+        # The sweep sets these itself; an override would run every row at one value and label
+        # it with another.
+        if s.split("=", 1)[0].strip() in ("seed", "radio.tx_dbm"):
+            parser.error("-s %s: the sweep sets seed and radio.tx_dbm; use --seeds and --power" % s)
 
     cases = [(name, scenario, power, seed) for name, scenario in CANDIDATES for power in powers
              for seed in range(1, args.seeds + 1)]
