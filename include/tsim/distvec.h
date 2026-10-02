@@ -176,6 +176,34 @@
  * airtimes of the frame and dropping it if it hears bcast_cancel copies first. Scoped broadcast
  * is MSH-34's.
  *
+ * Power control (MSH-45), when `power` is on. A frame sent to one neighbour - a message's hop, an
+ * acknowledgement's - goes only as loud as that neighbour needs, so it takes the channel from
+ * fewer of the nodes around it: topology control, as in the ad-hoc literature. Announces, requests
+ * and broadcasts still go at tx_dbm, since they are for every neighbour. Each announce then carries
+ * the power it went at, one signed byte of dBm after the route count, which makes the head 17
+ * bytes; and so does every data and acknowledgement frame, after the hops, which makes theirs 19.
+ * The SNR a frame is heard at, less the SNR floor, is how much quieter it could have gone and
+ * still been heard: what it went at less that is the neighbour's floor, the quietest it would
+ * decode this node at, the channel's mean loss being the same both ways. A node keeps each
+ * neighbour's floor, from its announces, as an average that weighs the latest a quarter.
+ *
+ * A frame to a neighbour goes at its floor plus margin_db plus the neighbour's boost, rounded up to
+ * a whole dB and kept between tx_min_dbm and tx_dbm; at tx_dbm while the floor is unknown. A frame
+ * sent on in answer to one received - a relay, or the destination's acknowledgement - goes loud
+ * enough, too, for the node it came from, at that frame's floor plus margin_db: that node listens
+ * for it, its implicit acknowledgement. Each try a hop sends again goes step_db louder, and a hop
+ * given up adds step_db to the neighbour's boost, which one heard passed on takes 1 dB from: a
+ * link that loses frames at the power it was given gets more, and gives it back as they get
+ * through.
+ *
+ * With power_k, frames for every neighbour - announces, requests and broadcasts - go only as loud
+ * as the power_k neighbours with the lowest floors need, with margin_db, rounded up and kept
+ * between tx_min_dbm and tx_dbm: k-neighbour topology control (Blough et al., KNeigh), so a node in
+ * a crowd hears and is heard by a few near neighbours, not hundreds. It goes at tx_dbm until it
+ * knows power_k floors, which its first announces heard tell it, and is worked out again for each
+ * announce and every housekeeping round. A neighbour quieter than this node needs to hear it is not
+ * heard, and so not used: links stay ones heard both ways.
+ *
  * Not yet here, and left out of MSH-41 for issues of their own: the store-and-forward floor, which
  * only shows its worth under mobility and churn, and per-link modulation, which needs the slotted
  * MAC. */
@@ -217,6 +245,13 @@ struct tsim_distvec_config {
     uint8_t bcast_hops;
     double bcast_window;
     uint8_t bcast_cancel; /* copies heard, its own first one included, 0 for never */
+
+    bool power;          /* power control, as above; off, all go at tx_dbm */
+    double tx_min_dbm;   /* the quietest a frame goes, a whole dBm at least below tx_dbm */
+    double margin_db;    /* above the quietest a neighbour decodes at, 0 to 60 */
+    double step_db;      /* added for each try a hop has lost, 0 to 60 */
+    double snr_floor_db; /* the lowest SNR the modulation demodulates at */
+    uint8_t power_k;     /* neighbours frames for all of them reach; 0 for tx_dbm */
 };
 
 /* Every node infrastructure; Trickle from 8 s to 8 min (six doublings), redundancy 3, announcing
@@ -225,7 +260,9 @@ struct tsim_distvec_config {
  * 32-byte reference frame, ETX up to 8, 10% hysteresis and a 25% change threshold, a request
  * every 10 s while starved; a jitter of up to 2 airtimes; 32 hops, 2 hop retries after 4 s, 3
  * retries waiting 5 s plus 4 times the metric; broadcasts over 4 hops, waiting up to 3 airtimes
- * and dropped on the second copy heard.
+ * and dropped on the second copy heard. Power control off; when on, frames go no quieter than
+ * -9 dBm, the SX1262's least, with a 10 dB margin and 3 dB more for each try lost, and the SNR
+ * floor is Semtech's for the SF: -7.5 dB at SF7, 2.5 dB lower for each SF above.
  *
  * The cap is per node, so in a neighbourhood of n nodes routing may take n times it of the
  * channel: 2% - Reticulum's announce cap - saturated a 200-node town at SF9, which 0.5% did not.
@@ -256,5 +293,10 @@ tsim_time tsim_distvec_promise(const void *self);
 
 /* The IHU round its last announce told: how many frames it takes to name every neighbour. */
 uint32_t tsim_distvec_round(const void *self);
+
+/* What a frame from the node to neighbour `nb` would go at, answering none, and what its frames for
+ * every neighbour go at, in dBm. */
+double tsim_distvec_power(const void *self, uint32_t nb);
+double tsim_distvec_node_power(const void *self);
 
 #endif

@@ -556,6 +556,24 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "bcast_cancel") == 0) {
         return distvec_count(value, 0, UINT8_MAX, &c->bcast_cancel);
     }
+    if (strcmp(key, "power") == 0) {
+        return parse_yes_no(value, &c->power) ? NULL : "expected yes or no";
+    }
+    if (strcmp(key, "tx_min") == 0) {
+        return parse_double(value, &c->tx_min_dbm) ? NULL : "expected a power in dBm";
+    }
+    if (strcmp(key, "margin") == 0) {
+        return distvec_factor(value, 0, 60, &c->margin_db);
+    }
+    if (strcmp(key, "step") == 0) {
+        return distvec_factor(value, 0, 60, &c->step_db);
+    }
+    if (strcmp(key, "power_k") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->power_k);
+    }
+    if (strcmp(key, "snr_floor") == 0) {
+        return parse_double(value, &c->snr_floor_db) ? NULL : "expected an SNR in dB";
+    }
     return "is not a setting of distvec";
 }
 

@@ -132,6 +132,8 @@ struct neighbour {
     tsim_time heard;
     tsim_time promise; /* how soon it said it would announce again */
     uint16_t ihu_seq;  /* the announce that last named this node */
+    double floor;      /* the quietest it decodes this node at, in dBm; NAN until known */
+    double boost;      /* power control: dB more for frames to it, for hops it has lost */
 };
 
 /* A frame sent to a next hop, waiting to hear the next hop pass it on. */
@@ -194,6 +196,9 @@ struct router {
     uint32_t self;
     uint32_t nodes;
     bool infra;
+    uint32_t ann_head; /* an announce's head, and a data frame's: longer with power control */
+    uint32_t data_head;
+    double node_dbm; /* what frames for every neighbour go at */
     struct tsim_distvec_config config;
     struct tsim_rng rng;
     double ref_ms; /* the reference frame's airtime */
@@ -289,6 +294,10 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .bcast_hops = 4,
         .bcast_window = 3,
         .bcast_cancel = 2,
+        .tx_min_dbm = -9,
+        .margin_db = 10,
+        .step_db = 3,
+        .snr_floor_db = -7.5 - 2.5 * (lora->sf - 7), /* Semtech's */
     };
 }
 
@@ -319,6 +328,13 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
         !(c->bcast_window >= 0 && c->bcast_window <= 1e3) ||
         !(c->jitter >= 0 && c->jitter <= 1e3)) {
         return "a factor is out of range";
+    }
+    if (c->power &&
+        (!(c->tx_dbm >= -128 && c->tx_dbm <= 127) || !(c->tx_min_dbm >= -128) ||
+         !(ceil(c->tx_min_dbm) <= floor(c->tx_dbm)) || !(c->margin_db >= 0 && c->margin_db <= 60) ||
+         !(c->step_db >= 0 && c->step_db <= 60) || !isfinite(c->snr_floor_db))) {
+        return "with power control, tx_dbm and tx_min_dbm are not whole dBm apart within -128 to "
+               "127, or a margin is out of range";
     }
     if (c->hop_max < 1 || c->bcast_hops > 254) {
         return "hop_max is 0, or bcast_hops is over 254";
@@ -352,10 +368,71 @@ static struct tsim_tx frame(const struct router *r, enum tsim_purpose purpose, u
     return (struct tsim_tx){
         .channel = r->config.channel,
         .lora = r->config.lora,
-        .tx_dbm = r->config.tx_dbm,
+        .tx_dbm = r->node_dbm,
         .purpose = purpose,
         .priority = priority,
     };
+}
+
+/* --- Power --- */
+
+/* The quietest a neighbour would decode this node at: what its frame went at, a byte of dBm, less
+ * how far above the floor it was heard. */
+static double floor_of(const struct router *r, uint8_t sent, double snr) {
+    return (int8_t)sent - (snr - r->config.snr_floor_db);
+}
+
+/* What a frame to a neighbour goes at: its floor and margin, and loud enough too for the node the
+ * frame answers, whose floor is `back` - NAN for none. */
+static double power_for(const struct router *r, const struct neighbour *n, double back) {
+    const struct tsim_distvec_config *c = &r->config;
+    if (!c->power) {
+        return c->tx_dbm;
+    }
+    if (isnan(n->floor)) {
+        return floor(c->tx_dbm);
+    }
+    double p = n->floor + c->margin_db + n->boost;
+    if (!isnan(back) && back + c->margin_db > p) {
+        p = back + c->margin_db;
+    }
+    double lo = ceil(c->tx_min_dbm), hi = floor(c->tx_dbm);
+    p = ceil(p);
+    return p < lo ? lo : p > hi ? hi : p;
+}
+
+/* The power frames for every neighbour go at: tx_dbm, or with power_k, loud enough for the
+ * power_k neighbours with the lowest floors - k-neighbour topology control - while it knows that
+ * many. */
+static void node_power(struct router *r) {
+    const struct tsim_distvec_config *c = &r->config;
+    if (!c->power) {
+        r->node_dbm = c->tx_dbm;
+        return;
+    }
+    double hi = floor(c->tx_dbm), lo = ceil(c->tx_min_dbm);
+    r->node_dbm = hi;
+    if (!c->power_k) {
+        return;
+    }
+    double low[UINT8_MAX]; /* the k lowest floors, in order */
+    unsigned have = 0, k = c->power_k;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        if (!n->used || isnan(n->floor) || (have == k && n->floor >= low[k - 1])) {
+            continue;
+        }
+        unsigned at = have < k ? have++ : k - 1;
+        while (at > 0 && low[at - 1] > n->floor) {
+            low[at] = low[at - 1];
+            at--;
+        }
+        low[at] = n->floor;
+    }
+    if (have == k) {
+        double p = ceil(low[k - 1] + c->margin_db);
+        r->node_dbm = p < lo ? lo : p > hi ? hi : p;
+    }
 }
 
 /* --- Links --- */
@@ -798,8 +875,8 @@ static uint16_t neighbour(struct router *r, uint32_t id) {
         }
         r->nb_count++;
     }
-    r->nb[i] =
-        (struct neighbour){.id = id, .used = true, .ihu_owed = true, .cost = INF, .cost_used = INF};
+    r->nb[i] = (struct neighbour){
+        .id = id, .used = true, .ihu_owed = true, .cost = INF, .cost_used = INF, .floor = NAN};
     r->slot_of[id] = (uint16_t)(i + 1);
     return (uint16_t)(i + 1);
 }
@@ -962,14 +1039,17 @@ static tsim_time promise_time(uint16_t code) {
 /* How many IHUs an announce frame may carry: ihu_max, less what would leave infrastructure no
  * room for a single route. */
 static uint8_t ihu_room(const struct router *r) {
-    uint32_t room = (FRAME_MAX - ANNOUNCE_HEAD - (r->infra ? ROUTE_LEN : 0)) / IHU_LEN;
+    uint32_t room = (FRAME_MAX - r->ann_head - (r->infra ? ROUTE_LEN : 0)) / IHU_LEN;
     return (uint8_t)(r->config.ihu_max < room ? r->config.ihu_max : room);
 }
 
 /* Builds one announce frame. Returns its length. */
 static uint32_t build(struct router *r, uint8_t *b) {
-    uint32_t i = ANNOUNCE_HEAD;
+    uint32_t i = r->ann_head;
     b[0] = TYPE_ANNOUNCE;
+    if (r->config.power) {
+        b[16] = (uint8_t)(int8_t)r->node_dbm;
+    }
     put32(b + 1, r->self);
     put16(b + 5, r->ann_seq);
     put16(b + 7, r->seq);
@@ -1058,7 +1138,7 @@ static uint32_t planned(const struct router *r) {
     for (size_t k = 0; k < r->nb_count; k++) {
         named += r->nb[k].used;
     }
-    uint32_t len = ANNOUNCE_HEAD + (uint32_t)(named < ihu_room(r) ? named : ihu_room(r)) * IHU_LEN;
+    uint32_t len = r->ann_head + (uint32_t)(named < ihu_room(r) ? named : ihu_room(r)) * IHU_LEN;
     if (r->infra) {
         uint64_t routes = (uint64_t)r->urgent_count + r->selected + r->retracting;
         uint64_t room = (FRAME_MAX - len) / ROUTE_LEN;
@@ -1077,7 +1157,7 @@ static void unsent(struct router *r, const uint8_t *b) {
     for (size_t k = 0; k < r->nb_count; k++) {
         r->nb[k].ihu_owed = r->nb[k].owed_was;
     }
-    const uint8_t *p = b + ANNOUNCE_HEAD + (uint32_t)b[14] * IHU_LEN;
+    const uint8_t *p = b + r->ann_head + (uint32_t)b[14] * IHU_LEN;
     for (uint8_t k = 0; k < b[15]; k++, p += ROUTE_LEN) {
         uint32_t d = get32(p);
         if (get16(p + 6) == INF) {
@@ -1105,6 +1185,7 @@ static void announce(struct router *r) {
             tsim_timer_start(r->cap_timer, (tsim_time)ceil(wait) + 1);
             return;
         }
+        node_power(r);
         struct tsim_tx tx = frame(r, TSIM_PURPOSE_ANNOUNCE, PRIORITY_ANNOUNCE);
         tx.len = build(r, tx.bytes);
         uint64_t handle = tsim_node_send(r->node, &tx);
@@ -1122,15 +1203,15 @@ static void announce(struct router *r) {
     }
 }
 
-static void on_announce(struct router *r, const uint8_t *b, uint32_t len) {
-    if (len < ANNOUNCE_HEAD) {
+static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double snr) {
+    if (len < r->ann_head) {
         return;
     }
     uint32_t from = get32(b + 1);
     uint16_t rotation = get16(b + 12);
     uint8_t ihus = b[14], routes = b[15];
     if (from >= r->nodes || from == r->self ||
-        ANNOUNCE_HEAD + (uint32_t)ihus * IHU_LEN + (uint32_t)routes * ROUTE_LEN > len) {
+        r->ann_head + (uint32_t)ihus * IHU_LEN + (uint32_t)routes * ROUTE_LEN > len) {
         return;
     }
     bool fresh = r->slot_of[from] == 0;
@@ -1155,6 +1236,10 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len) {
     n->heard = now(r);
     n->infra = b[9] & FLAG_INFRA;
     n->promise = promise_time(get16(b + 10));
+    if (r->config.power) {
+        double floor = floor_of(r, b[16], snr);
+        n->floor = isnan(n->floor) ? floor : 0.75 * n->floor + 0.25 * floor;
+    }
     if (fresh) {
         n->ihu_seq = seq;
     }
@@ -1163,7 +1248,7 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len) {
      * over, and one more, when it names them in turn, for the frames that name new neighbours
      * first - does not hear it. Counted in its announce numbers, so a frame lost on the air counts
      * too, and however slowly the sender announces, its last IHU stands until its round is done. */
-    const uint8_t *p = b + ANNOUNCE_HEAD;
+    const uint8_t *p = b + r->ann_head;
     bool named = false;
     for (uint8_t k = 0; k < ihus; k++, p += IHU_LEN) {
         if (get32(p) == r->self) {
@@ -1269,6 +1354,8 @@ static void on_request(struct router *r, const uint8_t *b, uint32_t len) {
  * than etx_max allows; one that lost a frame to a busy moment recovers as its announces come in. */
 static void missed(struct router *r, uint16_t s) {
     struct neighbour *n = slot(r, s);
+    double room = r->config.tx_dbm - r->config.tx_min_dbm;
+    n->boost = n->boost + r->config.step_db > room ? room : n->boost + r->config.step_db;
     n->history = (uint16_t)(n->history << HOP_MISS);
     n->span = HISTORY;
     uint16_t was = n->cost;
@@ -1344,6 +1431,11 @@ static void hop_fire(void *ctx) {
         if (h->tries < r->config.hop_retries) {
             h->tries++;
             h->due = -1;
+            if (r->config.power) {
+                double p = floor(h->tx.tx_dbm + r->config.step_db), hi = floor(r->config.tx_dbm);
+                h->tx.tx_dbm = p > hi ? hi : p;
+                h->tx.bytes[18] = (uint8_t)(int8_t)lround(h->tx.tx_dbm);
+            }
             h->handle = tsim_node_send(r->node, &h->tx);
             if (h->handle) {
                 i++;
@@ -1389,6 +1481,10 @@ static void overheard(struct router *r, const uint8_t *b) {
             if (h->due < 0 && tsim_node_cancel(r->node, h->handle)) {
                 withdrawn(r, h->handle);
             }
+            uint16_t s = r->slot_of[h->next];
+            if (s && slot(r, s)->boost > 0) {
+                slot(r, s)->boost = slot(r, s)->boost > 1 ? slot(r, s)->boost - 1 : 0;
+            }
             drop_hop(r, i);
             continue;
         }
@@ -1403,16 +1499,19 @@ static void hold(struct router *r, const struct tsim_tx *tx, uint64_t key, bool 
                  double airtimes);
 
 /* A data or acknowledgement frame towards `dst`, along the selected route: at once if this node
- * made it, and after a jitter if it answers one received. Returns false with no route; with one,
- * `queued`, if given, is the handle of a frame this node made, or 0 if the queue refused it. */
+ * made it, and after a jitter if it answers one received, whose sender's floor is `back` (NAN for
+ * none). Returns false with no route; with one, `queued`, if given, is the handle of a frame this
+ * node made, or 0 if the queue refused it. */
 static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t dst, uint32_t id,
                         uint8_t hops, const uint8_t *content, uint32_t len,
-                        enum tsim_purpose purpose, uint64_t carries, uint64_t *queued) {
+                        enum tsim_purpose purpose, uint64_t carries, double back,
+                        uint64_t *queued) {
     struct dest *ds = &r->dest[dst];
     if (!ds->sel) {
         return false;
     }
-    uint32_t next = slot(r, ds->sel)->id;
+    const struct neighbour *n = slot(r, ds->sel);
+    uint32_t next = n->id;
     struct tsim_tx tx = frame(r, purpose,
                               type == TYPE_ACK               ? PRIORITY_CONTROL
                               : purpose == TSIM_PURPOSE_DATA ? PRIORITY_DATA
@@ -1423,13 +1522,17 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
     put32(tx.bytes + 9, dst);
     put32(tx.bytes + 13, id);
     tx.bytes[17] = hops;
-    if (len) {
-        memcpy(tx.bytes + DATA_HEAD, content, len);
+    if (r->config.power) {
+        tx.tx_dbm = power_for(r, n, back);
+        tx.bytes[18] = (uint8_t)(int8_t)lround(tx.tx_dbm);
     }
-    tx.len = DATA_HEAD + len;
+    if (len) {
+        memcpy(tx.bytes + r->data_head, content, len);
+    }
+    tx.len = r->data_head + len;
     if (carries) {
         tx.carries = carries;
-        tx.carries_at = DATA_HEAD;
+        tx.carries_at = r->data_head;
     }
     /* The last hop of an acknowledgement has nothing to hear. */
     bool listen = !(type == TYPE_ACK && next == dst);
@@ -1462,7 +1565,7 @@ static void send_attempt(struct awaiting *a) {
     tsim_time wait = r->config.ack_wait;
     uint64_t handle = 0;
     if (route_frame(r, TYPE_DATA, r->self, a->dst, a->id, r->config.hop_max, a->content, a->len,
-                    TSIM_PURPOSE_DATA, a->id, &handle)) {
+                    TSIM_PURPOSE_DATA, a->id, NAN, &handle)) {
         uint16_t metric = total(entry_by(ds, ds->sel)->metric, slot(r, ds->sel)->cost);
         wait += (tsim_time)(r->config.ack_factor * metric * (double)TSIM_MS(1));
         if (handle) {
@@ -1616,7 +1719,7 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
         tsim_node_finished(r->node, msg->id);
         return true;
     }
-    if (DATA_HEAD + msg->len > FRAME_MAX) {
+    if (r->data_head + msg->len > FRAME_MAX) {
         return false;
     }
     struct awaiting *a = calloc(1, sizeof *a);
@@ -1638,8 +1741,9 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
     return true;
 }
 
-static void on_data(struct router *r, const uint8_t *b, uint32_t len) {
+static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr) {
     uint8_t type = b[0], hops = b[17];
+    double back = r->config.power ? floor_of(r, b[18], snr) : NAN;
     uint32_t next = get32(b + 1), src = get32(b + 5), dst = get32(b + 9), id = get32(b + 13);
     if (src >= r->nodes || dst >= r->nodes) {
         return;
@@ -1660,7 +1764,7 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len) {
     if (type == TYPE_DATA && dst == r->self) {
         tsim_node_deliver(r->node, id);
         if (!route_frame(r, TYPE_ACK, r->self, src, id, r->config.hop_max, NULL, 0,
-                         TSIM_PURPOSE_CONTROL, 0, NULL)) {
+                         TSIM_PURPOSE_CONTROL, 0, back, NULL)) {
             starved(r, src);
         }
         return;
@@ -1674,8 +1778,9 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len) {
     }
     mark_seen(r, key);
     bool data = type == TYPE_DATA;
-    if (!route_frame(r, type, src, dst, id, (uint8_t)(hops - 1), b + DATA_HEAD, len - DATA_HEAD,
-                     data ? TSIM_PURPOSE_RELAY : TSIM_PURPOSE_CONTROL, data ? id : 0, NULL)) {
+    if (!route_frame(r, type, src, dst, id, (uint8_t)(hops - 1), b + r->data_head,
+                     len - r->data_head, data ? TSIM_PURPOSE_RELAY : TSIM_PURPOSE_CONTROL,
+                     data ? id : 0, back, NULL)) {
         /* Sent here, so the hop before still has the route: if it had it from this node, its
          * retraction never got there. Say it again. */
         struct dest *ds = &r->dest[dst];
@@ -1734,15 +1839,15 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
     }
     switch (rx->bytes[0]) {
     case TYPE_ANNOUNCE:
-        on_announce(r, rx->bytes, rx->len);
+        on_announce(r, rx->bytes, rx->len, rx->snr_db);
         return;
     case TYPE_REQUEST:
         on_request(r, rx->bytes, rx->len);
         return;
     case TYPE_DATA:
     case TYPE_ACK:
-        if (rx->len >= DATA_HEAD) {
-            on_data(r, rx->bytes, rx->len);
+        if (rx->len >= r->data_head) {
+            on_data(r, rx->bytes, rx->len, rx->snr_db);
         }
         return;
     case TYPE_BCAST:
@@ -1826,6 +1931,7 @@ static void house_fire(void *ctx) {
         trickle_reset(r);
         r->changed = false;
     }
+    node_power(r);
     tsim_timer_start(r->house, house_period(r));
 }
 
@@ -1875,6 +1981,9 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->nodes = tsim_node_count(node);
     r->infra = tsim_nodeset_contains(c->relays, r->self) == 1;
     r->config = *c;
+    r->ann_head = ANNOUNCE_HEAD + (c->power ? 1 : 0);
+    r->data_head = DATA_HEAD + (c->power ? 1 : 0);
+    node_power(r);
     tsim_node_rng(node, TSIM_STREAM_ROUTING, &r->rng);
     r->ref_ms = (double)tsim_lora_airtime(&c->lora, c->ref_len) / (double)TSIM_MS(1);
     r->dest = calloc(r->nodes, sizeof *r->dest);
@@ -1947,6 +2056,16 @@ uint32_t tsim_distvec_neighbours(const void *self) {
 tsim_time tsim_distvec_promise(const void *self) { return ((const struct router *)self)->promised; }
 
 uint32_t tsim_distvec_round(const void *self) { return ((const struct router *)self)->round; }
+
+double tsim_distvec_power(const void *self, uint32_t nb) {
+    const struct router *r = self;
+    if (nb >= r->nodes || !r->slot_of[nb]) {
+        return r->config.power ? floor(r->config.tx_dbm) : r->config.tx_dbm;
+    }
+    return power_for(r, &r->nb[r->slot_of[nb] - 1], NAN);
+}
+
+double tsim_distvec_node_power(const void *self) { return ((const struct router *)self)->node_dbm; }
 
 tsim_time tsim_distvec_interval(const void *self) {
     return ((const struct router *)self)->interval;

@@ -1125,8 +1125,113 @@ static void the_config_is_checked(void) {
     CHECK(tsim_distvec_check(&slow) == NULL);
 }
 
+/* With power control, SF7 and 14 dBm: a neighbour at loss L is heard at SNR 131 - L, so its floor
+ * is L - 124.5 dBm, and a frame to it goes at L - 114.5, rounded up, between -9 and 14. */
+static void power_rig(struct rig *r, uint32_t nodes, const double *losses) {
+    rig_init(r);
+    r->rc.power = true;
+    build(r, nodes, 1);
+    for (uint32_t i = 0; i + 1 < nodes; i++) {
+        link(r, i, i + 1, losses[i]);
+    }
+    tsim_net_start(r->net);
+}
+
+static void a_near_neighbour_is_sent_to_quieter_than_a_far_one(void) {
+    struct rig r;
+    double losses[] = {115, 122};
+    power_rig(&r, 3, losses);
+    CHECK_EQ_I64((int64_t)tsim_distvec_power(at(&r, 1), 0), 14); /* not heard yet */
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    CHECK_EQ_I64((int64_t)tsim_distvec_power(at(&r, 1), 0), 1);    /* 115 - 114.5, up */
+    CHECK_EQ_I64((int64_t)tsim_distvec_power(at(&r, 1), 2), 8);    /* 122 - 114.5 */
+    CHECK_EQ_I64((int64_t)tsim_distvec_node_power(at(&r, 1)), 14); /* power_k 0: every frame else */
+    rig_close(&r);
+
+    double near[] = {100, 100};
+    power_rig(&r, 3, near);
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    CHECK_EQ_I64((int64_t)tsim_distvec_power(at(&r, 1), 0), -9); /* no quieter than tx_min */
+    rig_close(&r);
+}
+
+/* Every relay must be heard by the hop before it, which listens for it: on a line whose links
+ * alternate near and far, a relay sending on over a near link still goes loud enough for the far
+ * one it was sent over, so no hop has to try again. */
+static void a_relay_goes_loud_enough_for_the_hop_before(void) {
+    struct rig r;
+    double losses[] = {100, 120, 100, 120, 100};
+    power_rig(&r, 6, losses);
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    uint64_t m = tsim_net_originate(r.net, 0, 5, 40);
+    tsim_sched_run_until(r.sched, TSIM_S(360));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 1);
+    for (uint32_t i = 1; i < 5; i++) {
+        CHECK_EQ_U64(frames(&r, i, TSIM_PURPOSE_RELAY), 1);
+    }
+    rig_close(&r);
+}
+
+/* A link that has got worse since its floor was measured loses the first try, and the second goes
+ * step_db louder. */
+static void a_hop_lost_at_its_power_is_tried_again_louder(void) {
+    struct rig r;
+    double losses[] = {100, 120, 100};
+    power_rig(&r, 4, losses);
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    CHECK_EQ_I64((int64_t)tsim_distvec_power(at(&r, 1), 2), 6);
+    link(&r, 1, 2, 131); /* at 6 dBm, -8 dB: under the floor; at 9 dBm, -5 */
+    uint64_t m = tsim_net_originate(r.net, 0, 3, 40);
+    /* Before the source would send it again: its acknowledgement crosses the same link. */
+    tsim_sched_run_until(r.sched, TSIM_S(300) + TSIM_MS(4800));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 1);
+    CHECK_EQ_U64(frames(&r, 1, TSIM_PURPOSE_RELAY), 2);
+    rig_close(&r);
+}
+
+/* With power_k, frames for every neighbour go loud enough for the k with the lowest floors. */
+static void power_k_reaches_the_k_nearest(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.power = true;
+    r.rc.power_k = 2;
+    build(&r, 4, 1);
+    link(&r, 0, 1, 100); /* floors -24.5, -14.5 and -4.5 */
+    link(&r, 0, 2, 110);
+    link(&r, 0, 3, 120);
+    tsim_net_start(r.net);
+    CHECK_EQ_I64((int64_t)tsim_distvec_node_power(at(&r, 0)), 14); /* none known yet */
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    CHECK_EQ_I64((int64_t)tsim_distvec_node_power(at(&r, 0)), -4); /* -14.5 + 10, up */
+    rig_close(&r);
+}
+
+static void power_settings_are_checked(void) {
+    struct tsim_lora l = tsim_lora_default(9, 125000);
+    struct tsim_distvec_config c = tsim_distvec_default(0, &l, 14.0);
+    CHECK(c.snr_floor_db == -12.5);
+    c.power = true;
+    CHECK(tsim_distvec_check(&c) == NULL);
+    struct tsim_distvec_config bad = c;
+    bad.tx_min_dbm = 14.5; /* no whole dBm between */
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad = c;
+    bad.margin_db = -1;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.power = false; /* not looked at without power control */
+    CHECK(tsim_distvec_check(&bad) == NULL);
+}
+
 int main(void) {
     RUN(a_line_converges_on_its_one_path);
+    RUN(a_near_neighbour_is_sent_to_quieter_than_a_far_one);
+    RUN(a_relay_goes_loud_enough_for_the_hop_before);
+    RUN(a_hop_lost_at_its_power_is_tried_again_louder);
+    RUN(power_k_reaches_the_k_nearest);
+    RUN(power_settings_are_checked);
     RUN(a_message_crosses_the_line_and_is_acknowledged);
     RUN(every_node_of_a_grid_reaches_every_other);
     RUN(a_one_way_link_is_never_used);
