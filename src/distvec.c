@@ -862,7 +862,9 @@ static uint32_t build(struct router *r, uint8_t *b) {
             }
         }
         r->urgent_count -= taken;
-        memmove(r->urgent, r->urgent + taken, r->urgent_count * sizeof *r->urgent);
+        if (r->urgent_count) {
+            memmove(r->urgent, r->urgent + taken, r->urgent_count * sizeof *r->urgent);
+        }
         for (uint32_t k = 0; k < r->nodes && i + ROUTE_LEN <= FRAME_MAX; k++) {
             uint32_t d = r->cursor;
             r->cursor = (r->cursor + 1) % r->nodes;
@@ -943,7 +945,7 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len) {
         if (gap == 0 || gap >= 0x8000) {
             return; /* a copy, or older than the last: nothing new */
         }
-        n->history = gap >= HISTORY ? 1 : (uint16_t)(n->history << gap | 1);
+        n->history = (uint16_t)(gap >= HISTORY ? 1u : (unsigned)n->history << gap | 1u);
         n->span = (uint8_t)(n->span + gap > HISTORY ? HISTORY : n->span + gap);
     }
     n->last_seq = seq;
