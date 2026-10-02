@@ -1309,6 +1309,11 @@ bool tsim_scenario_read_links(const struct tsim_scenario *s, const char *text,
 
 /* --- Running --- */
 
+static void begin_window(struct tsim_sched *sched, void *ctx) {
+    (void)sched;
+    tsim_metrics_begin(ctx);
+}
+
 bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report) {
     struct tsim_pos *pos = malloc(s->nodes * sizeof *pos);
     struct tsim_sched *sched = tsim_sched_create();
@@ -1364,6 +1369,11 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     }
 
     metrics = tsim_metrics_create(net, s->deadline);
+    /* Scheduled before the traffic, so it runs first of what happens as the warmup ends: a
+     * message sent at that instant is all in the window. */
+    if (metrics && tsim_sched_at(sched, s->warmup, begin_window, metrics).slot == 0) {
+        goto done;
+    }
     struct tsim_traffic_params tp = {
         .interval = s->interval,
         .len_min = s->len_min,
@@ -1384,8 +1394,6 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         goto done;
     }
     tsim_net_start(net);
-    tsim_sched_run_until(sched, s->warmup);
-    tsim_metrics_begin(metrics);
     tsim_sched_run_until(sched, s->warmup + s->duration + s->deadline);
     tsim_metrics_report(metrics, report);
     ok = tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);

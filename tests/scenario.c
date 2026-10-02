@@ -377,6 +377,19 @@ static void a_warmup_is_reported_apart(void) {
     CHECK(settled.airtime_total_s < cold.airtime_total_s); /* settled, it announces less */
 }
 
+/* A message sent the instant the warmup ends is all in the window: its frame and its airtime. */
+static void a_send_as_the_warmup_ends_is_in_the_window(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 2\nspacing = 100\nplacement = line\nrouting = flood\nmac = aloha\n"
+                    "mac.max_delay = 0 s\ntraffic.interval = none\nwarmup = 1 s\n"
+                    "duration = 1 min\ntraffic.send = 1 s, 0, 1, 40\n"));
+    struct tsim_report rep;
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK_EQ_U64(rep.unicast.on_time, 1);
+    CHECK_EQ_U64(rep.frames[TSIM_PURPOSE_DATA], 1);
+    CHECK(rep.airtime_s[TSIM_PURPOSE_DATA] > 0);
+}
+
 /* Peers and answers reach the traffic: four nodes with one peer each, every unicast answered. */
 static void a_run_talks_to_its_peers_and_answers(void) {
     struct tsim_scenario s;
@@ -673,6 +686,7 @@ int main(void) {
     RUN(meshtastic_settings_read_in_any_order);
     RUN(a_run_relays_across_its_map);
     RUN(a_warmup_is_reported_apart);
+    RUN(a_send_as_the_warmup_ends_is_in_the_window);
     RUN(a_run_reports_its_links);
     RUN(a_run_talks_to_its_peers_and_answers);
     RUN(a_meshtastic_run_floods_a_line);
