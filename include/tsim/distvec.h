@@ -39,18 +39,21 @@
  * for a sender whose interval Trickle varies: what is left of its current interval - an announce
  * its cap held back may go at any point of one
  * - then every interval it may keep quiet and the one it then announces in, each doubling up to
- * imax and taken whole, and the time its cap takes to pay for a full frame. A configuration that
- * would let it promise more than 65535 s is refused. Each IHU ("I heard you") is the share of a
- * neighbour's announces the sender received, in 255ths. The routes are the sender's selected
- * routes: what it would forward through, with the sequence number of the source and the metric from
- * the sender. A metric of 0xFFFF retracts a route. A table too big for one frame goes out in
- * slices: changed routes first, then the rest in turn, so every route is repeated every so many
- * announces. An announce the node's queue refuses is undone: it is neither numbered nor charged to
- * the cap, and its routes go back on the list of changes, so a retraction is never lost to the
- * queue. One lost on the air would leave a neighbour with the route, since routes do not expire,
- * so a retraction goes in three announces, the first as a change and the others in turn with the
- * routes; and a node asked to forward towards a destination it retracted, which means the hop
- * before missed all three, retracts it again.
+ * imax and taken whole, the time its cap takes to pay for a full frame, and the longest its
+ * announces have lately waited in the MAC's queue, which the routing cannot bound - a MAC keeping
+ * its own duty cycle, say. A configuration that would let it promise more than 65535 s before the
+ * MAC's part is refused; with it, the promise stops at 65535 s. Each IHU ("I heard you") is the
+ * share of a neighbour's announces the sender received, in 255ths. The routes are the sender's
+ * selected routes: what it would forward through, with the sequence number of the source and the
+ * metric from the sender. A metric of 0xFFFF retracts a route. A table too big for one frame goes
+ * out in slices: changed routes first, then the rest in turn, so every route is repeated every so
+ * many announces. An announce the node's queue refuses is undone: it is neither numbered nor
+ * charged to the cap, its round of IHUs goes back to where it was, and its routes go back on the
+ * list of changes, so a retraction is never lost to the queue. One lost on the air would leave a
+ * neighbour with the route, since routes do not expire, so a retraction goes in three announces,
+ * the first as a change and the others in turn with the routes, never two in one frame; and a node
+ * asked to forward towards a destination it retracted, which means the hop before missed all three,
+ * retracts it again.
  *
  * Links. A neighbour is a node whose announces this node hears. Its receive rate d_f is the share
  * of its last 16 announces heard (Babel's hello history), with one more counted missed for every

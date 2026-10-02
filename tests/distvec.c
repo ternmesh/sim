@@ -364,6 +364,18 @@ static void a_retraction_lost_on_the_air_is_repeated(void) {
 
 /* Every time node 1 retracts, node 0 misses it. Node 0 still has the route; the first message it
  * sends along it finds the dead end, and node 1 retracts again. */
+/* Node 0 misses node 1's first two announces after it retracts. A retraction goes in three: the
+ * third still gets there - which it would not, were two of the three in one frame. */
+static void a_retraction_goes_in_three_frames(void) {
+    struct rig r;
+    retract_unheard(&r, 23, 2);
+    tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + TSIM_S(300));
+    uint32_t next;
+    CHECK(!route(&r, 0, 2, &next));
+    CHECK(route(&r, 0, 1, &next));
+    rig_close(&r);
+}
+
 static void a_message_into_a_dead_end_brings_the_retraction_again(void) {
     struct rig r;
     retract_unheard(&r, 24, 3);
@@ -375,6 +387,109 @@ static void a_message_into_a_dead_end_brings_the_retraction_again(void) {
     tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + TSIM_S(60));
     CHECK(!route(&r, 0, 2, &next));
     CHECK(route(&r, 0, 1, &next));
+    rig_close(&r);
+}
+
+/* A frame no node makes anything of, to take up a place in a queue. */
+static void occupy(struct rig *r, uint32_t node) {
+    struct tsim_tx tx = {
+        .lora = r->rc.lora,
+        .tx_dbm = r->rc.tx_dbm,
+        .purpose = TSIM_PURPOSE_CONTROL,
+        .len = 1,
+    };
+    tx.bytes[0] = 0x7F;
+    CHECK(tsim_node_send(tsim_net_node(r->net, node), &tx) != 0);
+}
+
+/* A hub names its twelve neighbours two to a frame, a round of six frames, and its queue refuses
+ * every other announce. The refused frames' IHUs must go in the next: were the round to move on
+ * without them, the same three slices would be refused every time, and their neighbours never
+ * named. */
+static void ihus_the_queue_refused_go_in_the_next_frame(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.ihu_max = 2;
+    r.rc.imin = TSIM_S(10);
+    r.rc.doublings = 0;
+    r.rc.redundancy = 0;
+    r.rc.cap = 0.05;
+    r.rc.neighbour_timeout = TSIM_S(600);
+    struct tsim_net_params p = tsim_net_defaults(25);
+    p.queue_limit = 1;
+    r.nodes = 13;
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 13, &tsim_distvec, &r.rc, &gate_mac, NULL);
+    for (uint32_t i = 1; i < 13; i++) {
+        link(&r, 0, i, LOSS_LOUD);
+    }
+    gate_node = 0;
+    gate_shut = false;
+    tsim_net_start(r.net);
+    struct tsim_node *hub = tsim_net_node(r.net, 0);
+    uint64_t sent = 0, dropped = 0;
+    uint32_t lost = 0; /* of 12 960 looks at a spoke */
+    for (tsim_time t = 0; t < TSIM_S(4 * 3600); t += TSIM_MS(50)) {
+        tsim_sched_run_until(r.sched, t);
+        if (!gate_shut && frames(&r, 0, TSIM_PURPOSE_ANNOUNCE) > sent && !tsim_node_sending(hub)) {
+            sent = frames(&r, 0, TSIM_PURPOSE_ANNOUNCE);
+            gate_shut = true; /* the next announce finds the queue full */
+            occupy(&r, 0);
+            dropped = tsim_net_stats(r.net, 0)->dropped;
+        } else if (gate_shut && tsim_net_stats(r.net, 0)->dropped > dropped) {
+            gate_shut = false;
+            tsim_node_transmit(hub);
+        }
+        if (t >= TSIM_S(3600) && t % TSIM_S(10) == 0) {
+            for (uint32_t i = 1; i < 13; i++) {
+                lost += tsim_distvec_neighbours(at(&r, i)) != 1;
+            }
+        }
+    }
+    CHECK(tsim_net_stats(r.net, 0)->dropped > 100);
+    /* Allowing for an IHU now and then lost to a collision, this MAC having no carrier sense:
+     * without the refusals, about 20. */
+    CHECK(lost < 100);
+    gate_node = 1;
+    gate_shut = false;
+    rig_close(&r);
+}
+
+/* Node 1's MAC lets a frame out only once in five minutes, far longer than its Trickle and cap
+ * promise.
+ * Its announces wait in the queue, and the promise has to say so: node 0 must not count the wait
+ * as announces missed, and tell node 1 in its IHUs that it hears it less. */
+static void a_node_whose_mac_holds_its_announces_promises_the_wait(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.imin = TSIM_S(2);
+    r.rc.doublings = 0;
+    r.rc.redundancy = 0;
+    r.rc.cap = 0.05;
+    struct tsim_net_params p = tsim_net_defaults(26);
+    p.queue_limit = 1;
+    r.nodes = 2;
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 2, &tsim_distvec, &r.rc, &gate_mac, NULL);
+    link(&r, 0, 1, LOSS_LOUD);
+    gate_shut = false;
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(60));
+    uint16_t before, metric;
+    CHECK(tsim_distvec_route(at(&r, 1), 0, NULL, &before));
+    gate_shut = true;
+    uint32_t worse = 0;
+    for (tsim_time t = TSIM_S(60); t < TSIM_S(3660); t += TSIM_S(1)) {
+        tsim_sched_run_until(r.sched, t);
+        if (t % TSIM_S(300) == 0) {
+            tsim_node_transmit(tsim_net_node(r.net, 1)); /* the one frame in five minutes */
+        }
+        if (t >= TSIM_S(1200)) { /* once node 1 has seen how long its announces wait */
+            worse += !tsim_distvec_route(at(&r, 1), 0, NULL, &metric) || metric > 2 * before;
+        }
+    }
+    CHECK_EQ_U64(worse, 0);
+    gate_shut = false;
     rig_close(&r);
 }
 
@@ -982,7 +1097,10 @@ int main(void) {
     RUN(a_link_gone_one_way_is_dropped_by_the_side_still_hearing);
     RUN(a_retraction_the_queue_refused_goes_later);
     RUN(a_retraction_lost_on_the_air_is_repeated);
+    RUN(a_retraction_goes_in_three_frames);
     RUN(a_message_into_a_dead_end_brings_the_retraction_again);
+    RUN(ihus_the_queue_refused_go_in_the_next_frame);
+    RUN(a_node_whose_mac_holds_its_announces_promises_the_wait);
     RUN(a_newer_route_displaces_infeasible_cheaper_ones);
     RUN(announces_the_queue_refused_are_not_counted_missed);
     RUN(a_change_after_announcing_at_imin_waits_no_longer_than_imin);

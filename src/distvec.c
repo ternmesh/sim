@@ -99,6 +99,7 @@ struct dest {
     bool has_fd;
     bool advertised;  /* a finite route to it has been announced, and not retracted since */
     bool urgent;      /* on the list of changed routes */
+    bool listed;      /* in the frame being built */
     uint8_t retracts; /* times its retraction is still to go */
     uint8_t tries;    /* seqno requests sent while starved: 0 when not starved */
     uint16_t fd_seq;  /* the feasibility distance */
@@ -114,6 +115,7 @@ struct neighbour {
     bool used;
     bool infra;
     bool ihu_owed; /* new: owed an IHU before the round-robin comes to it */
+    bool owed_was; /* ihu_owed before the last frame built, should the queue refuse it */
     uint8_t dr;    /* its IHU for this node, in 255ths; 0 for none */
     uint8_t span;  /* how many of its last HISTORY announces the history covers */
     uint16_t history;
@@ -197,6 +199,7 @@ struct router {
     size_t nb_count;
     size_t nb_cap;
     size_t ihu_cursor;
+    size_t ihu_was; /* the IHU cursor before the last frame built, should the queue refuse it */
     uint32_t *urgent;
     size_t urgent_count;
     size_t urgent_cap;
@@ -205,8 +208,11 @@ struct router {
     uint32_t retracting; /* destinations with retractions still to go */
     uint16_t promised;   /* in its last announce, in seconds */
     uint16_t round;      /* in its last announce, in frames */
-    bool changed;        /* something this node announces changed: a Trickle inconsistency */
-    bool asked;          /* a seqno request for this node waits on its next announce */
+    uint64_t ann_handle; /* its last announce queued, until sent, and when it was queued */
+    tsim_time ann_queued;
+    tsim_time mac_wait; /* the longest its announces have lately waited to be sent */
+    bool changed;       /* something this node announces changed: a Trickle inconsistency */
+    bool asked;         /* a seqno request for this node waits on its next announce */
 
     tsim_time interval; /* Trickle */
     tsim_time interval_end;
@@ -916,13 +922,18 @@ static double promise_secs(const struct tsim_distvec_config *c, tsim_time interv
  * is left of its current interval - an announce the cap held back can go at any point of it - then
  * quiet_max intervals it may keep quiet and the one it must announce in, each twice the last up to
  * imax and announced in at its very end at worst, then the time its bucket takes to pay for a full
- * frame. A neighbour that hears nothing from it for that long counts an announce missed.
- * tsim_distvec_check() refuses a configuration whose longest promise, at imax, would not fit the
- * two bytes it goes in. */
+ * frame, then the longest its announces have lately waited in the MAC's queue - which the routing
+ * cannot bound, a MAC holding frames back for its own duty cycle, say. A neighbour that hears
+ * nothing from it for that long counts an announce missed. tsim_distvec_check() refuses a
+ * configuration whose longest promise, at imax, would not fit the two bytes it goes in; the MAC's
+ * part takes it to 65535 s at most. */
 static uint16_t promise_s(const struct router *r) {
     tsim_time rest = r->interval_end - now(r);
     double s = promise_secs(&r->config, r->interval, rest > 0 ? rest : 0);
-    return s < 1 ? 1 : (uint16_t)s;
+    tsim_time queued = r->ann_handle ? now(r) - r->ann_queued : 0; /* the one still waiting */
+    tsim_time mac = queued > r->mac_wait ? queued : r->mac_wait;
+    s += ceil((double)mac / (double)TSIM_S(1));
+    return s < 1 ? 1 : s > UINT16_MAX ? UINT16_MAX : (uint16_t)s;
 }
 
 /* How many IHUs an announce frame may carry: ihu_max, less what would leave infrastructure no
@@ -947,6 +958,10 @@ static uint32_t build(struct router *r, uint8_t *b) {
      * none twice. */
     uint8_t ihus = 0, ihu_max = ihu_room(r);
     size_t start = r->ihu_cursor;
+    r->ihu_was = start;
+    for (size_t k = 0; k < r->nb_count; k++) {
+        r->nb[k].owed_was = r->nb[k].ihu_owed;
+    }
     for (int pass = 0; pass < 2; pass++) {
         for (size_t k = 0; k < r->nb_count && ihus < ihu_max; k++) {
             size_t at = pass ? (start + k) % r->nb_count : k;
@@ -984,21 +999,29 @@ static uint32_t build(struct router *r, uint8_t *b) {
             uint32_t d = r->urgent[taken++];
             r->dest[d].urgent = false;
             if (advertise(r, d, b + i)) {
+                r->dest[d].listed = true;
                 i += ROUTE_LEN;
                 routes++;
             }
+        }
+        /* Then the rest in turn, none twice: a retraction repeated in the frame it first went in
+         * would count as two of its RETRACTS and be lost with the one frame. */
+        for (uint32_t k = 0; k < r->nodes && i + ROUTE_LEN <= FRAME_MAX; k++) {
+            uint32_t d = r->cursor;
+            r->cursor = (r->cursor + 1) % r->nodes;
+            struct dest *ds = &r->dest[d];
+            if (d != r->self && !ds->listed && (ds->sel || ds->retracts) &&
+                advertise(r, d, b + i)) {
+                i += ROUTE_LEN;
+                routes++;
+            }
+        }
+        for (size_t k = 0; k < taken; k++) {
+            r->dest[r->urgent[k]].listed = false;
         }
         r->urgent_count -= taken;
         if (r->urgent_count) {
             memmove(r->urgent, r->urgent + taken, r->urgent_count * sizeof *r->urgent);
-        }
-        for (uint32_t k = 0; k < r->nodes && i + ROUTE_LEN <= FRAME_MAX; k++) {
-            uint32_t d = r->cursor;
-            r->cursor = (r->cursor + 1) % r->nodes;
-            if (d != r->self && (r->dest[d].sel || r->dest[d].retracts) && advertise(r, d, b + i)) {
-                i += ROUTE_LEN;
-                routes++;
-            }
         }
     }
     b[15] = routes;
@@ -1024,6 +1047,12 @@ static uint32_t planned(const struct router *r) {
  * route it retracted counts as still announced, so the next announce says it all. The feasibility
  * distances it set stay set, which is only ever stricter than need be. */
 static void unsent(struct router *r, const uint8_t *b) {
+    /* The round of IHUs goes back to where it was: a refused frame must not take its share of
+     * the round with it, or the same share might be refused every time. */
+    r->ihu_cursor = r->ihu_was;
+    for (size_t k = 0; k < r->nb_count; k++) {
+        r->nb[k].ihu_owed = r->nb[k].owed_was;
+    }
     const uint8_t *p = b + ANNOUNCE_HEAD + (uint32_t)b[14] * IHU_LEN;
     for (uint8_t k = 0; k < b[15]; k++, p += ROUTE_LEN) {
         uint32_t d = get32(p);
@@ -1054,10 +1083,13 @@ static void announce(struct router *r) {
         }
         struct tsim_tx tx = frame(r, TSIM_PURPOSE_ANNOUNCE, PRIORITY_ANNOUNCE);
         tx.len = build(r, tx.bytes);
-        if (!tsim_node_send(r->node, &tx)) {
+        uint64_t handle = tsim_node_send(r->node, &tx);
+        if (!handle) {
             unsent(r, tx.bytes);
             return; /* the queue is full: no use building more */
         }
+        r->ann_handle = handle;
+        r->ann_queued = now(r);
         /* Numbered and charged only once queued: a gap in the numbers tells the neighbours of
          * announces lost on the air, which a refused one never reached. */
         r->ann_seq++;
@@ -1701,6 +1733,14 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
 
 static void router_tx_done(void *self, uint64_t handle) {
     struct router *r = self;
+    if (handle == r->ann_handle) {
+        /* How long it waited, remembered for the promises to come and forgotten an eighth an
+         * announce. */
+        tsim_time waited = now(r) - r->ann_queued, kept = r->mac_wait - r->mac_wait / 8;
+        r->mac_wait = waited > kept ? waited : kept;
+        r->ann_handle = 0;
+        return;
+    }
     for (struct awaiting *a = r->awaiting; a; a = a->next) {
         if (a->handle == handle) {
             a->handle = 0;
