@@ -82,6 +82,7 @@ Airtime and duty cycles are measured over all three parts.
 | `traffic.interval` | `15 min` | mean time between one node's messages (exponentially distributed) |
 | `traffic.len` | 32 | message length in bytes, either `32` or a range such as `16..64` |
 | `traffic.broadcast` | 1 | fraction of messages sent as broadcasts; the rest go to one other node chosen at random |
+| `traffic.closed` | `no` | `yes` starts a node's next gap only when its routing is done with its last message - acknowledged, or given up on - as Meshtasticator's nodes do. The messages then depend on the protocol, so candidates are no longer offered the same ones |
 
 The channel defaults come from Petäjäjärvi et al. (ITST 2015). The phy defaults are placeholders
 until the bench rig measures real radios; see `tsim/phy.h`. The last five phy settings, with
@@ -100,6 +101,8 @@ default.
 | `routing.ack_duplicates` (`meshtastic`) | `yes` | whether a destination acknowledges every copy of a message it hears, so a retry is answered when the first acknowledgement was lost; `no` acknowledges only the first, as Meshtasticator does |
 | `routing.retries` (`meshtastic`) | 3 | sends after the first, for a message that is not acknowledged |
 | `routing.noise` (`meshtastic`) | none | dBm a rebroadcast's SNR is reckoned from, as its RSSI less this (Meshtasticator uses -119.25), instead of the SNR the radio measured |
+| `routing.ack_poll` (`meshtastic`) | `no` | `yes` starts the wait for an acknowledgement when the frame is queued, not when it has gone, and notices an acknowledgement only when the wait runs out, as Meshtasticator's sender does |
+| `routing.cancel_late` (`meshtastic`) | `no` | `yes` leaves a rebroadcast or retry that is no longer wanted in the queue until the MAC has waited out its turn, and withdraws it only then, as Meshtasticator does; `no` cancels it on hearing enough copies, as the firmware does |
 | `routing.processing` (`meshtastic`) | `4.5 s` | added to the wait for an acknowledgement, at most a quarter of the clock |
 | `routing.slot`, `mac.slot` (`meshtastic`) | from the radio | the contention slot: 2.5 symbols plus 7.6 ms; above 0, and short enough that 2^(`cw_max` + 1) slots fit in a quarter of the clock |
 | `routing.cw_min`, `mac.cw_min` (`meshtastic`) | 3 | smallest contention window, as a power of two |
@@ -127,6 +130,7 @@ The run's CPU time goes to stderr, because it differs between runs.
 | `airtime_s`, `frames` | totals, broken down by declared purpose: data, relay, control, announce |
 | `queue_dropped` | frames refused because a node's queue was full |
 | `rx_ok`, `rx_lost`, `rx_preempted`, `rx_aborted` | reception outcomes summed over every radio; see `tsim/phy.h` |
+| `rx_missed` | frames a radio could have decoded that began while it was receiving another, and that it never caught, summed over every radio; with the four above, each frame counts once at each radio |
 
 Unicast and broadcast are reported separately. A broadcast has a destination in every other node,
 so in a combined total broadcasts would swamp the unicasts, and unicast is what path routing is
@@ -140,6 +144,11 @@ The latency percentiles are rounded down by at most 1.6%. The maximum latency is
 
 - **`scenarios/*.tsim`:** CTest runs each of these through `tsim`, so a scenario that stops parsing
   or running fails CI.
+- **`scenarios/meshtasticator/`:** candidate 1 set up as Meshtasticator runs, on 20 maps
+  Meshtasticator placed (10 to 50 nodes, five seeds each), with Meshtasticator's results on them in
+  `reference.json`. CTest runs `tools/meshtasticator.py check`, which runs `compat.tsim` on every
+  map and fails if a size's average is too far from Meshtasticator's; see the script for how the
+  reference was made and where the two simulators are known to differ.
 - **`scenarios/scale/*.tsim`:** these are too large for a sanitized debug build. CI's `scale` job
   runs `region.tsim` (1000 nodes, one hour of traffic) and `region-meshtastic.tsim` (the same,
   under candidate 1) as a release build with a 60-second budget.

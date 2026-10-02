@@ -174,6 +174,11 @@ static void problems_say_where_they_are(void) {
          "fraction from 0 to 1"},
         {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.noise = loud\n", 4,
          "dBm from -1000 to 1000"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.ack_poll = 1\n", 4,
+         "yes or no"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.cancel_late = on\n", 4,
+         "yes or no"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.closed = sometimes\n", 4, "yes or no"},
         {"nodes = 2\n\n# a comment\njust some words\n", 4, "key = value"},
         {"nodes = 2\n = 3\n", 2, "no setting"},
         {"nodes = 2\nseed =   # nothing\n", 2, "seed has no value"},
@@ -317,6 +322,7 @@ static void compatibility_settings_read(void) {
                     "phy.cad_margin = 3\nphy.cad_delay = 28 ms\n"
                     "channel.model = 3gpp_suburban\nchannel.freq = 908.75\nchannel.height = 1.5\n"
                     "routing.noise = -119.25\nmac.busy_chance = 0.1\n"
+                    "routing.ack_poll = yes\nrouting.cancel_late = yes\ntraffic.closed = yes\n"
                     "placement = file\npositions = here.positions\n"));
     CHECK(s.net.phy.fading_db == 2 && s.net.phy.pairwise && s.net.phy.capture_anytime);
     CHECK(s.net.phy.cad_margin_db == 3 && s.net.phy.cad_delay == TSIM_MS(28));
@@ -324,6 +330,7 @@ static void compatibility_settings_read(void) {
     CHECK(s.channel.freq_mhz == 908.75 && s.channel.height_m == 1.5);
     CHECK(meshtastic_of(&s)->noise_dbm == -119.25);
     CHECK(meshtastic_mac_of(&s)->busy_chance == 0.1);
+    CHECK(meshtastic_of(&s)->ack_poll && meshtastic_of(&s)->cancel_late && s.closed);
     CHECK(s.placement == TSIM_PLACEMENT_FILE && strcmp(s.positions_file, "here.positions") == 0);
     CHECK(s.positions == NULL);
 
@@ -331,6 +338,7 @@ static void compatibility_settings_read(void) {
                 "nodes = 2\nrouting = meshtastic\nmac = meshtastic\nchannel.model = 3gpp_urban\n"));
     CHECK(s.channel.model == TSIM_PATH_3GPP_URBAN && !s.net.phy.pairwise);
     CHECK(isnan(meshtastic_of(&s)->noise_dbm));
+    CHECK(!meshtastic_of(&s)->ack_poll && !meshtastic_of(&s)->cancel_late && !s.closed);
 }
 
 static void positions_read_from_text(void) {

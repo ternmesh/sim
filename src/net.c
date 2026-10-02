@@ -61,6 +61,8 @@ struct tsim_net {
     bool started;
     tsim_net_delivered_fn observer;
     void *observer_ctx;
+    tsim_net_finished_fn finished;
+    void *finished_ctx;
 };
 
 static void on_rx(void *ctx, uint32_t node, const struct tsim_frame *frame, double rssi_dbm,
@@ -203,6 +205,19 @@ struct tsim_node *tsim_net_node(struct tsim_net *net, uint32_t node) {
     return node < net->n ? &net->nodes[node] : NULL;
 }
 
+/* Marks a message finished and tells the application, once. */
+static bool finish(struct tsim_net *net, uint64_t msg) {
+    struct tsim_message_record *r = &net->messages[msg - 1].r;
+    if (r->finished) {
+        return false;
+    }
+    r->finished = true;
+    if (net->finished) {
+        net->finished(net->finished_ctx, r);
+    }
+    return true;
+}
+
 uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len) {
     if (src >= net->n || (dst >= net->n && dst != TSIM_BROADCAST) || dst == src ||
         len > TSIM_FRAME_MAX) {
@@ -252,6 +267,9 @@ uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, ui
     if (!net->routing->originate(net->nodes[src].routing, &msg)) {
         net->messages[msg.id - 1].r.refused = true;
         net->nodes[src].stats.refused++;
+        finish(net, msg.id);
+    } else if (!net->routing->reports_finished) {
+        finish(net, msg.id);
     }
     return msg.id;
 }
@@ -293,6 +311,11 @@ uint64_t tsim_net_message_count(const struct tsim_net *net) { return net->messag
 void tsim_net_observe(struct tsim_net *net, tsim_net_delivered_fn fn, void *ctx) {
     net->observer = fn;
     net->observer_ctx = ctx;
+}
+
+void tsim_net_observe_finished(struct tsim_net *net, tsim_net_finished_fn fn, void *ctx) {
+    net->finished = fn;
+    net->finished_ctx = ctx;
 }
 
 /* --- A node, as its plugins see it --- */
@@ -468,6 +491,14 @@ bool tsim_node_deliver(struct tsim_node *nd, uint64_t msg) {
     return true;
 }
 
+bool tsim_node_finished(struct tsim_node *nd, uint64_t msg) {
+    struct tsim_net *net = nd->net;
+    if (msg == 0 || msg > net->message_count || net->messages[msg - 1].r.msg.src != nd->index) {
+        return false;
+    }
+    return finish(net, msg);
+}
+
 const struct tsim_tx *tsim_node_head(const struct tsim_node *nd) {
     return nd->queue_len ? &nd->queue[0].tx : NULL;
 }
@@ -478,6 +509,13 @@ bool tsim_node_sending(const struct tsim_node *nd) { return nd->sending; }
 
 bool tsim_node_transmit(struct tsim_node *nd) {
     if (nd->sending || nd->queue_len == 0) {
+        return false;
+    }
+    const struct tsim_routing *routing = nd->net->routing;
+    if (routing->sending && !routing->sending(nd->routing, nd->queue[0].handle)) {
+        remove_at(nd, 0);
+        nd->stats.cancelled++;
+        nd->net->mac->kick(nd->mac);
         return false;
     }
     nd->air = nd->queue[0];

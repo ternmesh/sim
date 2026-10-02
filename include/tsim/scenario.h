@@ -81,6 +81,7 @@ struct tsim_scenario {
     uint32_t len_min;
     uint32_t len_max;
     double broadcast;
+    bool closed;
 
     tsim_time warmup;
     tsim_time duration;

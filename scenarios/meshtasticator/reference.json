@@ -1,0 +1,185 @@
+{
+ "meshtasticator": "17ceb8231079d87b070abc6132181e4c6b20202d",
+ "cases": [
+  {
+   "nodes": 10,
+   "seed": 1,
+   "positions": "n10-s1.positions",
+   "nodeReach": 0.5548780487804879,
+   "usefulness": 0.560958904109589,
+   "collisionRate": 0.09932140653917335,
+   "txAirUtilizationRate": 0.0381645937777778
+  },
+  {
+   "nodes": 10,
+   "seed": 2,
+   "positions": "n10-s2.positions",
+   "nodeReach": 0.8915824915824916,
+   "usefulness": 0.4652143359100492,
+   "collisionRate": 0.0853932584269663,
+   "txAirUtilizationRate": 0.04036528355555558
+  },
+  {
+   "nodes": 10,
+   "seed": 3,
+   "positions": "n10-s3.positions",
+   "nodeReach": 0.6947791164658634,
+   "usefulness": 0.49855907780979825,
+   "collisionRate": 0.11177474402730375,
+   "txAirUtilizationRate": 0.04465083733333335
+  },
+  {
+   "nodes": 10,
+   "seed": 4,
+   "positions": "n10-s4.positions",
+   "nodeReach": 0.7333333333333333,
+   "usefulness": 0.48507795100222717,
+   "collisionRate": 0.16300707108299217,
+   "txAirUtilizationRate": 0.044477098666666694
+  },
+  {
+   "nodes": 10,
+   "seed": 5,
+   "positions": "n10-s5.positions",
+   "nodeReach": 0.7439024390243902,
+   "usefulness": 0.48031496062992124,
+   "collisionRate": 0.08413461538461539,
+   "txAirUtilizationRate": 0.04273971200000001
+  },
+  {
+   "nodes": 20,
+   "seed": 1,
+   "positions": "n20-s1.positions",
+   "nodeReach": 0.5625802310654685,
+   "usefulness": 0.48687682266351895,
+   "collisionRate": 0.14294215662937396,
+   "txAirUtilizationRate": 0.05272968533333336
+  },
+  {
+   "nodes": 20,
+   "seed": 2,
+   "positions": "n20-s2.positions",
+   "nodeReach": 0.7580939731031048,
+   "usefulness": 0.4079699785561115,
+   "collisionRate": 0.23543059915381465,
+   "txAirUtilizationRate": 0.06054792533333337
+  },
+  {
+   "nodes": 20,
+   "seed": 3,
+   "positions": "n20-s3.positions",
+   "nodeReach": 0.6880733944954128,
+   "usefulness": 0.4934780099272769,
+   "collisionRate": 0.18350612629594723,
+   "txAirUtilizationRate": 0.06367522133333336
+  },
+  {
+   "nodes": 20,
+   "seed": 4,
+   "positions": "n20-s4.positions",
+   "nodeReach": 0.7108512020792722,
+   "usefulness": 0.45731006374751804,
+   "collisionRate": 0.24813564644006594,
+   "txAirUtilizationRate": 0.06911903288888892
+  },
+  {
+   "nodes": 20,
+   "seed": 5,
+   "positions": "n20-s5.positions",
+   "nodeReach": 0.644655116050997,
+   "usefulness": 0.43968784838350056,
+   "collisionRate": 0.19953596287703015,
+   "txAirUtilizationRate": 0.060808533333333366
+  },
+  {
+   "nodes": 30,
+   "seed": 1,
+   "positions": "n30-s1.positions",
+   "nodeReach": 0.525824749962681,
+   "usefulness": 0.4399275633820407,
+   "collisionRate": 0.20200209173763634,
+   "txAirUtilizationRate": 0.05546124325925928
+  },
+  {
+   "nodes": 30,
+   "seed": 2,
+   "positions": "n30-s2.positions",
+   "nodeReach": 0.5470004723665565,
+   "usefulness": 0.41161137440758294,
+   "collisionRate": 0.2611721451394056,
+   "txAirUtilizationRate": 0.058395496296296326
+  },
+  {
+   "nodes": 30,
+   "seed": 3,
+   "positions": "n30-s3.positions",
+   "nodeReach": 0.5604019182461749,
+   "usefulness": 0.47098714093787986,
+   "collisionRate": 0.24520739774977063,
+   "txAirUtilizationRate": 0.06874259911111115
+  },
+  {
+   "nodes": 30,
+   "seed": 4,
+   "positions": "n30-s4.positions",
+   "nodeReach": 0.5625682633796224,
+   "usefulness": 0.419097989073579,
+   "collisionRate": 0.29786366601435094,
+   "txAirUtilizationRate": 0.06447634962962966
+  },
+  {
+   "nodes": 30,
+   "seed": 5,
+   "positions": "n30-s5.positions",
+   "nodeReach": 0.4906513409961686,
+   "usefulness": 0.46021706317832245,
+   "collisionRate": 0.24348866293295635,
+   "txAirUtilizationRate": 0.06733338548148152
+  },
+  {
+   "nodes": 50,
+   "seed": 1,
+   "positions": "n50-s1.positions",
+   "nodeReach": 0.39818720784403144,
+   "usefulness": 0.39547062986553433,
+   "collisionRate": 0.2936991666833197,
+   "txAirUtilizationRate": 0.05728742968888892
+  },
+  {
+   "nodes": 50,
+   "seed": 2,
+   "positions": "n50-s2.positions",
+   "nodeReach": 0.33785944656747163,
+   "usefulness": 0.4109038169951876,
+   "collisionRate": 0.26814807673768437,
+   "txAirUtilizationRate": 0.060322065066666694
+  },
+  {
+   "nodes": 50,
+   "seed": 3,
+   "positions": "n50-s3.positions",
+   "nodeReach": 0.3761450009744689,
+   "usefulness": 0.44871794871794873,
+   "collisionRate": 0.325437693099897,
+   "txAirUtilizationRate": 0.07116335786666671
+  },
+  {
+   "nodes": 50,
+   "seed": 4,
+   "positions": "n50-s4.positions",
+   "nodeReach": 0.3517245173001815,
+   "usefulness": 0.42378048780487804,
+   "collisionRate": 0.31550183681799626,
+   "txAirUtilizationRate": 0.06277757155555559
+  },
+  {
+   "nodes": 50,
+   "seed": 5,
+   "positions": "n50-s5.positions",
+   "nodeReach": 0.34667130285928266,
+   "usefulness": 0.47524933998239954,
+   "collisionRate": 0.27666737355529636,
+   "txAirUtilizationRate": 0.07139500942222225
+  }
+ ]
+}

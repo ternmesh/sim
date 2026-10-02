@@ -24,6 +24,9 @@ struct log {
     int kicks[MAX_NODES];
     bool eager;
     bool refuse;
+    uint64_t veto; /* the frame the routing withdraws when it is due */
+    int finished;  /* calls to the finished observer */
+    uint64_t finished_msg;
 };
 
 struct self {
@@ -74,6 +77,30 @@ static const struct tsim_routing recorder = {
     .rx = rec_rx,
     .tx_done = rec_tx_done,
 };
+
+static bool rec_sending(void *self, uint64_t handle) {
+    return handle != ((struct self *)self)->log->veto;
+}
+
+/* The recorder again, but it keeps its messages until the test finishes them, and withdraws the
+ * frame named in the log when it is due. */
+static const struct tsim_routing keeper = {
+    .name = "keeper",
+    .create = self_create,
+    .destroy = self_destroy,
+    .originate = rec_originate,
+    .rx = rec_rx,
+    .tx_done = rec_tx_done,
+    .sending = rec_sending,
+    .reports_finished = true,
+};
+
+static void on_finished(void *ctx, const struct tsim_message_record *rec) {
+    struct log *log = ctx;
+    log->finished++;
+    log->finished_msg = rec->msg.id;
+    CHECK(rec->finished);
+}
 
 /* Sends from inside the kick when the test asks it to. */
 static void manual_kick(void *self) {
@@ -597,6 +624,68 @@ static void on_delivered(void *ctx, const struct tsim_message_record *rec, uint3
 }
 
 /* Once per delivery that counts, after the record has counted it, and not once removed. */
+/* A routing that does not report is done with a message when it has taken it, or refused it. */
+static void a_message_is_finished_once_by_its_source(void) {
+    struct rig r;
+    rig_open(&r, tsim_net_defaults(1), 3);
+    tsim_net_observe_finished(r.net, on_finished, &r.log);
+    uint64_t m = tsim_net_originate(r.net, 0, 1, 5);
+    CHECK(r.log.finished == 1 && r.log.finished_msg == m && tsim_net_message(r.net, m)->finished);
+    CHECK(!tsim_node_finished(tsim_net_node(r.net, 0), m));
+    CHECK(r.log.finished == 1);
+    rig_close(&r);
+
+    struct tsim_net_params p = tsim_net_defaults(1);
+    memset(&r.log, 0, sizeof r.log);
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 3, &keeper, &r.log, &manual, &r.log);
+    tsim_net_start(r.net);
+    tsim_net_observe_finished(r.net, on_finished, &r.log);
+    m = tsim_net_originate(r.net, 0, TSIM_BROADCAST, 5);
+    CHECK(r.log.finished == 0 && !tsim_net_message(r.net, m)->finished);
+    CHECK(!tsim_node_finished(tsim_net_node(r.net, 1), m)); /* not node 1's */
+    CHECK(!tsim_node_finished(tsim_net_node(r.net, 0), 0));
+    CHECK(!tsim_node_finished(tsim_net_node(r.net, 0), m + 1));
+    CHECK(tsim_node_finished(tsim_net_node(r.net, 0), m));
+    CHECK(r.log.finished == 1 && r.log.finished_msg == m);
+    CHECK(!tsim_node_finished(tsim_net_node(r.net, 0), m));
+    r.log.refuse = true; /* refused: finished at once, though the routing reports */
+    uint64_t refused = tsim_net_originate(r.net, 1, 0, 5);
+    CHECK(r.log.finished == 2 && r.log.finished_msg == refused);
+    tsim_net_observe_finished(r.net, NULL, NULL);
+    r.log.refuse = false;
+    uint64_t quiet = tsim_net_originate(r.net, 2, 0, 5);
+    CHECK(tsim_node_finished(tsim_net_node(r.net, 2), quiet));
+    CHECK(r.log.finished == 2);
+    rig_close(&r);
+}
+
+/* The routing withdraws a frame when the MAC comes to send it: out of the queue, counted as
+ * cancelled, never on the air, and the MAC kicked for the one behind it. */
+static void the_routing_can_withdraw_a_frame_when_it_is_due(void) {
+    struct rig r;
+    struct tsim_net_params p = tsim_net_defaults(1);
+    memset(&r.log, 0, sizeof r.log);
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 2, &keeper, &r.log, &manual, &r.log);
+    tsim_phy_set_loss(tsim_net_phy(r.net), 0, 1, 100.0);
+    tsim_net_start(r.net);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx tx = frame(TSIM_PURPOSE_RELAY, 0, 10);
+    r.log.veto = tsim_node_send(n, &tx);
+    uint64_t kept = tsim_node_send(n, &tx);
+    int kicks = r.log.kicks[0];
+    CHECK(!tsim_node_transmit(n));
+    CHECK(r.log.kicks[0] == kicks + 1);
+    CHECK(tsim_node_head_handle(n) == kept && tsim_node_queue_length(n) == 1);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->cancelled, 1);
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, TSIM_S(1));
+    CHECK(r.log.rx[1] == 1 && r.log.done[0] == kept);
+    CHECK_EQ_U64(tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_RELAY], 1);
+    rig_close(&r);
+}
+
 static void the_observer_sees_each_delivery(void) {
     struct rig r;
     struct seen seen = {0};
@@ -669,6 +758,8 @@ int main(void) {
     RUN(delivery_needs_the_message_to_have_arrived);
     RUN(a_frame_must_carry_what_it_claims);
     RUN(the_observer_sees_each_delivery);
+    RUN(a_message_is_finished_once_by_its_source);
+    RUN(the_routing_can_withdraw_a_frame_when_it_is_due);
     RUN(streams_are_separate_and_repeatable);
     RUN(timers_fire_once_at_their_time);
     RUN(a_timer_may_destroy_itself_when_it_fires);

@@ -37,8 +37,14 @@
  *    the real one. Without either it sends the same frame again, up to `retries` times. Since a
  *    node rebroadcasts a packet only once, a retry is heard only by nodes that missed the first.
  *
+ * The routing reports a message finished when it is acknowledged or the last retry's wait runs
+ * out, and at once for one that wants no acknowledgement.
+ *
  * Meshtasticator starts the acknowledgement wait when the message is queued; this port starts it
- * when the frame has been sent, as a radio that queues behind its own traffic has to. Its
+ * when the frame has been sent, as a radio that queues behind its own traffic has to. It also
+ * cancels a queued frame only once the MAC has waited out its turn, where this port, as the
+ * firmware does, cancels when it hears enough copies; ack_poll and cancel_late do it
+ * Meshtasticator's way. Its
  * acknowledgement is a 2-byte payload; here it is the payload byte and the 4-byte id it answers,
  * because a receiver has to be told which packet is acknowledged.
  *
@@ -130,6 +136,13 @@ struct tsim_meshtastic_config {
     /* The noise a rebroadcast's SNR is reckoned from, if not NaN: its SNR is then its RSSI less
      * this, as Meshtasticator reckons it from -119.25 dBm, rather than what the radio measured. */
     double noise_dbm;
+    /* Meshtasticator's sender loop: the acknowledgement wait starts when the frame is queued, not
+     * when it has gone, and an acknowledgement is noticed only when the wait runs out - which is
+     * also when the message is finished, so the node's next message waits for it. */
+    bool ack_poll;
+    /* Meshtasticator's cancelling: a rebroadcast or retry no longer wanted stays queued, and is
+     * withdrawn only when the MAC has waited out its turn and comes to send it. */
+    bool cancel_late;
     struct tsim_meshtastic_window window;
 };
 

@@ -232,9 +232,13 @@ struct awaiting {
     struct awaiting *next;
     uint32_t id;
     uint8_t retries; /* left */
-    uint64_t handle; /* of its frame in the queue or on the air, or 0 once sent */
+    bool acked;      /* polling: an acknowledgement has come, to be noticed when the wait ends */
     struct tsim_timer *timer;
     struct tsim_tx tx;
+    /* Its copies in the queue or on the air. Waiting from the queue, a retry can be queued before
+     * the copy ahead of it has gone, so there can be one for every send, retries + 1. */
+    uint16_t queued_count;
+    uint64_t queued[];
 };
 
 struct router {
@@ -246,6 +250,11 @@ struct router {
     size_t heard_count;
     struct awaiting *awaiting;
     uint32_t next_ack;
+    /* Cancelling late: frames no longer wanted, withdrawn when the MAC comes to send them. */
+    uint64_t *withdrawn;
+    size_t withdrawn_count;
+    size_t withdrawn_cap;
+    uint64_t last_sent; /* the handle of its last frame to go on the air */
 };
 
 struct tsim_meshtastic_config tsim_meshtastic_default(uint16_t channel,
@@ -339,6 +348,30 @@ static tsim_time ack_wait(const struct router *r, const struct tsim_tx *tx) {
            r->config.processing;
 }
 
+/* Takes back a frame the routing no longer wants: now, or, cancelling late, when the MAC comes to
+ * send it. Its frames share one priority, so they leave the queue in the order they were queued,
+ * and a handle no later than the last sent is no longer queued. */
+static void withdraw(struct router *r, uint64_t handle) {
+    if (!r->config.cancel_late) {
+        tsim_node_cancel(r->node, handle);
+        return;
+    }
+    if (handle <= r->last_sent) {
+        return;
+    }
+    if (r->withdrawn_count == r->withdrawn_cap) {
+        size_t cap = r->withdrawn_cap ? 2 * r->withdrawn_cap : 8;
+        uint64_t *grown = realloc(r->withdrawn, cap * sizeof *grown);
+        if (!grown) {
+            tsim_node_cancel(r->node, handle); /* out of memory: cancelled now instead */
+            return;
+        }
+        r->withdrawn = grown;
+        r->withdrawn_cap = cap;
+    }
+    r->withdrawn[r->withdrawn_count++] = handle;
+}
+
 static void forget(struct awaiting *a) {
     struct router *r = a->owner;
     for (struct awaiting **p = &r->awaiting; *p; p = &(*p)->next) {
@@ -351,19 +384,29 @@ static void forget(struct awaiting *a) {
     free(a);
 }
 
-/* Queues the message's frame, or, if the queue refuses it, waits as though it had gone. */
+/* Done with the message, acknowledged or given up on: the application may make the next. */
+static void finish(struct awaiting *a) {
+    tsim_node_finished(a->owner->node, a->id);
+    forget(a);
+}
+
+/* Queues the message's frame and waits from when it has gone - or, polling, from now. If the
+ * queue refuses it, it waits as though it had gone. */
 static void send_awaited(struct awaiting *a) {
     struct router *r = a->owner;
-    a->handle = tsim_node_send(r->node, &a->tx);
-    if (a->handle == 0) {
+    uint64_t handle = tsim_node_send(r->node, &a->tx);
+    if (handle) {
+        a->queued[a->queued_count++] = handle;
+    }
+    if (handle == 0 || r->config.ack_poll) {
         tsim_timer_start(a->timer, ack_wait(r, &a->tx));
     }
 }
 
 static void ack_timeout(void *ctx) {
     struct awaiting *a = ctx;
-    if (a->retries == 0) {
-        forget(a);
+    if (a->acked || a->retries == 0) {
+        finish(a);
         return;
     }
     a->retries--;
@@ -373,10 +416,14 @@ static void ack_timeout(void *ctx) {
 static void acknowledged(struct router *r, uint32_t id) {
     for (struct awaiting *a = r->awaiting; a; a = a->next) {
         if (a->id == id) {
-            if (a->handle) {
-                tsim_node_cancel(r->node, a->handle);
+            while (a->queued_count > 0) {
+                withdraw(r, a->queued[--a->queued_count]);
             }
-            forget(a);
+            if (r->config.ack_poll) {
+                a->acked = true;
+            } else {
+                finish(a);
+            }
             return;
         }
     }
@@ -396,15 +443,17 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
     tx.len = TSIM_MESHTASTIC_OVERHEAD + msg->len;
     if (!r->config.want_ack) {
         tsim_node_send(r->node, &tx);
+        tsim_node_finished(r->node, id);
         return true;
     }
-    struct awaiting *a = calloc(1, sizeof *a);
+    struct awaiting *a = calloc(1, sizeof *a + ((size_t)r->config.retries + 1) * sizeof(uint64_t));
     if (a) {
         a->timer = tsim_timer_create(r->node, ack_timeout, a);
     }
     if (!a || !a->timer) {
         free(a);
         tsim_node_send(r->node, &tx); /* out of memory: sent, but never retried */
+        tsim_node_finished(r->node, id);
         return true;
     }
     a->owner = r;
@@ -456,7 +505,7 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
         }
         uint32_t enough = r->config.role == TSIM_MESHTASTIC_ROUTER ? 3 : 2;
         if (h->relay && h->times >= enough) {
-            tsim_node_cancel(r->node, h->relay);
+            withdraw(r, h->relay);
             h->relay = 0;
         }
         return;
@@ -495,13 +544,38 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
 
 static void router_tx_done(void *self, uint64_t handle) {
     struct router *r = self;
-    for (struct awaiting *a = r->awaiting; a; a = a->next) {
-        if (a->handle == handle) {
-            a->handle = 0;
-            tsim_timer_start(a->timer, ack_wait(r, &a->tx));
-            return;
+    r->last_sent = handle;
+    /* Anything withdrawn while it was on the air, too late to stop. */
+    for (size_t i = 0; i < r->withdrawn_count;) {
+        if (r->withdrawn[i] <= handle) {
+            r->withdrawn[i] = r->withdrawn[--r->withdrawn_count];
+        } else {
+            i++;
         }
     }
+    for (struct awaiting *a = r->awaiting; a; a = a->next) {
+        for (uint16_t i = 0; i < a->queued_count; i++) {
+            if (a->queued[i] == handle) {
+                a->queued[i] = a->queued[--a->queued_count];
+                if (!r->config.ack_poll) {
+                    tsim_timer_start(a->timer, ack_wait(r, &a->tx));
+                }
+                return;
+            }
+        }
+    }
+}
+
+/* Cancelling late: the MAC has waited out this frame's turn, and only now is it withdrawn. */
+static bool router_sending(void *self, uint64_t handle) {
+    struct router *r = self;
+    for (size_t i = 0; i < r->withdrawn_count; i++) {
+        if (r->withdrawn[i] == handle) {
+            r->withdrawn[i] = r->withdrawn[--r->withdrawn_count];
+            return false;
+        }
+    }
+    return true;
 }
 
 static void *router_create(struct tsim_node *node, const void *config) {
@@ -528,6 +602,7 @@ static void router_destroy(void *self) {
         forget(r->awaiting);
     }
     free(r->heard);
+    free(r->withdrawn);
     free(r);
 }
 
@@ -538,4 +613,6 @@ const struct tsim_routing tsim_meshtastic = {
     .originate = router_originate,
     .rx = router_rx,
     .tx_done = router_tx_done,
+    .sending = router_sending,
+    .reports_finished = true,
 };

@@ -8,3 +8,6 @@ https://github.com/meshtastic/Meshtasticator, by its contributors, licensed unde
 Commons Attribution 4.0 International License (https://creativecommons.org/licenses/by/4.0/).
 The MAC and routing timing follow its lib/mac.py and lib/node.py; the code is a rewrite in C, and
 the differences from Meshtasticator are listed in include/tsim/meshtastic.h.
+
+The maps and results in scenarios/meshtasticator/ are output of Meshtasticator, recorded by
+tools/meshtasticator.py, which names the Meshtasticator commit that produced them.

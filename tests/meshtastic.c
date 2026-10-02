@@ -336,6 +336,186 @@ static void a_rebroadcasts_snr_can_be_reckoned_from_a_fixed_noise_floor(void) {
     CHECK(most > 16 + 8); /* past the faint window's 8 slots */
 }
 
+/* When node 0's messages were finished. */
+struct finishes {
+    struct tsim_sched *sched;
+    int count;
+    tsim_time at;
+};
+
+static void on_finished(void *ctx, const struct tsim_message_record *rec) {
+    struct finishes *f = ctx;
+    (void)rec;
+    f->count++;
+    f->at = tsim_sched_now(f->sched);
+}
+
+/* The wait for an acknowledgement of a 10-byte message on a quiet channel: two airtimes, 8 + 16 +
+ * 32 slots and the processing time. */
+static tsim_time quiet_ack_wait(void) {
+    struct tsim_lora l = lora();
+    return 2 * airtime(TSIM_MESHTASTIC_OVERHEAD + 10) + 56 * tsim_meshtastic_slot(&l) +
+           TSIM_MS(4500);
+}
+
+/* Node 0 sends one broadcast; node 1 rebroadcasts it unless mute. When was it finished? */
+static struct finishes finish_of(bool ack_poll, bool mute, uint8_t retries, bool want_ack) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.ack_poll = ack_poll;
+    r.rc.retries = retries;
+    r.rc.want_ack = want_ack;
+    r.rc.role = mute ? TSIM_MESHTASTIC_CLIENT_MUTE : TSIM_MESHTASTIC_CLIENT;
+    line(&r, 2, 1);
+    struct finishes f = {r.sched, 0, -1};
+    tsim_net_observe_finished(r.net, on_finished, &f);
+    uint64_t m = tsim_net_originate(r.net, 0, TSIM_BROADCAST, 10);
+    if (!want_ack) {
+        CHECK(f.count == 1 && f.at == 0); /* at once */
+    }
+    tsim_sched_run_until(r.sched, TSIM_S(600));
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), mute ? 1u + retries : 1u);
+    rig_close(&r);
+    return f;
+}
+
+/* Finished when the rebroadcast is heard, or when the last retry's wait runs out. */
+static void a_message_is_finished_when_acknowledged_or_given_up_on(void) {
+    struct finishes f = finish_of(false, false, 3, true);
+    CHECK(f.count == 1 && f.at > 0 && f.at < quiet_ack_wait());
+    f = finish_of(false, true, 1, true);
+    CHECK(f.count == 1 && f.at > 2 * quiet_ack_wait()); /* each wait from when its frame went */
+    finish_of(false, false, 3, false);
+}
+
+/* Polling, the wait starts when the frame is queued, and the acknowledgement that came during it
+ * is noticed only when it ends. */
+static void polling_waits_from_the_queue_and_notices_an_acknowledgement_at_the_end(void) {
+    struct finishes f = finish_of(true, false, 3, true);
+    CHECK(f.count == 1 && f.at == quiet_ack_wait());
+    f = finish_of(true, true, 1, true);
+    CHECK(f.count == 1 && f.at == 2 * quiet_ack_wait());
+}
+
+/* A MAC that sends only when the test does. */
+static void *idle_create(struct tsim_node *node, const void *config) {
+    (void)config;
+    return node;
+}
+
+static void idle_destroy(void *self) { (void)self; }
+
+static void idle_kick(void *self) { (void)self; }
+
+static const struct tsim_mac idle_mac = {
+    .name = "idle",
+    .create = idle_create,
+    .destroy = idle_destroy,
+    .kick = idle_kick,
+};
+
+/* Polling, node 0's direct message times out twice while its first copy is still queued, so three
+ * copies wait. The first goes, node 1 acknowledges it, and that has to take back both the others,
+ * not only the latest: cancelling them at once, or, cancelling late, as each comes to be sent. */
+static void an_acknowledgement_takes_back_every_queued_copy(bool cancel_late) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.ack_poll = true;
+    r.rc.cancel_late = cancel_late;
+    struct tsim_net_params p = tsim_net_defaults(1);
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 2, &tsim_meshtastic, &r.rc, &idle_mac, NULL);
+    link(&r, 0, 1, LOSS_LOUD);
+    tsim_net_start(r.net);
+    struct tsim_node *n0 = tsim_net_node(r.net, 0);
+    struct tsim_node *n1 = tsim_net_node(r.net, 1);
+    uint64_t m = tsim_net_originate(r.net, 0, 1, 10);
+    tsim_sched_run_until(r.sched, 2 * quiet_ack_wait() + TSIM_MS(1));
+    CHECK(tsim_node_queue_length(n0) == 3);
+
+    CHECK(tsim_node_transmit(n0));
+    tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + airtime(TSIM_MESHTASTIC_OVERHEAD + 10) +
+                                      TSIM_MS(1));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    CHECK(tsim_node_transmit(n1)); /* the acknowledgement */
+    tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + airtime(TSIM_MESHTASTIC_OVERHEAD + 4) +
+                                      TSIM_MS(1));
+    if (cancel_late) {
+        CHECK(tsim_node_queue_length(n0) == 2);
+        CHECK(!tsim_node_transmit(n0));
+        CHECK(!tsim_node_transmit(n0));
+    }
+    CHECK(tsim_node_queue_length(n0) == 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->cancelled, 2);
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 1);
+    rig_close(&r);
+}
+
+static void an_acknowledgement_takes_back_every_queued_copy_now_or_late(void) {
+    an_acknowledgement_takes_back_every_queued_copy(false);
+    an_acknowledgement_takes_back_every_queued_copy(true);
+}
+
+/* Five clients that all hear each other: once the first rebroadcast has been heard, the other
+ * three are no longer wanted. Are they still queued, and how many were cancelled, then and at the
+ * end? */
+struct late {
+    uint64_t queued_then;
+    uint64_t cancelled_then;
+    uint64_t cancelled;
+    uint64_t relays;
+};
+
+static uint64_t relays_sent(const struct rig *r) {
+    uint64_t n = 0;
+    for (uint32_t i = 0; i < 5; i++) {
+        n += frames(r, i, TSIM_PURPOSE_RELAY);
+    }
+    return n;
+}
+
+static struct late cancelling(bool late) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.cancel_late = late;
+    build(&r, 5, 1);
+    for (uint32_t a = 0; a < 5; a++) {
+        for (uint32_t b = a + 1; b < 5; b++) {
+            link(&r, a, b, LOSS_LOUD);
+        }
+    }
+    tsim_net_start(r.net);
+    tsim_net_originate(r.net, 0, TSIM_BROADCAST, 10);
+    while (relays_sent(&r) == 0 && tsim_sched_now(r.sched) < TSIM_S(60)) {
+        tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + TSIM_MS(1));
+    }
+    tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + airtime(TSIM_MESHTASTIC_OVERHEAD + 10) +
+                                      TSIM_MS(1));
+    struct late out = {0};
+    for (uint32_t i = 1; i < 5; i++) {
+        out.queued_then += tsim_node_queue_length(tsim_net_node(r.net, i));
+        out.cancelled_then += tsim_net_stats(r.net, i)->cancelled;
+    }
+    tsim_sched_run_until(r.sched, TSIM_S(60));
+    for (uint32_t i = 1; i < 5; i++) {
+        out.cancelled += tsim_net_stats(r.net, i)->cancelled;
+        CHECK(tsim_node_queue_length(tsim_net_node(r.net, i)) == 0);
+    }
+    out.relays = relays_sent(&r);
+    rig_close(&r);
+    return out;
+}
+
+static void cancelling_late_waits_for_the_frames_turn(void) {
+    struct late now = cancelling(false);
+    CHECK(now.queued_then == 0 && now.cancelled_then == 3);
+    CHECK(now.cancelled == 3 && now.relays == 1);
+    struct late late = cancelling(true);
+    CHECK(late.queued_then == 3 && late.cancelled_then == 0);
+    CHECK(late.cancelled == 3 && late.relays == 1);
+}
+
 /* How many frames node 0 sends in a minute, when the channel looks busy with this chance. */
 static uint64_t sent_when_busy(double chance) {
     struct rig r;
@@ -483,6 +663,10 @@ int main(void) {
     RUN(a_rebroadcasts_snr_can_be_reckoned_from_a_fixed_noise_floor);
     RUN(outside_traffic_holds_the_mac_off);
     RUN(the_mac_holds_off_while_the_radio_is_receiving);
+    RUN(a_message_is_finished_when_acknowledged_or_given_up_on);
+    RUN(polling_waits_from_the_queue_and_notices_an_acknowledgement_at_the_end);
+    RUN(cancelling_late_waits_for_the_frames_turn);
+    RUN(an_acknowledgement_takes_back_every_queued_copy_now_or_late);
     RUN(a_seed_repeats_a_run);
     RUN(bad_configs_are_refused);
     RUN(the_longest_window_fits_the_clock);
