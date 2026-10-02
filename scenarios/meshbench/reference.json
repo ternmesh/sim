@@ -1,0 +1,121 @@
+{
+ "meshbench": "v0.1.0",
+ "fixture": "fixture-fife-strict.json",
+ "sender": 46,
+ "message_bytes": 44,
+ "send_at_s": 25,
+ "cases": [
+  {
+   "arm": "control",
+   "seed": 1,
+   "tx": 39,
+   "reached": 47,
+   "rx": 85
+  },
+  {
+   "arm": "control",
+   "seed": 2,
+   "tx": 43,
+   "reached": 52,
+   "rx": 119
+  },
+  {
+   "arm": "control",
+   "seed": 3,
+   "tx": 42,
+   "reached": 51,
+   "rx": 68
+  },
+  {
+   "arm": "control",
+   "seed": 4,
+   "tx": 43,
+   "reached": 52,
+   "rx": 108
+  },
+  {
+   "arm": "control",
+   "seed": 5,
+   "tx": 37,
+   "reached": 46,
+   "rx": 75
+  },
+  {
+   "arm": "control",
+   "seed": 6,
+   "tx": 37,
+   "reached": 46,
+   "rx": 72
+  },
+  {
+   "arm": "control",
+   "seed": 7,
+   "tx": 45,
+   "reached": 54,
+   "rx": 121
+  },
+  {
+   "arm": "control",
+   "seed": 8,
+   "tx": 42,
+   "reached": 51,
+   "rx": 119
+  },
+  {
+   "arm": "rx_delay",
+   "seed": 1,
+   "tx": 41,
+   "reached": 50,
+   "rx": 115
+  },
+  {
+   "arm": "rx_delay",
+   "seed": 2,
+   "tx": 43,
+   "reached": 52,
+   "rx": 120
+  },
+  {
+   "arm": "rx_delay",
+   "seed": 3,
+   "tx": 42,
+   "reached": 51,
+   "rx": 119
+  },
+  {
+   "arm": "rx_delay",
+   "seed": 4,
+   "tx": 41,
+   "reached": 50,
+   "rx": 98
+  },
+  {
+   "arm": "rx_delay",
+   "seed": 5,
+   "tx": 44,
+   "reached": 53,
+   "rx": 115
+  },
+  {
+   "arm": "rx_delay",
+   "seed": 6,
+   "tx": 45,
+   "reached": 54,
+   "rx": 144
+  },
+  {
+   "arm": "rx_delay",
+   "seed": 7,
+   "tx": 45,
+   "reached": 54,
+   "rx": 154
+  },
+  {
+   "arm": "rx_delay",
+   "seed": 8,
+   "tx": 36,
+   "reached": 44,
+   "rx": 69
+  }
+ ]
+}

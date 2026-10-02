@@ -15,7 +15,7 @@ file sets. To sweep a parameter, loop over `-s`.
 ## The format
 
 Each line holds one `key = value` setting. A `#` starts a comment, and blank lines are ignored. If
-a setting appears twice, the later value wins.
+a setting appears twice, the later value wins, except `traffic.send`, each of which adds a message.
 
 Every time needs a unit: `ns`, `us`, `ms`, `s`, `min` or `h`, as in `500 ms` or `1.5 min`. A bare
 number is an error, so a value can't be read in the wrong unit.
@@ -44,11 +44,12 @@ Airtime and duty cycles are measured over all three parts.
 | Setting | Default | Meaning |
 |---|---|---|
 | `nodes` | required | number of nodes, 1 to 1048576 |
-| `routing` | required | routing plugin: `flood` or `meshtastic` |
-| `mac` | required | MAC plugin: `aloha` or `meshtastic` |
+| `routing` | required | routing plugin: `flood`, `meshtastic` or `meshcore` |
+| `mac` | required | MAC plugin: `aloha`, `meshtastic` or `meshcore` |
 | `seed` | 1 | the seed for every random draw in the run: positions, shadowing, traffic, message content, plugins |
 | `placement` | `uniform` | `uniform`, `grid`, `line`, or `file` to read them from `positions` |
 | `positions` | none | for `file`: a file with one node per line, as `x y` in metres, in node order; `#` starts a comment. `tsim` reads a relative path from the scenario file's directory |
+| `links` | none | a file with the loss of each link, which then replaces the channel model and the positions: one link per line, as `a b loss` in dB, or `a b there back` where the two directions differ; a link the file leaves out loses everything. `tsim` reads a relative path from the scenario file's directory |
 | `area` | `5000 x 5000` | metres, for `uniform` |
 | `spacing` | 1000 | metres between neighbours, for `grid` and `line` |
 | `warmup` | `0 s` | time before traffic starts |
@@ -79,9 +80,10 @@ Airtime and duty cycles are measured over all three parts.
 | `phy.capture_anytime` | `no` | `yes` lets a frame `phy.capture` dB louder take the receiver at any point of a reception |
 | `phy.cad_margin` | 0 | dB below the demodulation floor that CAD still notices a frame at |
 | `phy.cad_delay` | `0 s` | how long a frame has to have been on the air before CAD notices it |
-| `traffic.interval` | `15 min` | mean time between one node's messages (exponentially distributed) |
+| `traffic.interval` | `15 min` | mean time between one node's messages (exponentially distributed), or `none` for no messages but those `traffic.send` sets |
 | `traffic.len` | 32 | message length in bytes, either `32` or a range such as `16..64` |
 | `traffic.broadcast` | 1 | fraction of messages sent as broadcasts; the rest go to one other node chosen at random |
+| `traffic.send` | none | one message at a set time, as `30 s, 2, all, 40`: when, from which node, to which node or to `all`, and how many bytes. Each adds one, up to 64. It uses none of the traffic process's draws, and in the closed loop its finishing starts no gap |
 | `traffic.closed` | `no` | `yes` starts a node's next gap only when its routing is done with its last message - acknowledged, or given up on - as Meshtasticator's nodes do. The messages then depend on the protocol, so candidates are no longer offered the same ones |
 
 The channel defaults come from Petäjäjärvi et al. (ITST 2015). The phy defaults are placeholders
@@ -109,6 +111,17 @@ default.
 | `routing.cw_max`, `mac.cw_max` (`meshtastic`) | 8 | largest, at most 15 |
 | `mac.snr_min`, `mac.snr_max` (`meshtastic`) | -20, 10 | the SNR range, in dB, over which a rebroadcast's window grows from `cw_min` to `cw_max` |
 | `mac.busy_chance` (`meshtastic`) | 0 | chance, each time the MAC looks, that the channel is busy with traffic from outside the mesh: Meshtasticator's interference level |
+| `routing.relays` (`meshcore`) | `all` | which nodes are repeaters and relay, as `all` or numbers and ranges such as `0-45,50`; the rest are companions |
+| `routing.hash_size` (`meshcore`) | 1 | bytes per node on a path, 1 to 3 |
+| `routing.scoped` (`meshcore`) | `yes` | whether floods carry region codes, 4 bytes |
+| `routing.flood_max` (`meshcore`) | 64 | a flood that has made this many hops is not relayed, 1 to 64 |
+| `routing.rx_delay_base` (`meshcore`) | 0 | how long a received flood waits before it is looked at, the worse it was heard the longer; 0 for not at all, as MeshCore 1.17 ships, up to 20 |
+| `routing.tx_delay_factor`, `routing.direct_tx_delay_factor` (`meshcore`) | 0.5, 0.3 | a relay waits 0 to 5 times this many of its own airtimes, flooded or direct; 0 to 2 |
+| `routing.retries` (`meshcore`) | 3 | attempts after the first, for a direct message no one acknowledges |
+| `routing.advert_interval` (`meshcore`) | `2 min` | how often a repeater announces itself to its neighbours, or `none` |
+| `routing.cancel_heard` (`meshcore`) | `no` | not MeshCore's: MeshBench's idea of dropping a relay on hearing another node relay the packet first, while it waits out its receive delay (`waiting`) or until it is sent (`queued`) |
+| `routing.estimate_cr` (`meshcore`) | `radio` | the coding rate the firmware reckons its delays and timeouts from; MeshBench's firmware reckons at 4/5 (`1`) whatever the air runs at |
+| `mac.airtime_factor` (`meshcore`) | 1 | the duty cycle budget is 1/(1 + this) of an hour |
 
 The routing and the MAC each keep their own copy of the window: the routing sizes its
 acknowledgement wait by it. Settings that bound each other, such as `cw_min` and `cw_max`, are
@@ -149,6 +162,11 @@ The latency percentiles are rounded down by at most 1.6%. The maximum latency is
   `reference.json`. CTest runs `tools/meshtasticator.py check`, which runs `compat.tsim` on every
   map and fails if a size's average is too far from Meshtasticator's; see the script for how the
   reference was made and where the two simulators are known to differ.
+- **`scenarios/meshbench/`:** candidate 2 on MeshBench's Fife network: 56 nodes, with every link's
+  loss as MeshBench budgets it over the terrain in `fife.links`, by node number only, and what one
+  flood cost in MeshBench in `reference.json`. CTest runs `tools/meshbench.py check`, which runs
+  `fife.tsim` for each seed and arm and fails if a mean is too far from MeshBench's; the script says
+  how the reference was made.
 - **`scenarios/scale/*.tsim`:** these are too large for a sanitized debug build. CI's `scale` job
   runs `region.tsim` (1000 nodes, one hour of traffic) and `region-meshtastic.tsim` (the same,
   under candidate 1) as a release build with a 60-second budget.

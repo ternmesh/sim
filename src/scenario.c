@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "tsim/baseline.h"
+#include "tsim/meshcore.h"
 #include "tsim/meshtastic.h"
 #include "tsim/place.h"
 #include "tsim/sched.h"
@@ -322,12 +323,121 @@ static const char *meshtastic_mac_check(const void *config) {
     return window_check(&c->window);
 }
 
+static void meshcore_defaults(void *config, const struct tsim_radio *radio) {
+    *(struct tsim_meshcore_config *)config =
+        tsim_meshcore_default(radio->channel, &radio->lora, radio->tx_dbm);
+}
+
+/* A factor of airtime from 0 to 2, as the firmware's command line allows. */
+static const char *delay_factor(const char *value, double *out) {
+    return parse_double(value, out) && *out >= 0 && *out <= 2 ? NULL
+                                                              : "expected a factor from 0 to 2";
+}
+
+static const char *meshcore_set(void *config, const char *key, const char *value) {
+    struct tsim_meshcore_config *c = config;
+    uint64_t v;
+    if (strcmp(key, "relays") == 0) {
+        if (!tsim_meshcore_relays_valid(value)) {
+            return "expected all, or node numbers and ranges such as 0-45,50";
+        }
+        strcpy(c->relays, value);
+        return NULL;
+    }
+    if (strcmp(key, "hash_size") == 0) {
+        if (!parse_u64(value, 3, &v) || v == 0) {
+            return "expected 1, 2 or 3 bytes";
+        }
+        c->hash_size = (uint8_t)v;
+        return NULL;
+    }
+    if (strcmp(key, "scoped") == 0) {
+        return parse_yes_no(value, &c->scoped) ? NULL : "expected yes or no";
+    }
+    if (strcmp(key, "flood_max") == 0) {
+        if (!parse_u64(value, 64, &v) || v == 0) {
+            return "expected a hop count from 1 to 64";
+        }
+        c->flood_max = (uint8_t)v;
+        return NULL;
+    }
+    if (strcmp(key, "rx_delay_base") == 0) {
+        return parse_double(value, &c->rx_delay_base) && c->rx_delay_base >= 0 &&
+                       c->rx_delay_base <= 20
+                   ? NULL
+                   : "expected a base from 0 to 20";
+    }
+    if (strcmp(key, "tx_delay_factor") == 0) {
+        return delay_factor(value, &c->tx_delay_factor);
+    }
+    if (strcmp(key, "direct_tx_delay_factor") == 0) {
+        return delay_factor(value, &c->direct_tx_delay_factor);
+    }
+    if (strcmp(key, "retries") == 0) {
+        if (!parse_u64(value, UINT8_MAX, &v)) {
+            return "expected a count from 0 to 255";
+        }
+        c->retries = (uint8_t)v;
+        return NULL;
+    }
+    if (strcmp(key, "advert_interval") == 0) {
+        if (strcmp(value, "none") == 0) {
+            c->advert_interval = 0;
+            return NULL;
+        }
+        return parse_time(value, &c->advert_interval) && c->advert_interval > 0
+                   ? NULL
+                   : "expected a time above 0, or none";
+    }
+    if (strcmp(key, "cancel_heard") == 0) {
+        static const char *const names[] = {"no", "waiting", "queued"};
+        for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++) {
+            if (strcmp(value, names[i]) == 0) {
+                c->cancel_heard = (enum tsim_meshcore_cancel)i;
+                return NULL;
+            }
+        }
+        return "expected no, waiting or queued";
+    }
+    if (strcmp(key, "estimate_cr") == 0) {
+        if (strcmp(value, "radio") == 0) {
+            c->estimate_cr = 0;
+            return NULL;
+        }
+        if (!parse_u64(value, 4, &v) || v == 0) {
+            return "expected radio, or a coding rate from 1 to 4";
+        }
+        c->estimate_cr = (uint8_t)v;
+        return NULL;
+    }
+    return "is not a setting of meshcore";
+}
+
+static void meshcore_mac_defaults(void *config, const struct tsim_radio *radio) {
+    (void)radio;
+    *(struct tsim_meshcore_mac_config *)config = tsim_meshcore_mac_default();
+}
+
+static const char *meshcore_mac_set(void *config, const char *key, const char *value) {
+    struct tsim_meshcore_mac_config *c = config;
+    if (strcmp(key, "airtime_factor") == 0) {
+        return parse_double(value, &c->airtime_factor) && c->airtime_factor >= 0 &&
+                       c->airtime_factor <= 1e6
+                   ? NULL
+                   : "expected a factor from 0 to 1000000";
+    }
+    return "is not a setting of meshcore";
+}
+
 _Static_assert(sizeof(struct tsim_flood_config) <= TSIM_PLUGIN_CONFIG_MAX, "flood config");
 _Static_assert(sizeof(struct tsim_aloha_config) <= TSIM_PLUGIN_CONFIG_MAX, "aloha config");
 _Static_assert(sizeof(struct tsim_meshtastic_config) <= TSIM_PLUGIN_CONFIG_MAX,
                "meshtastic config");
 _Static_assert(sizeof(struct tsim_meshtastic_mac_config) <= TSIM_PLUGIN_CONFIG_MAX,
                "meshtastic mac config");
+_Static_assert(sizeof(struct tsim_meshcore_config) <= TSIM_PLUGIN_CONFIG_MAX, "meshcore config");
+_Static_assert(sizeof(struct tsim_meshcore_mac_config) <= TSIM_PLUGIN_CONFIG_MAX,
+               "meshcore mac config");
 
 static const struct tsim_plugin plugins[] = {
     {"flood", &tsim_flood, NULL, sizeof(struct tsim_flood_config), flood_defaults, flood_set, NULL},
@@ -336,6 +446,10 @@ static const struct tsim_plugin plugins[] = {
      meshtastic_defaults, meshtastic_set, meshtastic_check},
     {"meshtastic", NULL, &tsim_meshtastic_mac, sizeof(struct tsim_meshtastic_mac_config),
      meshtastic_mac_defaults, meshtastic_mac_set, meshtastic_mac_check},
+    {"meshcore", &tsim_meshcore, NULL, sizeof(struct tsim_meshcore_config), meshcore_defaults,
+     meshcore_set, NULL},
+    {"meshcore", NULL, &tsim_meshcore_mac, sizeof(struct tsim_meshcore_mac_config),
+     meshcore_mac_defaults, meshcore_mac_set, NULL},
 };
 
 static const struct tsim_plugin *find_plugin(const char *name, bool routing) {
@@ -373,6 +487,49 @@ static void defaults(struct tsim_scenario *s) {
     };
 }
 
+static char *trim(char *s);
+
+/* "30 s, 2, all, 40": when, from which node, to which or to all, and how many bytes. Each adds a
+ * message; whether its nodes exist is checked once nodes is known. */
+static const char *parse_send(struct tsim_scenario *s, const char *v) {
+    static const char *const why = "expected a time, a node, a node or all, and bytes up to 255, "
+                                   "as 30 s, 2, all, 40";
+    char buf[128];
+    if (strlen(v) >= sizeof buf) {
+        return why;
+    }
+    strcpy(buf, v);
+    char *field[4];
+    char *at = buf;
+    for (int i = 0; i < 4; i++) {
+        char *comma = strchr(at, ',');
+        if ((i < 3) != (comma != NULL)) {
+            return why;
+        }
+        if (comma) {
+            *comma = '\0';
+        }
+        field[i] = trim(at);
+        at = comma ? comma + 1 : at;
+    }
+    struct tsim_send send;
+    uint64_t src, dst = 0, len;
+    bool all = strcmp(field[2], "all") == 0;
+    if (!parse_time(field[0], &send.at) || !parse_u64(field[1], UINT32_MAX - 1, &src) ||
+        !(all || parse_u64(field[2], UINT32_MAX - 1, &dst)) ||
+        !parse_u64(field[3], TSIM_FRAME_MAX, &len)) {
+        return why;
+    }
+    if (s->send_count == TSIM_SENDS_MAX) {
+        return "is one more send than the 64 a scenario can hold";
+    }
+    send.src = (uint32_t)src;
+    send.dst = all ? TSIM_BROADCAST : (uint32_t)dst;
+    send.len = (uint32_t)len;
+    s->sends[s->send_count++] = send;
+    return NULL;
+}
+
 /* NULL if the setting took, or what was wrong with it. */
 static const char *set_core(struct tsim_scenario *s, const char *key, const char *v) {
     uint64_t u;
@@ -405,6 +562,13 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
             return "is too long a path";
         }
         strcpy(s->positions_file, v);
+        return NULL;
+    }
+    if (strcmp(key, "links") == 0) {
+        if (strlen(v) >= sizeof s->links_file) {
+            return "is too long a path";
+        }
+        strcpy(s->links_file, v);
         return NULL;
     }
     if (strcmp(key, "area") == 0) {
@@ -564,7 +728,15 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     }
 
     if (strcmp(key, "traffic.interval") == 0) {
-        return parse_time(v, &s->interval) && s->interval > 0 ? NULL : "expected a time above 0";
+        if (strcmp(v, "none") == 0) {
+            s->interval = 0;
+            return NULL;
+        }
+        return parse_time(v, &s->interval) && s->interval > 0 ? NULL
+                                                              : "expected a time above 0, or none";
+    }
+    if (strcmp(key, "traffic.send") == 0) {
+        return parse_send(s, v);
     }
     if (strcmp(key, "traffic.len") == 0) {
         return parse_range(v, TSIM_FRAME_MAX, &s->len_min, &s->len_max)
@@ -720,6 +892,16 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     if (ok && s->placement == TSIM_PLACEMENT_FILE && !s->positions_file[0]) {
         ok = fail(err, 0, "positions is not set: placement = file reads them from that file");
     }
+    for (uint32_t i = 0; ok && i < s->send_count; i++) {
+        const struct tsim_send *send = &s->sends[i];
+        if (send->src >= s->nodes || (send->dst != TSIM_BROADCAST && send->dst >= s->nodes)) {
+            ok =
+                fail(err, 0, "traffic.send %" PRIu32 " names a node past the %" PRIu32 " there are",
+                     i + 1, s->nodes);
+        } else if (send->src == send->dst) {
+            ok = fail(err, 0, "traffic.send %" PRIu32 " is from a node to itself", i + 1);
+        }
+    }
     if (ok && !(extent(s) / s->channel.decorrelation_m <= 1e9)) {
         ok = fail(err, 0,
                   "the map is over a billion channel.decorrelation cells across, too many for a "
@@ -728,6 +910,11 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     if (ok && (s->warmup > INT64_MAX - s->duration ||
                s->deadline > INT64_MAX - s->warmup - s->duration)) {
         ok = fail(err, 0, "warmup, duration and deadline together are too long");
+    }
+    for (uint32_t i = 0; ok && i < s->send_count; i++) {
+        if (s->sends[i].at >= s->warmup + s->duration + s->deadline) {
+            ok = fail(err, 0, "traffic.send %" PRIu32 " is at or after the end of the run", i + 1);
+        }
     }
     if (ok) {
         s->routing->defaults(s->routing_config, &s->radio);
@@ -821,6 +1008,125 @@ bool tsim_scenario_read_positions(const struct tsim_scenario *s, const char *tex
     return true;
 }
 
+/* --- Links --- */
+
+static int compare_links(const void *a, const void *b) {
+    const struct tsim_link *x = a, *y = b;
+    if (x->from != y->from) {
+        return x->from < y->from ? -1 : 1;
+    }
+    return x->to < y->to ? -1 : x->to > y->to;
+}
+
+/* Reads one loss at *p, moving past it and the space after it. */
+static bool link_loss(const char **p, double *out) {
+    char *end;
+    *out = strtod(*p, &end);
+    if (end == *p || !(fabs(*out) <= 1e3)) {
+        return false;
+    }
+    *p = skip_space(end);
+    return true;
+}
+
+/* Reads one node number below `nodes` at *p, moving past it and the space after it. */
+static bool link_node(const char **p, uint32_t nodes, uint32_t *out) {
+    if (!isdigit((unsigned char)**p)) {
+        return false;
+    }
+    char *end;
+    errno = 0;
+    unsigned long long x = strtoull(*p, &end, 10);
+    if (errno == ERANGE || x >= nodes) {
+        return false;
+    }
+    *out = (uint32_t)x;
+    *p = skip_space(end);
+    return true;
+}
+
+static bool links_fail(struct tsim_link *links, size_t *count, struct tsim_scenario_error *err,
+                       int line, const char *why) {
+    free(links);
+    *count = 0;
+    return fail(err, line, "%s", why);
+}
+
+bool tsim_scenario_read_links(const struct tsim_scenario *s, const char *text,
+                              struct tsim_link **out, size_t *count,
+                              struct tsim_scenario_error *err) {
+    *out = NULL;
+    *count = 0;
+    size_t cap = 0;
+    struct tsim_link *links = NULL;
+    int line = 0;
+    for (const char *at = text; *at;) {
+        line++;
+        const char *next = strchr(at, '\n');
+        size_t len = next ? (size_t)(next - at) : strlen(at);
+        char buf[256];
+        if (len >= sizeof buf) {
+            return links_fail(links, count, err, line, "the line is too long");
+        }
+        memcpy(buf, at, len);
+        buf[len] = '\0';
+        at += len + (next ? 1 : 0);
+        char *hash = strchr(buf, '#');
+        if (hash) {
+            *hash = '\0';
+        }
+        const char *p = skip_space(buf);
+        if (*p == '\0') {
+            continue;
+        }
+        uint32_t a, b;
+        double ab, ba;
+        if (!link_node(&p, s->nodes, &a) || !link_node(&p, s->nodes, &b)) {
+            free(links);
+            *count = 0;
+            return fail(err, line, "expected two node numbers below %" PRIu32 ", then the loss",
+                        s->nodes);
+        }
+        if (!link_loss(&p, &ab)) {
+            return links_fail(links, count, err, line, "expected a loss in dB from -1000 to 1000");
+        }
+        ba = ab;
+        if (*p != '\0' && (!link_loss(&p, &ba) || *p != '\0')) {
+            return links_fail(links, count, err, line,
+                              "expected at most a second loss, from -1000 to 1000 dB");
+        }
+        if (a == b) {
+            return links_fail(links, count, err, line, "a node is linked to itself");
+        }
+        if (*count + 2 > cap) {
+            cap = cap ? 2 * cap : 64;
+            struct tsim_link *grown = realloc(links, cap * sizeof *grown);
+            if (!grown) {
+                return links_fail(links, count, err, 0, "out of memory");
+            }
+            links = grown;
+        }
+        links[(*count)++] = (struct tsim_link){a, b, ab};
+        links[(*count)++] = (struct tsim_link){b, a, ba};
+    }
+    if (*count == 0) {
+        return fail(err, 0, "there are no links");
+    }
+    qsort(links, *count, sizeof *links, compare_links);
+    for (size_t i = 1; i < *count; i++) {
+        if (links[i].from == links[i - 1].from && links[i].to == links[i - 1].to) {
+            uint32_t lo = links[i].from < links[i].to ? links[i].from : links[i].to;
+            uint32_t hi = links[i].from < links[i].to ? links[i].to : links[i].from;
+            free(links);
+            *count = 0;
+            return fail(err, 0, "the link between %" PRIu32 " and %" PRIu32 " is given twice", lo,
+                        hi);
+        }
+    }
+    *out = links;
+    return true;
+}
+
 /* --- Running --- */
 
 bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report) {
@@ -860,9 +1166,19 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     if (!net) {
         goto done;
     }
-    struct tsim_channel_params channel = s->channel;
-    channel.seed = s->seed;
-    tsim_phy_set_losses(tsim_net_phy(net), &channel, pos);
+    if (s->links_file[0]) {
+        if (!s->links) {
+            goto done;
+        }
+        for (size_t i = 0; i < s->link_count; i++) {
+            tsim_phy_set_loss_from(tsim_net_phy(net), s->links[i].from, s->links[i].to,
+                                   s->links[i].loss_db);
+        }
+    } else {
+        struct tsim_channel_params channel = s->channel;
+        channel.seed = s->seed;
+        tsim_phy_set_losses(tsim_net_phy(net), &channel, pos);
+    }
 
     metrics = tsim_metrics_create(net, s->deadline);
     struct tsim_traffic_params tp = {
@@ -874,6 +1190,8 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         .stop = s->warmup + s->duration,
         .seed = s->seed,
         .closed = s->closed,
+        .sends = s->sends,
+        .send_count = s->send_count,
     };
     traffic = tsim_traffic_create(net, &tp);
     if (!metrics || !traffic) {

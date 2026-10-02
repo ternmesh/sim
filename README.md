@@ -18,15 +18,15 @@ metered resource. The protocol is defined by the specification in
 | Network | `tsim/node.h`, `tsim/net.h` | The seam a candidate plugs into: routing decides what is sent, the MAC decides when. A plugin is handed its own node (`node.h`) and nothing that reaches the radio model, the losses or another node; the driver builds the run and reads the books through `net.h`. Plugins see only what was on the air, every frame is charged to a per-node airtime ledger under its purpose (data, relay, control, announce), and a message is delivered at most once per destination, only by a node that received a frame verifiably carrying its content. |
 | Baseline | `tsim/baseline.h` | ALOHA with a random start, and naive flooding with a hop limit: the floor every candidate has to beat. |
 | Candidate 1 | `tsim/meshtastic.h` | Meshtastic's managed flood and its MAC, written from Meshtasticator's port of the firmware timing: SNR-weighted rebroadcast delays, cancelling a rebroadcast on hearing it from another node, implicit and real acknowledgements with retries, and a contention window that grows with channel utilisation. A compatibility mode reproduces Meshtasticator's results on its own maps, within tolerances CI checks (`scenarios/meshtasticator/`, `tools/meshtasticator.py`). |
-| Traffic | `tsim/traffic.h`, `tsim/place.h` | Each node sends on its own Poisson process, with a configurable mix of broadcast and unicast and a range of lengths. The draws come from streams no plugin can seed, so with the same seed every candidate is offered the same messages at the same times. Nodes can be placed uniformly at random, on a grid or along a line. |
+| Candidate 2 | `tsim/meshcore.h` | MeshCore's path routing and its dispatcher, ported from MeshCore 1.17.1: floods that collect the path they take, a path return that teaches both ends a direct route, direct packets relayed by the node named next on the path, acknowledgements and retries, the firmware's relay delays, listen-before-talk and duty cycle budget, and repeaters' adverts. Checked against MeshBench running MeshCore itself, on MeshBench's Fife network (`scenarios/meshbench/`, `tools/meshbench.py`). |
+| Traffic | `tsim/traffic.h`, `tsim/place.h` | Each node sends on its own Poisson process, with a configurable mix of broadcast and unicast and a range of lengths, and a scenario can add messages at set times. The draws come from streams no plugin can seed, so with the same seed every candidate is offered the same messages at the same times. Nodes can be placed uniformly at random, on a grid or along a line, or from a file - or the losses of the links themselves read from one. |
 | Metrics | `tsim/metrics.h` | The headline is deliveries that arrive within the deadline per second of airtime. Alongside it: the busiest node's duty cycle, delivery and on-time ratios, latency percentiles, airtime by purpose, and collision counts. Unicast and broadcast are reported separately. |
 | Scenarios | `tsim/scenario.h`, `tools/tsim.c` | A run written as a text file, which `tsim` runs and reports on as JSON. See [docs/scenarios.md](docs/scenarios.md). |
 
 The isolation matrix, capture threshold, lock time and retune time are placeholders from the
 literature until the bench rig (MSH-32) measures them; they are parameters, meant to be swept.
 
-Next: path routing (candidate 2), checked against MeshBench, then distance-vector routing
-(candidate 3).
+Next: distance-vector routing (candidate 3).
 
 * [CONTRIBUTING.md](CONTRIBUTING.md) — DCO sign-off and the clean-room rule
 * [Governance](https://github.com/ternmesh/spec/blob/main/GOVERNANCE.md)

@@ -56,7 +56,7 @@ struct tsim_phy {
     struct tsim_phy_hooks hooks;
     uint32_t n;
     struct node *nodes;
-    double *loss; /* n * n, symmetric */
+    double *loss; /* n * n: from the row's node to the column's */
     struct outcome *outcomes;
 
     struct air *air;
@@ -459,6 +459,10 @@ void tsim_phy_destroy(struct tsim_phy *phy) {
 void tsim_phy_set_loss(struct tsim_phy *phy, uint32_t a, uint32_t b, double loss_db) {
     phy->loss[(size_t)a * phy->n + b] = loss_db;
     phy->loss[(size_t)b * phy->n + a] = loss_db;
+}
+
+void tsim_phy_set_loss_from(struct tsim_phy *phy, uint32_t from, uint32_t to, double loss_db) {
+    phy->loss[(size_t)from * phy->n + to] = loss_db;
 }
 
 double tsim_phy_loss(const struct tsim_phy *phy, uint32_t a, uint32_t b) {

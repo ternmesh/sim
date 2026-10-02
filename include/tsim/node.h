@@ -131,6 +131,10 @@ struct tsim_mac {
 /* The node's index, which a protocol may use as its address. */
 uint32_t tsim_node_index(const struct tsim_node *node);
 
+/* How many nodes the network has, numbered from 0. What a protocol whose nodes know every other's
+ * key - from adverts, or a contact list - can count on; never where they are or who hears whom. */
+uint32_t tsim_node_count(const struct tsim_node *node);
+
 /* The current simulated time. */
 tsim_time tsim_node_now(const struct tsim_node *node);
 

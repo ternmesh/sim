@@ -296,7 +296,7 @@ static void invalid_parameters_are_refused(void) {
     struct tsim_net *net = tsim_net_create(sched, &np, 3, &refuser, NULL, &tsim_aloha, &aloha);
     struct tsim_traffic_params p;
 
-    p = params(), p.interval = 0;
+    p = params(), p.interval = -1;
     CHECK(tsim_traffic_create(net, &p) == NULL);
     p = params(), p.len_min = 20, p.len_max = 19;
     CHECK(tsim_traffic_create(net, &p) == NULL);
@@ -308,9 +308,87 @@ static void invalid_parameters_are_refused(void) {
     CHECK(tsim_traffic_create(net, &p) == NULL);
     p = params(), p.start = TSIM_S(10), p.stop = TSIM_S(9);
     CHECK(tsim_traffic_create(net, &p) == NULL);
+    struct tsim_send bad[] = {
+        {0, 3, 1, 10}, /* from a node that is not there */
+        {0, 0, 3, 10}, /* to one that is not there */
+        {0, 1, 1, 10}, /* to itself */
+        {0, 0, 1, TSIM_FRAME_MAX + 1},
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        p = params(), p.sends = &bad[i], p.send_count = 1;
+        CHECK(tsim_traffic_create(net, &p) == NULL);
+    }
+    p = params(), p.send_count = 1;
+    CHECK(tsim_traffic_create(net, &p) == NULL);
 
     tsim_net_destroy(net);
     tsim_sched_destroy(sched);
+}
+
+static void sends_are_made_when_set_and_nothing_else_without_an_interval(void) {
+    struct tsim_send sends[] = {
+        {TSIM_S(10), 1, TSIM_BROADCAST, 20},
+        {TSIM_S(5), 0, 2, 7},
+    };
+    struct tsim_traffic_params p = params();
+    p.interval = 0;
+    p.sends = sends;
+    p.send_count = 2;
+    struct rig r;
+    rig_open(&r, 3, &refuser, false, &p);
+    tsim_sched_run_until(r.sched, p.stop);
+    CHECK_EQ_U64(tsim_traffic_made(r.traffic), 2);
+    CHECK_EQ_U64(tsim_net_message_count(r.net), 2);
+    const struct tsim_message *a = &tsim_net_message(r.net, 1)->msg;
+    const struct tsim_message *b = &tsim_net_message(r.net, 2)->msg;
+    CHECK(a->src == 0 && a->dst == 2 && a->len == 7 && a->created == TSIM_S(5));
+    CHECK(b->src == 1 && b->dst == TSIM_BROADCAST && b->len == 20 && b->created == TSIM_S(10));
+    rig_close(&r);
+}
+
+/* The process's messages are the same with a send among them or without. */
+static void a_send_moves_none_of_the_process_draws(void) {
+    struct tsim_traffic_params p = params();
+    struct rig plain;
+    rig_open(&plain, 5, &refuser, false, &p);
+    tsim_sched_run_until(plain.sched, p.stop);
+    struct tsim_send send = {TSIM_S(1000), 3, TSIM_BROADCAST, 40};
+    p.sends = &send;
+    p.send_count = 1;
+    struct rig with;
+    rig_open(&with, 5, &refuser, false, &p);
+    tsim_sched_run_until(with.sched, p.stop);
+    uint64_t made = tsim_traffic_made(plain.traffic);
+    CHECK_EQ_U64(tsim_traffic_made(with.traffic), made + 1);
+    uint64_t j = 1;
+    for (uint64_t i = 1; i <= made; i++, j++) {
+        const struct tsim_message *b = &tsim_net_message(with.net, j)->msg;
+        if (b->created == TSIM_S(1000) && b->len == 40 && b->src == 3) {
+            b = &tsim_net_message(with.net, ++j)->msg;
+        }
+        const struct tsim_message *a = &tsim_net_message(plain.net, i)->msg;
+        CHECK(a->src == b->src && a->dst == b->dst && a->len == b->len && a->created == b->created);
+    }
+    rig_close(&plain);
+    rig_close(&with);
+}
+
+/* In the closed loop a node's gap waits on its own messages, not on one it was told to send. */
+static void a_send_finishing_starts_no_gap(void) {
+    struct tsim_send send = {TSIM_S(1), 0, 1, 10};
+    struct tsim_traffic_params p = params();
+    p.closed = true;
+    p.sends = &send;
+    p.send_count = 1;
+    struct rig r;
+    rig_open(&r, 2, &holder, false, &p);
+    tsim_sched_run_until(r.sched, TSIM_S(1800));
+    CHECK_EQ_U64(tsim_traffic_made(r.traffic), 3); /* the send, and one each, held */
+    CHECK(tsim_net_message(r.net, 1)->msg.created == TSIM_S(1));
+    CHECK(tsim_node_finished(tsim_net_node(r.net, 0), 1));
+    tsim_sched_run_until(r.sched, TSIM_S(3600));
+    CHECK_EQ_U64(tsim_traffic_made(r.traffic), 3);
+    rig_close(&r);
 }
 
 static void a_lone_node_sends_nothing(void) {
@@ -348,6 +426,9 @@ int main(void) {
     RUN(closed_traffic_waits_for_the_last_message);
     RUN(closed_traffic_with_nothing_to_wait_for_is_open_traffic);
     RUN(invalid_parameters_are_refused);
+    RUN(sends_are_made_when_set_and_nothing_else_without_an_interval);
+    RUN(a_send_moves_none_of_the_process_draws);
+    RUN(a_send_finishing_starts_no_gap);
     RUN(a_lone_node_sends_nothing);
     RUN(destroy_stops_the_traffic);
     return CHECK_DONE();

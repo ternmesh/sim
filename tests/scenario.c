@@ -1,9 +1,11 @@
 #include "tsim/scenario.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "tsim/baseline.h"
+#include "tsim/meshcore.h"
 #include "tsim/meshtastic.h"
 
 #include "check.h"
@@ -178,6 +180,40 @@ static void problems_say_where_they_are(void) {
          "yes or no"},
         {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.cancel_late = on\n", 4,
          "yes or no"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.interval = 0 s\n", 4, "or none"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.send = 1 s, 0, all\n", 4,
+         "as 30 s, 2, all, 40"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.send = 1 s, 0, 1, 40, 2\n", 4,
+         "as 30 s, 2, all, 40"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.send = soon, 0, 1, 40\n", 4,
+         "as 30 s, 2, all, 40"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.send = 1 s, 0, 1, 256\n", 4,
+         "as 30 s, 2, all, 40"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.send = 1 s, 0, 2, 40\n", 0,
+         "traffic.send 1 names a node past the 2"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.send = 1 s, 1, 1, 40\n", 0,
+         "traffic.send 1 is from a node to itself"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nduration = 1 min\ndeadline = 1 min\n"
+         "traffic.send = 2 min, 0, all, 40\n",
+         0, "traffic.send 1 is at or after the end"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.relays = some\n", 4,
+         "node numbers and ranges"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.hash_size = 4\n", 4,
+         "1, 2 or 3 bytes"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.flood_max = 0\n", 4,
+         "from 1 to 64"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.rx_delay_base = 21\n", 4,
+         "from 0 to 20"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.tx_delay_factor = 3\n", 4,
+         "from 0 to 2"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.estimate_cr = 5\n", 4,
+         "radio, or a coding rate from 1 to 4"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.advert_interval = 0 s\n", 4,
+         "or none"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.cancel_heard = yes\n", 4,
+         "no, waiting or queued"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nmac.airtime_factor = -1\n", 4,
+         "from 0 to 1000000"},
         {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.closed = sometimes\n", 4, "yes or no"},
         {"nodes = 2\n\n# a comment\njust some words\n", 4, "key = value"},
         {"nodes = 2\n = 3\n", 2, "no setting"},
@@ -341,6 +377,128 @@ static void compatibility_settings_read(void) {
     CHECK(!meshtastic_of(&s)->ack_poll && !meshtastic_of(&s)->cancel_late && !s.closed);
 }
 
+static const struct tsim_meshcore_config *meshcore_of(const struct tsim_scenario *s) {
+    return (const struct tsim_meshcore_config *)s->routing_config;
+}
+
+static void meshcore_settings_read(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 2\nrouting = meshcore\nmac = meshcore\n"));
+    const struct tsim_meshcore_config *r = meshcore_of(&s);
+    CHECK(strcmp(r->relays, "all") == 0 && r->hash_size == 1 && r->scoped);
+    CHECK(r->flood_max == 64 && r->rx_delay_base == 0 && r->tx_delay_factor == 0.5);
+    CHECK(r->direct_tx_delay_factor == 0.3 && r->retries == 3);
+    CHECK(r->cancel_heard == TSIM_MESHCORE_CANCEL_NO);
+    CHECK(r->advert_interval == TSIM_S(120) && r->estimate_cr == 0);
+    CHECK(((const struct tsim_meshcore_mac_config *)s.mac_config)->airtime_factor == 1.0);
+
+    CHECK(parse(&s, "nodes = 2\nrouting = meshcore\nmac = meshcore\nradio.sf = 8\n"
+                    "routing.relays = 0-45,50\nrouting.hash_size = 2\nrouting.scoped = no\n"
+                    "routing.flood_max = 8\nrouting.rx_delay_base = 10\n"
+                    "routing.tx_delay_factor = 1\nrouting.direct_tx_delay_factor = 0\n"
+                    "routing.retries = 0\nrouting.advert_interval = none\n"
+                    "routing.cancel_heard = waiting\nrouting.estimate_cr = 1\n"
+                    "mac.airtime_factor = 9\n"));
+    r = meshcore_of(&s);
+    CHECK(strcmp(r->relays, "0-45,50") == 0 && r->hash_size == 2 && !r->scoped);
+    CHECK(r->flood_max == 8 && r->rx_delay_base == 10 && r->tx_delay_factor == 1);
+    CHECK(r->direct_tx_delay_factor == 0 && r->retries == 0);
+    CHECK(r->cancel_heard == TSIM_MESHCORE_CANCEL_WAITING);
+    CHECK(r->advert_interval == 0 && r->estimate_cr == 1 && r->lora.sf == 8);
+    CHECK(((const struct tsim_meshcore_mac_config *)s.mac_config)->airtime_factor == 9.0);
+    CHECK(parse(&s, "nodes = 2\nrouting = meshcore\nmac = meshcore\n"
+                    "routing.estimate_cr = 2\nrouting.estimate_cr = radio\n"));
+    CHECK(meshcore_of(&s)->estimate_cr == 0);
+}
+
+static void sends_add_up_and_interval_none_stops_the_process(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 3\nrouting = flood\nmac = aloha\ntraffic.interval = none\n"
+                    "traffic.send = 30 s, 2, all, 40\ntraffic.send = 1.5 min , 0 , 1 , 7\n"));
+    CHECK_EQ_I64(s.interval, 0);
+    CHECK_EQ_U64(s.send_count, 2);
+    CHECK(s.sends[0].at == TSIM_S(30) && s.sends[0].src == 2 && s.sends[0].dst == TSIM_BROADCAST &&
+          s.sends[0].len == 40);
+    CHECK(s.sends[1].at == TSIM_S(90) && s.sends[1].src == 0 && s.sends[1].dst == 1 &&
+          s.sends[1].len == 7);
+    struct tsim_report rep;
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK_EQ_U64(rep.broadcast.messages, 1);
+    CHECK_EQ_U64(rep.unicast.messages, 1);
+
+    char text[4096];
+    int n = snprintf(text, sizeof text, "nodes = 2\nrouting = flood\nmac = aloha\n");
+    for (int i = 0; i < TSIM_SENDS_MAX; i++) {
+        n += snprintf(text + n, sizeof text - (size_t)n, "traffic.send = 1 s, 0, 1, 1\n");
+    }
+    CHECK(parse(&s, text));
+    snprintf(text + n, sizeof text - (size_t)n, "traffic.send = 1 s, 0, 1, 1\n");
+    struct tsim_scenario_error err;
+    CHECK(!tsim_scenario_parse(&s, text, &err) && strstr(err.message, "64 a scenario can hold"));
+}
+
+static void links_read_from_text(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 3\nrouting = flood\nmac = aloha\nlinks = l\n"));
+    CHECK(strcmp(s.links_file, "l") == 0 && s.links == NULL);
+    struct tsim_link *links;
+    size_t count;
+    struct tsim_scenario_error err;
+    CHECK(tsim_scenario_read_links(&s, "# a b loss\n0 1 120.5\n\n 2 0  130 131.25  # back\n",
+                                   &links, &count, &err));
+    CHECK_EQ_U64(count, 4);
+    /* In order: 0 to 1, 0 to 2, 1 to 0, 2 to 0. */
+    CHECK(links[0].from == 0 && links[0].to == 1 && links[0].loss_db == 120.5);
+    CHECK(links[1].from == 0 && links[1].to == 2 && links[1].loss_db == 131.25);
+    CHECK(links[2].from == 1 && links[2].to == 0 && links[2].loss_db == 120.5);
+    CHECK(links[3].from == 2 && links[3].to == 0 && links[3].loss_db == 130);
+    free(links);
+
+    static const struct {
+        const char *text;
+        int line;
+        const char *says;
+    } bad[] = {
+        {"", 0, "there are no links"},
+        {"# nothing\n\n", 0, "there are no links"},
+        {"0 1 100\n0 3 100\n", 2, "two node numbers below 3"},
+        {"0 1 100\n-1 2 100\n", 2, "two node numbers below 3"},
+        {"0 1\n", 1, "a loss in dB"},
+        {"0 1 nan\n", 1, "a loss in dB"},
+        {"0 1 1e4\n", 1, "a loss in dB"},
+        {"0 1 100 100 100\n", 1, "at most a second loss"},
+        {"0 1 100 x\n", 1, "at most a second loss"},
+        {"1 1 100\n", 1, "linked to itself"},
+        {"0 1 100\n1 0 100\n", 0, "between 0 and 1 is given twice"},
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        bool ok = tsim_scenario_read_links(&s, bad[i].text, &links, &count, &err);
+        CHECK(!ok && links == NULL && count == 0);
+        if (!ok && (err.line != bad[i].line || !strstr(err.message, bad[i].says))) {
+            fprintf(stderr, "  case %zu: line %d: %s\n", i, err.line, err.message);
+            CHECK(false);
+        }
+    }
+}
+
+/* Losses from a file: nodes 0 and 2 hear only node 1, which relays between them; and a scenario
+ * that names a links file does not run without its links. */
+static void a_run_with_links_uses_them(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 3\nrouting = flood\nmac = aloha\nlinks = l\n"
+                    "traffic.interval = none\ntraffic.send = 1 s, 0, all, 20\nduration = 10 s\n"));
+    struct tsim_report rep;
+    CHECK(!tsim_scenario_run(&s, &rep));
+    struct tsim_link *links;
+    struct tsim_scenario_error err;
+    CHECK(tsim_scenario_read_links(&s, "0 1 100\n1 2 100\n", &links, &s.link_count, &err));
+    s.links = links;
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK_EQ_U64(rep.broadcast.delivered, 2);
+    CHECK_EQ_U64(rep.frames[TSIM_PURPOSE_RELAY], 2); /* node 1's, and node 2's, heard by node 1 */
+    free(links);
+}
+
 static void positions_read_from_text(void) {
     struct tsim_scenario s;
     CHECK(parse(&s, "nodes = 3\nrouting = flood\nmac = aloha\nplacement = file\npositions = p\n"));
@@ -424,6 +582,10 @@ int main(void) {
     RUN(a_run_repeats_with_its_seed);
     RUN(compatibility_settings_read);
     RUN(positions_read_from_text);
+    RUN(meshcore_settings_read);
+    RUN(sends_add_up_and_interval_none_stops_the_process);
+    RUN(links_read_from_text);
+    RUN(a_run_with_links_uses_them);
     RUN(a_run_placed_from_a_file_uses_its_positions);
     RUN(airtime_past_what_a_time_holds_still_adds_up);
     return CHECK_DONE();

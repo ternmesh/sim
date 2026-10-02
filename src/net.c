@@ -322,6 +322,8 @@ void tsim_net_observe_finished(struct tsim_net *net, tsim_net_finished_fn fn, vo
 
 uint32_t tsim_node_index(const struct tsim_node *node) { return node->index; }
 
+uint32_t tsim_node_count(const struct tsim_node *node) { return tsim_net_nodes(node->net); }
+
 tsim_time tsim_node_now(const struct tsim_node *node) { return tsim_sched_now(node->net->sched); }
 
 static void timer_fire(struct tsim_sched *sched, void *ctx) {
