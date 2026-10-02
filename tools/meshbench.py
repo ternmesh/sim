@@ -238,6 +238,9 @@ def check(args):
     for sender in ref["senders"]:
         for arm in ARMS:
             theirs = [c for c in ref["cases"] if c["sender"] == sender["node"] and c["arm"] == arm]
+            if len(theirs) < 2:
+                sys.exit("reference.json has %d seed(s) for sender %d, %s: rx's limit needs two"
+                         % (len(theirs), sender["node"], arm))
             ours = [run_tsim(args.tsim, ref, sender, arm, c["seed"], args.set) for c in theirs]
             for metric in METRICS:
                 a, b = mean(theirs, metric), mean(ours, metric)
@@ -258,13 +261,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("reference", help="run MeshBench and write reference.json, and fife.links")
-    p.add_argument("--seeds", type=int, default=8, help="seeds per sender and arm, from 1")
+    p.add_argument("--seeds", type=int, default=8, help="seeds per sender and arm, at least 2")
     p.add_argument("--links", action="store_true", help="write fife.links even if it exists")
     p = sub.add_parser("check", help="run tsim on fife.tsim and compare with reference.json")
     p.add_argument("--tsim", required=True, help="the tsim binary")
     p.add_argument("-s", dest="set", action="append", default=[], metavar="KEY=VALUE",
                    help="a setting to override in fife.tsim, to see what it is worth")
     args = parser.parse_args()
+    if args.command == "reference" and args.seeds < 2:
+        parser.error("--seeds must be at least 2: check measures rx against the seeds' spread")
     if args.command == "reference":
         reference(args)
         return 0
