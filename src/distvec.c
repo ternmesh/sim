@@ -270,6 +270,8 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
     };
 }
 
+static double promise_secs(const struct tsim_distvec_config *c, tsim_time interval);
+
 const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     if (memchr(c->relays, 0, sizeof c->relays) == NULL || tsim_nodeset_contains(c->relays, 0) < 0) {
         return "relays is not all, or node numbers and ranges";
@@ -298,6 +300,10 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     }
     if (c->hop_max < 1 || c->bcast_hops > 254) {
         return "hop_max is 0, or bcast_hops is over 254";
+    }
+    if (promise_secs(c, c->imin << c->doublings) > UINT16_MAX) {
+        return "imax, quiet_max and the cap would let a node keep quiet longer than an announce "
+               "can promise: 65535 s";
     }
     return NULL;
 }
@@ -870,21 +876,28 @@ static bool advertise(struct router *r, uint32_t d, uint8_t *out) {
     return true;
 }
 
+/* The promise a node announcing now makes, in whole seconds: see promise_s(). */
+static double promise_secs(const struct tsim_distvec_config *c, tsim_time interval) {
+    tsim_time top = c->imin << c->doublings;
+    double ns = (double)interval / 2;
+    tsim_time i = interval;
+    for (int k = 0; k <= c->quiet_max; k++) {
+        i = i * 2 > top ? top : i * 2;
+        ns += (double)i;
+    }
+    ns += (double)tsim_lora_airtime(&c->lora, FRAME_MAX) / (c->cap * (1 - c->request_share));
+    return ceil(ns / (double)TSIM_S(1));
+}
+
 /* The longest this node may go before it announces again, in whole seconds, announcing now: the
  * rest of its current interval, then quiet_max intervals it may keep quiet and the one it must
  * announce in, each twice the last up to imax and announced in at its very end at worst, then the
  * time its bucket takes to pay for a full frame. A neighbour that hears nothing from it for that
- * long counts an announce missed. */
+ * long counts an announce missed. tsim_distvec_check() refuses a configuration whose longest
+ * promise, at imax, would not fit the two bytes it goes in. */
 static uint16_t promise_s(const struct router *r) {
-    double ns = (double)r->interval / 2;
-    tsim_time i = r->interval;
-    for (int k = 0; k <= r->config.quiet_max; k++) {
-        i = i * 2 > imax(r) ? imax(r) : i * 2;
-        ns += (double)i;
-    }
-    ns += (double)tsim_lora_airtime(&r->config.lora, FRAME_MAX) / r->announces.rate;
-    double s = ceil(ns / (double)TSIM_S(1));
-    return s < 1 ? 1 : s > UINT16_MAX ? UINT16_MAX : (uint16_t)s;
+    double s = promise_secs(&r->config, r->interval);
+    return s < 1 ? 1 : (uint16_t)s;
 }
 
 /* How many IHUs an announce frame may carry: ihu_max, less what would leave infrastructure no

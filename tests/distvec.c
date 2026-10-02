@@ -705,6 +705,13 @@ static void the_config_is_checked(void) {
     bad = c;
     bad.burst = 0;
     CHECK(tsim_distvec_check(&bad) != NULL);
+    /* Up to 21 days at imax: more than the two bytes of a promise hold. */
+    bad = c;
+    bad.doublings = 16;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    struct tsim_distvec_config slow = c; /* 8 s to 4.5 h, and promising about 14 h */
+    slow.doublings = 11;
+    CHECK(tsim_distvec_check(&slow) == NULL);
 }
 
 int main(void) {
