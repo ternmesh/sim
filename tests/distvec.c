@@ -1125,6 +1125,31 @@ static void the_config_is_checked(void) {
     CHECK(tsim_distvec_check(&slow) == NULL);
 }
 
+/* On demand, a line knows its neighbours and nothing more until a message needs a route; then a
+ * search finds it, the message crosses, and its acknowledgement comes back along the routes the
+ * search left. */
+static void a_route_is_found_on_demand_on_a_line(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.demand = true;
+    line(&r, 6, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    uint32_t next;
+    for (uint32_t a = 0; a < 6; a++) {
+        for (uint32_t b = 0; b < 6; b++) {
+            bool neighbours = a + 1 == b || b + 1 == a;
+            CHECK(route(&r, a, b, &next) == neighbours);
+        }
+    }
+    uint64_t m = tsim_net_originate(r.net, 0, 5, 40);
+    tsim_sched_run_until(r.sched, TSIM_S(360));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK(route(&r, 0, 5, &next) && next == 1);
+    CHECK(route(&r, 5, 0, &next) && next == 4);
+    rig_close(&r);
+}
+
 int main(void) {
     RUN(a_line_converges_on_its_one_path);
     RUN(a_message_crosses_the_line_and_is_acknowledged);
@@ -1159,5 +1184,6 @@ int main(void) {
     RUN(routes_stay_loop_free_while_links_change);
     RUN(a_broadcast_reaches_the_line_once_per_relay);
     RUN(the_config_is_checked);
+    RUN(a_route_is_found_on_demand_on_a_line);
     return CHECK_DONE();
 }

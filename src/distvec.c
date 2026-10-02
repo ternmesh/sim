@@ -22,6 +22,8 @@
 #define TYPE_DATA 0x03
 #define TYPE_ACK 0x04
 #define TYPE_BCAST 0x05
+#define TYPE_SEEK 0x06
+#define TYPE_FOUND 0x07
 
 #define ANNOUNCE_HEAD 16
 #define IHU_LEN 5
@@ -32,6 +34,8 @@
 #define DATA_HEAD 18
 #define ACK_LEN 18
 #define BCAST_HEAD 10
+#define SEEK_LEN 22
+#define FOUND_LEN (DATA_HEAD + 8)
 /* The longest IHU round an announce can tell: twice it and one more must still fit the 16-bit
  * count of announces a receiver keeps between IHUs. Only a node naming one neighbour to a frame
  * among more than 32767 would need more. */
@@ -97,7 +101,8 @@ static uint64_t frame_key(uint8_t type, uint32_t src, uint32_t id) {
 struct entry {
     uint16_t slot; /* the neighbour's slot plus 1; 0 for none */
     uint16_t seq;
-    uint16_t metric; /* the neighbour's, without the link */
+    uint16_t metric;  /* the neighbour's, without the link */
+    uint32_t expires; /* demand: the second it lapses unless announced again; 0 for never */
 };
 
 struct dest {
@@ -114,7 +119,8 @@ struct dest {
     uint16_t adv_seq; /* what was last announced */
     uint16_t adv_metric;
     uint16_t asked_seq;
-    tsim_time asked; /* when a seqno request about it was last sent or passed on, or -1 */
+    tsim_time asked;  /* when a seqno request about it was last sent or passed on, or -1 */
+    tsim_time wanted; /* demand: announced until then */
 };
 
 struct neighbour {
@@ -177,6 +183,7 @@ struct awaiting {
     struct tsim_timer *timer;
     uint64_t handle; /* the attempt's frame, while it waits in the queue; 0 once it has gone */
     tsim_time wait;  /* how long to wait for the acknowledgement once it has */
+    bool routeless;  /* the last attempt found no route, and waits for one */
     uint32_t len;
     uint8_t content[FRAME_MAX];
 };
@@ -255,6 +262,7 @@ struct router {
     size_t ask_count;
     size_t ask_cap;
     struct tsim_timer *ask_timer;
+    uint32_t seek_id; /* its last search */
 };
 
 struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct tsim_lora *lora,
@@ -289,6 +297,8 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .bcast_hops = 4,
         .bcast_window = 3,
         .bcast_cancel = 2,
+        .want_time = TSIM_S(10 * 60),
+        .seek_hops = 16,
     };
 }
 
@@ -322,6 +332,9 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     }
     if (c->hop_max < 1 || c->bcast_hops > 254) {
         return "hop_max is 0, or bcast_hops is over 254";
+    }
+    if (c->want_time <= 0 || c->seek_hops < 1 || c->seek_hops > 254) {
+        return "want_time is not above 0, or seek_hops is not 1 to 254";
     }
     tsim_time top = c->imin << c->doublings;
     if (promise_secs(c, top, top) > UINT16_MAX) {
@@ -437,6 +450,40 @@ static void push_urgent(struct router *r, uint32_t d) {
     r->dest[d].urgent = true;
 }
 
+static void trickle_reset(struct router *r);
+
+/* Whether this node announces its route to `d`: always, unless routes are on demand, and then
+ * while the traffic wants it. */
+static bool wanted(const struct router *r, uint32_t d) {
+    return !r->config.demand || r->dest[d].wanted > now(r);
+}
+
+/* The traffic used the route to `d`: on demand, it is announced for want_time more - at once, if
+ * it was not already. */
+static void want(struct router *r, uint32_t d) {
+    if (!r->config.demand || d == r->self) {
+        return;
+    }
+    struct dest *ds = &r->dest[d];
+    bool was = wanted(r, d);
+    ds->wanted = now(r) + r->config.want_time;
+    if (!was && ds->sel && r->infra) {
+        push_urgent(r, d);
+        trickle_reset(r);
+    }
+}
+
+/* A route to `d` was found: on demand, a message that found none goes now rather than when its
+ * attempt's wait is up. */
+static void route_found(struct router *r, uint32_t d) {
+    for (struct awaiting *a = r->awaiting; a; a = a->next) {
+        if (a->dst == d && a->routeless) {
+            a->routeless = false;
+            tsim_timer_start(a->timer, 0);
+        }
+    }
+}
+
 static void refill(struct router *r, struct bucket *b) {
     tsim_time t = now(r);
     b->ns += (double)(t - b->at) * b->rate;
@@ -539,9 +586,15 @@ static void request(struct router *r, uint32_t d, uint16_t seq, uint32_t next, u
 /* Asks the neighbours about `d`: for a newer seq than this node's feasibility distance if it has
  * one, and otherwise - having never announced a route to `d`, it has nothing a seq could be newer
  * than - for whatever route they have. */
+static void seek(struct router *r, uint32_t d);
+
 static void ask(struct router *r, uint32_t d) {
     struct dest *ds = &r->dest[d];
     ds->asked = now(r);
+    if (!ds->has_fd && r->config.demand) {
+        seek(r, d);
+        return;
+    }
     if (!ds->has_fd) {
         ds->asked_seq = 0;
         request(r, d, 0, BROADCAST_HOP, 0);
@@ -565,6 +618,10 @@ static void ask(struct router *r, uint32_t d) {
             best = t;
             next = slot(r, e->slot)->id;
         }
+    }
+    if (next == BROADCAST_HOP && r->config.demand) {
+        seek(r, d); /* no neighbour to ask: none has a route it could use */
+        return;
     }
     ds->asked_seq = seq;
     request(r, d, seq, next, r->config.hop_max);
@@ -603,7 +660,13 @@ static void request_fire(void *ctx) {
     for (size_t i = 0; i < r->starving_count;) {
         uint32_t d = r->starving[i];
         struct dest *ds = &r->dest[d];
-        if (ds->sel || ds->tries >= REQUEST_TRIES) {
+        bool any = false;
+        for (int k = 0; k < ROUTES; k++) {
+            any |= ds->e[k].slot != 0;
+        }
+        /* On demand, a destination with no route at all is searched for by the traffic, once for
+         * each attempt of a message (send_attempt()), and not again here: a search is a flood. */
+        if (ds->sel || ds->tries >= REQUEST_TRIES || (r->config.demand && !any)) {
             ds->tries = 0;
             r->starving[i] = r->starving[--r->starving_count];
             continue;
@@ -650,17 +713,31 @@ static void reselect(struct router *r, uint32_t d) {
     bool was = ds->sel != 0;
     ds->sel = chosen ? chosen->slot : 0;
     r->selected = r->selected - was + (chosen != NULL);
-    if (!chosen && infeasible) {
+    /* On demand, only for a route the traffic wants: the searches that pass through leave
+     * routes everywhere, and the copies that come later by longer ways are infeasible. */
+    if (!chosen && infeasible && wanted(r, d)) {
         starved(r, d);
+    }
+    if (chosen && !was && r->config.demand) {
+        route_found(r, d);
     }
     if (!r->infra) {
         return; /* a leaf announces no routes */
     }
     if (!chosen) {
+        if (!wanted(r, d)) {
+            /* On demand, a route no one wants lapses at the neighbours rather than costing them
+             * three retractions; a message sent into it brings one (on_data()). */
+            ds->advertised = false;
+            return;
+        }
         if (ds->advertised || was) {
             push_urgent(r, d); /* to retract it */
             r->changed = true;
         }
+        return;
+    }
+    if (!wanted(r, d)) {
         return;
     }
     uint16_t t = chosen == cur ? cur_total : best_total;
@@ -699,6 +776,17 @@ static bool below(struct rank a, struct rank b) {
     return a.total > b.total;
 }
 
+/* On demand, the second a route the neighbour in slot `s` announces now lapses unless announced
+ * again: three of its promises on. 0, for never, otherwise, or for a neighbour that makes none. */
+static uint32_t expiry(struct router *r, uint16_t s) {
+    tsim_time p = slot(r, s)->promise;
+    if (!r->config.demand || p <= 0 || p >= PROMISE_UNBOUNDED) {
+        return 0;
+    }
+    tsim_time at = (now(r) + 3 * p) / TSIM_S(1) + 1;
+    return at > UINT32_MAX ? 0 : (uint32_t)at;
+}
+
 /* What the neighbour in slot `s` advertises about `d`. */
 static void update(struct router *r, uint32_t d, uint16_t seq, uint16_t metric, uint16_t s) {
     if (d == r->self || d >= r->nodes) {
@@ -714,6 +802,7 @@ static void update(struct router *r, uint32_t d, uint16_t seq, uint16_t metric, 
     } else if (e) {
         e->seq = seq;
         e->metric = metric;
+        e->expires = expiry(r, s);
     } else {
         /* A free place, or else the worst route that is not the selected one, if this beats it -
          * worst by what makes a route worth keeping: one that could be selected now before one
@@ -738,7 +827,7 @@ static void update(struct router *r, uint32_t d, uint16_t seq, uint16_t metric, 
         if (!place || (place->slot && !below(worst, mine))) {
             return;
         }
-        *place = (struct entry){.slot = s, .seq = seq, .metric = metric};
+        *place = (struct entry){.slot = s, .seq = seq, .metric = metric, .expires = expiry(r, s)};
     }
     reselect(r, d);
 }
@@ -855,12 +944,29 @@ static void cap_fire(void *ctx) {
 
 /* --- Announcing --- */
 
-/* Writes one route into an announce, as this node advertises it, and keeps the feasibility
- * distance. Returns false if there is nothing to say about it. */
-static bool advertise(struct router *r, uint32_t d, uint8_t *out) {
+/* Writes one route as this node advertises it, and keeps the feasibility distance. Returns false
+ * if there is nothing to say about it. `announced` is false for a route told to one node on
+ * demand, in a search or its answer: that keeps the feasibility distance, which must cover
+ * whatever the node has said to anyone, but is no announcement to retract or repeat. */
+static bool say(struct router *r, uint32_t d, uint8_t *out, bool announced) {
     struct dest *ds = &r->dest[d];
     uint16_t seq, metric;
-    if (ds->sel) {
+    if (ds->sel && !announced) {
+        const struct entry *e = entry_by(ds, ds->sel);
+        seq = e->seq;
+        metric = total(e->metric, slot(r, ds->sel)->cost);
+        if (metric == INF) {
+            return false;
+        }
+        if (!ds->has_fd || newer(seq, ds->fd_seq) ||
+            (seq == ds->fd_seq && metric < ds->fd_metric)) {
+            ds->has_fd = true;
+            ds->fd_seq = seq;
+            ds->fd_metric = metric;
+        }
+    } else if (!announced) {
+        return false;
+    } else if (ds->sel) {
         const struct entry *e = entry_by(ds, ds->sel);
         seq = e->seq;
         metric = total(e->metric, slot(r, ds->sel)->cost);
@@ -907,6 +1013,15 @@ static bool advertise(struct router *r, uint32_t d, uint8_t *out) {
     put16(out + 4, seq);
     put16(out + 6, metric);
     return true;
+}
+
+/* Writes one route into an announce: see say(). On demand, a selected route no one wants is left
+ * out; a retraction is not. */
+static bool advertise(struct router *r, uint32_t d, uint8_t *out) {
+    if (r->dest[d].sel && !wanted(r, d)) {
+        return false;
+    }
+    return say(r, d, out, true);
 }
 
 /* The promise a node announcing `rest` before the end of an interval of `interval` makes, in whole
@@ -1060,7 +1175,14 @@ static uint32_t planned(const struct router *r) {
     }
     uint32_t len = ANNOUNCE_HEAD + (uint32_t)(named < ihu_room(r) ? named : ihu_room(r)) * IHU_LEN;
     if (r->infra) {
-        uint64_t routes = (uint64_t)r->urgent_count + r->selected + r->retracting;
+        uint64_t selected = r->selected;
+        if (r->config.demand) {
+            selected = 0;
+            for (uint32_t d = 0; d < r->nodes; d++) {
+                selected += r->dest[d].sel && wanted(r, d);
+            }
+        }
+        uint64_t routes = (uint64_t)r->urgent_count + selected + r->retracting;
         uint64_t room = (FRAME_MAX - len) / ROUTE_LEN;
         len += (uint32_t)(routes < room ? routes : room) * ROUTE_LEN;
     }
@@ -1235,6 +1357,7 @@ static void on_ask(struct router *r, uint32_t d, uint16_t seq, uint8_t hops) {
         return;
     }
     if (ds->sel && !newer(seq, entry_by(ds, ds->sel)->seq)) {
+        want(r, d);
         push_urgent(r, d);
         trickle_reset(r);
         return;
@@ -1412,6 +1535,7 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
     if (!ds->sel) {
         return false;
     }
+    want(r, dst);
     uint32_t next = slot(r, ds->sel)->id;
     struct tsim_tx tx = frame(r, purpose,
                               type == TYPE_ACK               ? PRIORITY_CONTROL
@@ -1463,6 +1587,7 @@ static void send_attempt(struct awaiting *a) {
     uint64_t handle = 0;
     if (route_frame(r, TYPE_DATA, r->self, a->dst, a->id, r->config.hop_max, a->content, a->len,
                     TSIM_PURPOSE_DATA, a->id, &handle)) {
+        a->routeless = false;
         uint16_t metric = total(entry_by(ds, ds->sel)->metric, slot(r, ds->sel)->cost);
         wait += (tsim_time)(r->config.ack_factor * metric * (double)TSIM_MS(1));
         if (handle) {
@@ -1475,6 +1600,7 @@ static void send_attempt(struct awaiting *a) {
         /* Refused by a full queue: tried again after the wait, as if it had been lost. */
     } else {
         ds->asked = -1; /* a message waits on it: ask now */
+        a->routeless = r->config.demand;
         starved(r, a->dst);
     }
     tsim_timer_start(a->timer, wait);
@@ -1691,26 +1817,31 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len) {
     }
 }
 
+/* Another copy of a flooded frame this node holds to relay: dropped once bcast_cancel are heard. */
+static void heard_again(struct router *r, uint64_t key) {
+    for (size_t i = 0; i < r->held_count; i++) {
+        struct held *h = &r->held[i];
+        if (h->key != key) {
+            continue;
+        }
+        if (h->heard < UINT8_MAX) {
+            h->heard++;
+        }
+        if (r->config.bcast_cancel && h->heard >= r->config.bcast_cancel &&
+            (h->handle == 0 || tsim_node_cancel(r->node, h->handle))) {
+            r->held[i] = r->held[--r->held_count];
+            arm_out(r);
+        }
+        return;
+    }
+}
+
 static void on_bcast(struct router *r, const uint8_t *b, uint32_t len) {
     uint32_t src = get32(b + 1), id = get32(b + 5);
     uint8_t hops = b[9];
     uint64_t key = frame_key(TYPE_BCAST, src, id);
     if (seen(r, key)) {
-        for (size_t i = 0; i < r->held_count; i++) {
-            struct held *h = &r->held[i];
-            if (h->key != key) {
-                continue;
-            }
-            if (h->heard < UINT8_MAX) {
-                h->heard++;
-            }
-            if (r->config.bcast_cancel && h->heard >= r->config.bcast_cancel &&
-                (h->handle == 0 || tsim_node_cancel(r->node, h->handle))) {
-                r->held[i] = r->held[--r->held_count];
-                arm_out(r);
-            }
-            break;
-        }
+        heard_again(r, key);
         return;
     }
     mark_seen(r, key);
@@ -1725,6 +1856,151 @@ static void on_bcast(struct router *r, const uint8_t *b, uint32_t len) {
     tx.carries = id;
     tx.carries_at = BCAST_HEAD;
     hold(r, &tx, key, false, r->config.bcast_window);
+}
+
+/* --- Routes on demand --- */
+
+/* What changing routes outside an announce changed, Trickle hears of. */
+static void settle(struct router *r) {
+    if (r->changed) {
+        trickle_reset(r);
+        r->changed = false;
+    }
+}
+
+/* Floods a search for `d`, carrying this node's own route at a new seq so that every node it
+ * reaches can take it. */
+static void seek(struct router *r, uint32_t d) {
+    struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_CONTROL);
+    uint8_t *b = tx.bytes;
+    r->seq++;
+    r->seek_id++;
+    b[0] = TYPE_SEEK;
+    put32(b + 1, r->self);
+    put32(b + 5, r->self);
+    put32(b + 9, d);
+    put32(b + 13, r->seek_id);
+    b[17] = r->config.seek_hops;
+    put16(b + 18, r->seq);
+    put16(b + 20, 0);
+    tx.len = SEEK_LEN;
+    mark_seen(r, frame_key(TYPE_SEEK, r->self, r->seek_id));
+    tsim_node_send(r->node, &tx);
+}
+
+/* Tells `next` of the route to `d`, towards the searcher `origin`, after a jitter. Its header is
+ * a data frame's, the destination it answers for in the source's place, so it goes hop by hop with
+ * the same implicit acknowledgements and retries. */
+static void answer(struct router *r, uint32_t next, uint32_t origin, uint32_t d, uint32_t id,
+                   uint8_t hops) {
+    uint16_t seq = r->seq, metric = 0;
+    if (d != r->self) {
+        uint8_t route[ROUTE_LEN];
+        if (!say(r, d, route, false)) {
+            return;
+        }
+        seq = get16(route + 4);
+        metric = get16(route + 6);
+    }
+    struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_CONTROL);
+    uint8_t *b = tx.bytes;
+    b[0] = TYPE_FOUND;
+    put32(b + 1, next);
+    put32(b + 5, d);
+    put32(b + 9, origin);
+    put32(b + 13, id);
+    b[17] = hops;
+    put32(b + DATA_HEAD, r->self);
+    put16(b + DATA_HEAD + 4, seq);
+    put16(b + DATA_HEAD + 6, metric);
+    tx.len = FOUND_LEN;
+    hold(r, &tx, 0, next != origin, r->config.jitter); /* the searcher passes nothing on */
+}
+
+static void on_seek(struct router *r, const uint8_t *b, uint32_t len) {
+    if (!r->config.demand || len < SEEK_LEN) {
+        return;
+    }
+    uint32_t sender = get32(b + 1), origin = get32(b + 5), d = get32(b + 9), id = get32(b + 13);
+    uint8_t hops = b[17];
+    if (sender >= r->nodes || origin >= r->nodes || d >= r->nodes || origin == r->self ||
+        sender == r->self) {
+        return;
+    }
+    /* The route back to the searcher, from every copy heard, as an announce from its sender. */
+    uint16_t s = r->slot_of[sender];
+    if (s) {
+        update(r, origin, get16(b + 18), get16(b + 20), s);
+        settle(r);
+    }
+    uint64_t key = frame_key(TYPE_SEEK, origin, id);
+    if (seen(r, key)) {
+        heard_again(r, key);
+        return;
+    }
+    mark_seen(r, key);
+    if (d == r->self) {
+        r->seq++; /* a new seq, feasible wherever the answer goes */
+        answer(r, sender, origin, d, id, r->config.hop_max);
+        return;
+    }
+    if (!r->infra) {
+        return;
+    }
+    if (r->dest[d].sel) {
+        want(r, d);
+        answer(r, sender, origin, d, id, r->config.hop_max);
+        return;
+    }
+    /* Relayed only with a route back to give: an answer that came this way could go no further. */
+    uint8_t route[ROUTE_LEN];
+    if (hops <= 1 || !r->dest[origin].sel || !say(r, origin, route, false)) {
+        return;
+    }
+    struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_RELAY);
+    memcpy(tx.bytes, b, SEEK_LEN);
+    put32(tx.bytes + 1, r->self);
+    tx.bytes[17] = (uint8_t)(hops - 1);
+    put16(tx.bytes + 18, get16(route + 4));
+    put16(tx.bytes + 20, get16(route + 6));
+    tx.len = SEEK_LEN;
+    hold(r, &tx, key, false, r->config.bcast_window);
+}
+
+static void on_found(struct router *r, const uint8_t *b, uint32_t len) {
+    if (!r->config.demand || len < FOUND_LEN) {
+        return;
+    }
+    overheard(r, b);
+    uint32_t d = get32(b + 5), origin = get32(b + 9), id = get32(b + 13);
+    uint32_t sender = get32(b + DATA_HEAD);
+    uint8_t hops = b[17];
+    if (get32(b + 1) != r->self || sender >= r->nodes || origin >= r->nodes || d >= r->nodes ||
+        d == r->self) {
+        return;
+    }
+    uint16_t s = r->slot_of[sender];
+    if (!s) {
+        return;
+    }
+    want(r, d);
+    update(r, d, get16(b + DATA_HEAD + 4), get16(b + DATA_HEAD + 6), s);
+    settle(r);
+    if (origin == r->self) {
+        return;
+    }
+    /* Passed on once for each search; again only if sent it after that is done, as a data frame
+     * is, so a hop whose implicit acknowledgement was lost hears one. */
+    uint64_t key = frame_key(TYPE_FOUND, origin, id);
+    if (seen(r, key) && passing_on(r, TYPE_FOUND, d, id)) {
+        return;
+    }
+    struct dest *back = &r->dest[origin];
+    if (!r->infra || hops <= 1 || !back->sel || !r->dest[d].sel) {
+        return;
+    }
+    mark_seen(r, key);
+    answer(r, slot(r, back->sel)->id, origin, d, id, (uint8_t)(hops - 1));
 }
 
 static void router_rx(void *self, const struct tsim_rx *rx) {
@@ -1749,6 +2025,12 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
         if (rx->len >= BCAST_HEAD) {
             on_bcast(r, rx->bytes, rx->len);
         }
+        return;
+    case TYPE_SEEK:
+        on_seek(r, rx->bytes, rx->len);
+        return;
+    case TYPE_FOUND:
+        on_found(r, rx->bytes, rx->len);
         return;
     default:
         return;
@@ -1820,6 +2102,23 @@ static void house_fire(void *ctx) {
             n->cost_used = n->cost;
             r->changed |= flipped;
             reselect_through(r, s);
+        }
+    }
+    if (r->config.demand) {
+        /* Routes their neighbours stopped announcing lapse. */
+        uint64_t second = (uint64_t)(t / TSIM_S(1));
+        for (uint32_t d = 0; d < r->nodes; d++) {
+            struct dest *ds = &r->dest[d];
+            bool lapsed = false;
+            for (int i = 0; i < ROUTES; i++) {
+                if (ds->e[i].slot && ds->e[i].expires && ds->e[i].expires <= second) {
+                    ds->e[i] = (struct entry){0};
+                    lapsed = true;
+                }
+            }
+            if (lapsed) {
+                reselect(r, d);
+            }
         }
     }
     if (r->changed) {

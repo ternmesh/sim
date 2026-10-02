@@ -556,6 +556,19 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "bcast_cancel") == 0) {
         return distvec_count(value, 0, UINT8_MAX, &c->bcast_cancel);
     }
+    if (strcmp(key, "routes") == 0) {
+        if (strcmp(value, "all") == 0 || strcmp(value, "demand") == 0) {
+            c->demand = value[0] == 'd';
+            return NULL;
+        }
+        return "expected all or demand";
+    }
+    if (strcmp(key, "want_time") == 0) {
+        return distvec_time(value, false, &c->want_time);
+    }
+    if (strcmp(key, "seek_hops") == 0) {
+        return distvec_count(value, 1, 254, &c->seek_hops);
+    }
     return "is not a setting of distvec";
 }
 

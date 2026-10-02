@@ -1,0 +1,22 @@
+# The scale check under candidate 3b: region-distvec.tsim with routes on demand. Each node
+# announces only the routes its traffic uses and searches for the rest, so a node's table holds
+# what it was asked about rather than all thousand destinations.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf     = 9
+radio.bw     = 125000
+radio.tx_dbm = 20
+
+routing        = distvec
+routing.routes = demand
+mac            = meshcore
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+warmup   = 10 min
+duration = 1 h
+deadline = 60 s

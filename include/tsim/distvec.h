@@ -176,6 +176,34 @@
  * airtimes of the frame and dropping it if it hears bcast_cancel copies first. Scoped broadcast
  * is MSH-34's.
  *
+ * Routes on demand: candidate 3b (MSH-43), with `demand` set. A node then announces a
+ * destination's route only while the route is wanted: while it has sent or forwarded a message or
+ * an acknowledgement towards it within want_time, or a search for it has come back through it
+ * (below). The table a node keeps is as before, but what it says is what the traffic uses, not
+ * every node there is - with every route announced, a thousand-node table takes hours of a node's
+ * cap to tell once. Its own route rides every announce's header as before, so neighbours always
+ * know each other. A route no longer wanted is not retracted but left to lapse: in this mode a
+ * route a neighbour stops announcing expires three of that neighbour's promises after it last
+ * announced it, as Babel's do. A node with no route at all to a destination searches for it:
+ *
+ *     type 0x06 | sender 4 | source 4 | destination 4 | id 4 | hops 1 | source seq 2 | metric 2
+ *
+ * a flood that infrastructure relays once, with up to seek_hops relays along any path, each
+ * waiting and cancelling as a broadcast relay does. It carries the source's route as an announce
+ * would - the searcher raises its seq for each search, so it is always feasible - and each relay
+ * takes it as one from the sender and puts its own in the copy it relays, so every node the search
+ * reaches has a route back to the searcher, not announced. The destination, raising its own seq,
+ * and any infrastructure node with a route answer, and do not relay it:
+ *
+ *     type 0x07 | next hop 4 | sender 4 | source 4 | destination 4 | id 4 | seq 2 | metric 2
+ *
+ * an announce of the destination's route sent towards the searcher along those routes back, each
+ * hop taking it as one from the sender, wanting the destination, and passing on its own - once for
+ * each search. The first route that reaches the searcher sends the message waiting for it. The
+ * acknowledgement goes back along the routes the search left. Searches are as rate-limited as
+ * seqno requests: a node searches for a destination at most once each request_interval, five
+ * times. A node with routes to the destination but none feasible asks for a newer seq as before.
+ *
  * Not yet here, and left out of MSH-41 for issues of their own: the store-and-forward floor, which
  * only shows its worth under mobility and churn, and per-link modulation, which needs the slotted
  * MAC. */
@@ -217,6 +245,10 @@ struct tsim_distvec_config {
     uint8_t bcast_hops;
     double bcast_window;
     uint8_t bcast_cancel; /* copies heard, its own first one included, 0 for never */
+
+    bool demand;         /* candidate 3b: announce only the routes the traffic wants */
+    tsim_time want_time; /* how long a route is wanted after the traffic last used it */
+    uint8_t seek_hops;   /* relays a search may take along any path, 1..254 */
 };
 
 /* Every node infrastructure; Trickle from 8 s to 8 min (six doublings), redundancy 3, announcing
@@ -225,7 +257,8 @@ struct tsim_distvec_config {
  * 32-byte reference frame, ETX up to 8, 10% hysteresis and a 25% change threshold, a request
  * every 10 s while starved; a jitter of up to 2 airtimes; 32 hops, 2 hop retries after 4 s, 3
  * retries waiting 5 s plus 4 times the metric; broadcasts over 4 hops, waiting up to 3 airtimes
- * and dropped on the second copy heard.
+ * and dropped on the second copy heard. Every route announced (candidate 3, not 3b); in 3b a
+ * route wanted for 10 minutes after its last use, and searches over 16 hops.
  *
  * The cap is per node, so in a neighbourhood of n nodes routing may take n times it of the
  * channel: 2% - Reticulum's announce cap - saturated a 200-node town at SF9, which 0.5% did not.

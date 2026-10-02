@@ -149,6 +149,9 @@ default.
 | `routing.bcast_hops` (`distvec`) | 4 | relays a broadcast may have along any path, 0 to 254 |
 | `routing.bcast_window` (`distvec`) | 3 | the longest a broadcast relay waits, in airtimes of the frame |
 | `routing.bcast_cancel` (`distvec`) | 2 | copies of a broadcast heard, the first included, that drop a relay still waiting; 0 never drops one |
+| `routing.routes` (`distvec`) | `all` | `all` announces every route (candidate 3); `demand` announces only the routes the traffic wants and searches for the rest (candidate 3b; see `tsim/distvec.h`) |
+| `routing.want_time` (`distvec`) | `10 min` | with `routes = demand`, how long a route stays announced after the traffic last used it |
+| `routing.seek_hops` (`distvec`) | 16 | with `routes = demand`, relays a search may take along any path, 1 to 254 |
 
 The routing and the MAC each keep their own copy of the window: the routing sizes its
 acknowledgement wait by it. Settings that bound each other, such as `cw_min` and `cw_max`, are
