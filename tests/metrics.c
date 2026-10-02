@@ -186,6 +186,24 @@ static void a_message_before_the_window_is_not_counted(void) {
     rig_close(&r);
 }
 
+/* A message made at the very instant the window begins, but before it, is still not counted. */
+static void a_message_at_the_window_but_before_it_is_not_counted(void) {
+    struct rig r;
+    line(&r, 3, 0, TSIM_S(5), 1);
+    tsim_net_originate(r.net, 0, TSIM_BROADCAST, 10);
+    tsim_metrics_begin(r.metrics);
+    tsim_sched_run_until(r.sched, TSIM_S(2));
+    tsim_net_originate(r.net, 0, 1, 10);
+    tsim_sched_run_until(r.sched, TSIM_S(5));
+    struct tsim_report rep;
+    tsim_metrics_report(r.metrics, &rep);
+    CHECK_EQ_U64(rep.broadcast.messages, 0);
+    CHECK_EQ_U64(rep.broadcast.delivered, 0);
+    CHECK_EQ_U64(rep.unicast.messages, 1);
+    CHECK_EQ_U64(rep.unicast.delivered, 1);
+    rig_close(&r);
+}
+
 /* Destroying the metrics stops the network calling into them. */
 static void destroy_stops_watching(void) {
     struct rig r;
@@ -205,6 +223,7 @@ int main(void) {
     RUN(a_report_mid_frame_counts_only_what_was_sent);
     RUN(percentiles_hold_their_precision_at_every_scale);
     RUN(a_message_before_the_window_is_not_counted);
+    RUN(a_message_at_the_window_but_before_it_is_not_counted);
     RUN(destroy_stops_watching);
     return CHECK_DONE();
 }

@@ -30,6 +30,7 @@ struct tsim_metrics {
     struct latencies unicast;
     struct latencies broadcast;
     tsim_time begun;   /* when the window began: 0 for the whole run */
+    uint64_t first;    /* the first message id of the window: 1 for the whole run */
     struct base *base; /* per node, or NULL with no window begun */
     double warmup_ns;
     double routes;
@@ -83,7 +84,7 @@ static tsim_time percentile(const struct latencies *l, double p) {
 static void delivered(void *ctx, const struct tsim_message_record *rec, uint32_t node) {
     (void)node;
     struct tsim_metrics *m = ctx;
-    if (rec->msg.created < m->begun) {
+    if (rec->msg.id < m->first) {
         return; /* made before the window: not the window's to count */
     }
     struct latencies *l = rec->msg.dst == TSIM_BROADCAST ? &m->broadcast : &m->unicast;
@@ -105,6 +106,7 @@ struct tsim_metrics *tsim_metrics_create(struct tsim_net *net, tsim_time deadlin
     }
     m->net = net;
     m->deadline = deadline;
+    m->first = 1;
     m->routes = -1;
     m->routes_reach = -1;
     tsim_net_observe(net, delivered, m);
@@ -167,6 +169,8 @@ void tsim_metrics_begin(struct tsim_metrics *m) {
     }
     m->base = base;
     m->begun = tsim_sched_now(tsim_net_sched(m->net));
+    /* By id, not time: a message made earlier at this same instant is still before the window. */
+    m->first = tsim_net_message_count(m->net) + 1;
     /* Every delivery so far was of a message made before the window. */
     m->unicast = (struct latencies){0};
     m->broadcast = (struct latencies){0};
@@ -192,11 +196,8 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
     };
 
     uint64_t count = tsim_net_message_count(net);
-    for (uint64_t id = 1; id <= count; id++) {
+    for (uint64_t id = m->first; id <= count; id++) {
         const struct tsim_message_record *rec = tsim_net_message(net, id);
-        if (rec->msg.created < m->begun) {
-            continue;
-        }
         struct tsim_delivery *d = rec->msg.dst == TSIM_BROADCAST ? &r->broadcast : &r->unicast;
         d->messages++;
         d->refused += rec->refused;
