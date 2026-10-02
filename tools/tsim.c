@@ -92,6 +92,8 @@ static void print_report(const char *path, const struct tsim_scenario *s,
            s->seed, s->nodes, tsim_scenario_routing_name(s), tsim_scenario_mac_name(s));
     printf("  \"elapsed_s\": %.6f, \"deadline_s\": %.6f,\n", seconds(r->elapsed),
            seconds(r->deadline));
+    printf("  \"warmup\": {\"s\": %.6f, \"airtime_s\": %.6f, \"routes\": %.6g, \"reach\": %.6g},\n",
+           seconds(r->warmup), r->warmup_airtime_s, r->routes, r->routes_reach);
     printf("  \"links\": {\"degree_mean\": %.6g, \"degree_min\": %" PRIu32
            ", \"degree_max\": %" PRIu32 ", \"component_max\": %" PRIu32 "},\n",
            r->links.degree_mean, r->links.degree_min, r->links.degree_max, r->links.component_max);
@@ -278,6 +280,6 @@ int main(int argc, char **argv) {
     free(positions);
     free(links);
     fprintf(stderr, "%s: %" PRIu32 " nodes, %.1f simulated s in %.2f s of CPU\n", path,
-            scenario.nodes, seconds(report.elapsed), cpu);
+            scenario.nodes, seconds(report.warmup + report.elapsed), cpu);
     return 0;
 }

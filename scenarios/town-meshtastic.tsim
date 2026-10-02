@@ -16,6 +16,9 @@ traffic.interval  = 30 min
 traffic.len       = 16..64
 traffic.broadcast = 0.25
 
-warmup   = 1 min
+# Three hours to settle, the same for every candidate: candidate 3's tables hold 98% of routes by
+# then, and 48% after ten minutes. Airtime is counted from when traffic starts; the warmup's is
+# reported apart.
+warmup   = 3 h
 duration = 1 h
 deadline = 60 s

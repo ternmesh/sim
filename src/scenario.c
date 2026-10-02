@@ -1091,6 +1091,9 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     for (uint32_t i = 0; ok && i < s->send_count; i++) {
         if (s->sends[i].at >= s->warmup + s->duration + s->deadline) {
             ok = fail(err, 0, "traffic.send %" PRIu32 " is at or after the end of the run", i + 1);
+        } else if (s->sends[i].at < s->warmup) {
+            /* Its deliveries would count against the airtime after the warmup, not its own. */
+            ok = fail(err, 0, "traffic.send %" PRIu32 " is during the warmup", i + 1);
         }
     }
     if (ok) {
@@ -1306,6 +1309,11 @@ bool tsim_scenario_read_links(const struct tsim_scenario *s, const char *text,
 
 /* --- Running --- */
 
+static void begin_window(struct tsim_sched *sched, void *ctx) {
+    (void)sched;
+    tsim_metrics_begin(ctx);
+}
+
 bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report) {
     struct tsim_pos *pos = malloc(s->nodes * sizeof *pos);
     struct tsim_sched *sched = tsim_sched_create();
@@ -1361,6 +1369,11 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     }
 
     metrics = tsim_metrics_create(net, s->deadline);
+    /* Scheduled before the traffic, so it runs first of what happens as the warmup ends: a
+     * message sent at that instant is all in the window. */
+    if (metrics && tsim_sched_at(sched, s->warmup, begin_window, metrics).slot == 0) {
+        goto done;
+    }
     struct tsim_traffic_params tp = {
         .interval = s->interval,
         .len_min = s->len_min,

@@ -40,8 +40,8 @@ jobs:
       - run: ctest --test-dir build --output-on-failure
 
   # The acceptance bar for the simulator core: a 1000-node, one-hour run finishes in minutes, so the
-  # comparison can be swept over seeds and parameters. Locally it takes about 7 s; the budget leaves
-  # room for a slower runner, not for a slower simulator.
+  # comparison can be swept over seeds and parameters. Locally the slowest takes about 12 s, its six
+  # hours of warmup included; the budget leaves room for a slower runner, not a slower simulator.
   scale:
     name: scale (1000 nodes)
     runs-on: ubuntu-24.04

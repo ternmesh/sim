@@ -17,11 +17,23 @@ struct latencies {
     uint64_t on_time;
 };
 
+/* What a node had spent and received when the window began, to take from what it has at the end. */
+struct base {
+    struct tsim_ledger ledger;
+    uint64_t dropped;
+    struct tsim_phy_stats phy;
+};
+
 struct tsim_metrics {
     struct tsim_net *net;
     tsim_time deadline;
     struct latencies unicast;
     struct latencies broadcast;
+    tsim_time begun;   /* when the window began: 0 for the whole run */
+    struct base *base; /* per node, or NULL with no window begun */
+    double warmup_ns;
+    double routes;
+    double routes_reach;
 };
 
 static int msb(uint64_t v) {
@@ -90,6 +102,8 @@ struct tsim_metrics *tsim_metrics_create(struct tsim_net *net, tsim_time deadlin
     }
     m->net = net;
     m->deadline = deadline;
+    m->routes = -1;
+    m->routes_reach = -1;
     tsim_net_observe(net, delivered, m);
     return m;
 }
@@ -99,7 +113,58 @@ void tsim_metrics_destroy(struct tsim_metrics *m) {
         return;
     }
     tsim_net_observe(m->net, NULL, NULL);
+    free(m->base);
     free(m);
+}
+
+/* The shares of ordered pairs where the source holds a route, and where the routes followed from
+ * node to node reach the destination - in at most n - 1 hops, so a loop counts as not reaching. */
+static void count_routes(struct tsim_metrics *m) {
+    struct tsim_net *net = m->net;
+    const struct tsim_routing *routing = tsim_net_routing_plugin(net);
+    uint32_t n = tsim_net_nodes(net);
+    if (!routing->next_hop || n < 2) {
+        return;
+    }
+    uint64_t held = 0, reach = 0;
+    for (uint32_t src = 0; src < n; src++) {
+        for (uint32_t dst = 0; dst < n; dst++) {
+            uint32_t at = src, next, hops = 0;
+            if (dst == src || !routing->next_hop(tsim_net_routing(net, src), dst, &next)) {
+                continue;
+            }
+            held++;
+            do {
+                at = next;
+            } while (at != dst && ++hops < n - 1 && at < n &&
+                     routing->next_hop(tsim_net_routing(net, at), dst, &next));
+            reach += at == dst;
+        }
+    }
+    double pairs = (double)n * (double)(n - 1);
+    m->routes = (double)held / pairs;
+    m->routes_reach = (double)reach / pairs;
+}
+
+void tsim_metrics_begin(struct tsim_metrics *m) {
+    if (m->base) {
+        return;
+    }
+    uint32_t n = tsim_net_nodes(m->net);
+    struct base *base = calloc(n, sizeof *base);
+    if (!base) {
+        return; /* out of memory: the window stays the whole run */
+    }
+    const struct tsim_phy *phy = tsim_net_phy(m->net);
+    for (uint32_t i = 0; i < n; i++) {
+        tsim_net_ledger_now(m->net, i, &base[i].ledger);
+        base[i].dropped = tsim_net_stats(m->net, i)->dropped;
+        base[i].phy = *tsim_phy_stats(phy, i);
+        m->warmup_ns += (double)tsim_ledger_airtime(&base[i].ledger);
+    }
+    m->base = base;
+    m->begun = tsim_sched_now(tsim_net_sched(m->net));
+    count_routes(m);
 }
 
 static void finish(struct tsim_delivery *d, const struct latencies *l) {
@@ -112,8 +177,12 @@ static void finish(struct tsim_delivery *d, const struct latencies *l) {
 void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
     struct tsim_net *net = m->net;
     *r = (struct tsim_report){
-        .elapsed = tsim_sched_now(tsim_net_sched(net)),
+        .elapsed = tsim_sched_now(tsim_net_sched(net)) - m->begun,
         .deadline = m->deadline,
+        .warmup = m->begun,
+        .warmup_airtime_s = m->warmup_ns / 1e9,
+        .routes = m->routes,
+        .routes_reach = m->routes_reach,
     };
 
     uint64_t count = tsim_net_message_count(net);
@@ -136,6 +205,13 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
     for (uint32_t i = 0; i < n; i++) {
         struct tsim_ledger now;
         tsim_net_ledger_now(net, i, &now);
+        const struct base *b = m->base ? &m->base[i] : NULL;
+        if (b) {
+            for (int p = 0; p < TSIM_PURPOSE_COUNT; p++) {
+                now.frames[p] -= b->ledger.frames[p];
+                now.airtime[p] -= b->ledger.airtime[p];
+            }
+        }
         const struct tsim_ledger *ledger = &now;
         for (int p = 0; p < TSIM_PURPOSE_COUNT; p++) {
             r->frames[p] += ledger->frames[p];
@@ -147,13 +223,13 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
             busiest = air;
             r->duty_max_node = i;
         }
-        r->queue_dropped += tsim_net_stats(net, i)->dropped;
+        r->queue_dropped += tsim_net_stats(net, i)->dropped - (b ? b->dropped : 0);
         const struct tsim_phy_stats *ps = tsim_phy_stats(phy, i);
-        r->rx_ok += ps->rx_ok;
-        r->rx_lost += ps->rx_lost;
-        r->rx_preempted += ps->rx_preempted;
-        r->rx_aborted += ps->rx_aborted;
-        r->rx_missed += ps->rx_missed;
+        r->rx_ok += ps->rx_ok - (b ? b->phy.rx_ok : 0);
+        r->rx_lost += ps->rx_lost - (b ? b->phy.rx_lost : 0);
+        r->rx_preempted += ps->rx_preempted - (b ? b->phy.rx_preempted : 0);
+        r->rx_aborted += ps->rx_aborted - (b ? b->phy.rx_aborted : 0);
+        r->rx_missed += ps->rx_missed - (b ? b->phy.rx_missed : 0);
     }
     for (int p = 0; p < TSIM_PURPOSE_COUNT; p++) {
         r->airtime_s[p] = airtime_ns[p] / 1e9;
