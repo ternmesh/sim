@@ -1,5 +1,6 @@
 #include "tsim/distvec.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "tsim/meshcore.h"
@@ -1033,13 +1034,15 @@ static void announces_stay_under_the_cap(void) {
     rig_close(&r);
 }
 
-/* A link breaks under traffic. The frame the hop before it cannot get across counts against the
- * link, and the dearer route it then announces is infeasible upstream, so the nodes behind it
- * stop sending into the break at once. The hop itself, with nothing more crossing, keeps its
- * route until the neighbour times out. */
+/* A link breaks under traffic, with links costed by ETX. The frame the hop before it cannot get
+ * across counts against the link, and the dearer route it then announces is infeasible upstream,
+ * so the nodes behind it stop sending into the break at once. The hop itself, with nothing more
+ * crossing, keeps its route until the neighbour times out. */
 static void a_broken_link_is_found_by_the_data_crossing_it(void) {
     struct rig r;
     rig_init(&r);
+    r.rc.etx = true;
+    r.rc.etx_max = 8;
     line(&r, 4, 1);
     tsim_sched_run_until(r.sched, TSIM_S(300));
     uint32_t next;
@@ -1055,6 +1058,34 @@ static void a_broken_link_is_found_by_the_data_crossing_it(void) {
     tsim_sched_run_until(r.sched,
                          TSIM_S(420) + r.rc.neighbour_timeout + r.rc.neighbour_timeout / 4);
     CHECK(!route(&r, 2, 3, &next));
+    rig_close(&r);
+}
+
+/* Without ETX every link costs the same, so a hop lost - to the load, say - makes no route
+ * dearer and none infeasible: the line keeps its routes, and their metrics, until the link goes
+ * over etx_max or its neighbour times out. */
+static void a_lost_hop_makes_no_route_dearer(void) {
+    struct rig r;
+    rig_init(&r);
+    line(&r, 4, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    struct tsim_lora l = r.rc.lora;
+    uint16_t hop = (uint16_t)ceil((double)tsim_lora_airtime(&l, r.rc.ref_len) / (double)TSIM_MS(1));
+    uint16_t metric;
+    CHECK(tsim_distvec_route(at(&r, 0), 3, NULL, &metric));
+    CHECK_EQ_U64(metric, 3 * hop);
+    link(&r, 2, 3, LOSS_NONE);
+    uint64_t m = tsim_net_originate(r.net, 0, 3, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(420));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 0);
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK(tsim_distvec_route(at(&r, 0), 3, NULL, &metric));
+    CHECK_EQ_U64(metric, 3 * hop);
+    tsim_sched_run_until(r.sched,
+                         TSIM_S(420) + r.rc.neighbour_timeout + r.rc.neighbour_timeout / 4);
+    uint32_t next;
+    CHECK(!route(&r, 2, 3, &next));
+    CHECK(!route(&r, 0, 3, &next));
     rig_close(&r);
 }
 
@@ -1249,6 +1280,7 @@ static void power_settings_are_checked(void) {
     struct tsim_distvec_config c = tsim_distvec_default(0, &l, 14.0);
     CHECK(c.snr_floor_db == -12.5);
     CHECK(c.power && c.power_k == 8); /* the default */
+    CHECK(!c.etx && c.etx_max == 32);
     CHECK(tsim_distvec_check(&c) == NULL);
     struct tsim_distvec_config bad = c;
     bad.tx_min_dbm = 14.5; /* no whole dBm between */
@@ -1297,6 +1329,7 @@ int main(void) {
     RUN(trickle_backs_off_and_resets_on_a_new_neighbour);
     RUN(announces_stay_under_the_cap);
     RUN(a_broken_link_is_found_by_the_data_crossing_it);
+    RUN(a_lost_hop_makes_no_route_dearer);
     RUN(routes_stay_loop_free_while_links_change);
     RUN(a_broadcast_reaches_the_line_once_per_relay);
     RUN(the_config_is_checked);

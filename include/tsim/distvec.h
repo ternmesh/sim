@@ -69,13 +69,19 @@
  * IHU is taken away. That is counted in announces, not time, so however slowly a node with many
  * neighbours announces, its IHUs stand until their turn comes round again. A neighbour not heard
  * for neighbour_timeout, and for two of its promises, is forgotten; one that frames sent to it keep
- * failing to reach costs more and more (below).
+ * failing to reach soon goes unused (below).
  *
- * The metric is ETX times time on air: the link's cost is its ETX times the airtime of a
- * reference frame, ref_len bytes at the link's modulation, in milliseconds, at least 1. Every link
- * runs the one modulation until the slotted MAC lets links choose their own, so for now the
- * airtime is the same on every link and the metric is ETX times a constant. There is no queue
- * term. A route's metric is the neighbour's advertised metric plus the link's cost, up to 0xFFFE.
+ * The metric is time on air: a link's cost is the airtime of a reference frame, ref_len bytes at
+ * the link's modulation, in milliseconds, at least 1, and with `etx` that times the link's ETX.
+ * Every link runs the one modulation until the slotted MAC lets links choose their own, so for now
+ * the airtime is the same on every link: the metric counts hops, or with `etx`, ETX times a
+ * constant. ETX is off by default because, measured from announces heard, it measures the load on
+ * the channel more than the link: as traffic loads the region its routes' metrics rise, fail the
+ * feasibility condition below, and starve the nodes downstream, so on the region at 0 dBm unicast
+ * on time is 8% with it and 19% without (MSH-48). It still decides, against etx_max, whether a
+ * link is used at all; 32 rather than 8 lets a link the load is costing announces stay up, and
+ * still drops one that has stopped carrying. There is no queue term. A route's metric is the
+ * neighbour's advertised metric plus the link's cost, up to 0xFFFE.
  *
  * Selection is Babel's. Each node keeps, for every source, a feasibility distance: the best
  * (seq, metric) it has itself advertised. An advertisement from a neighbour is feasible if its
@@ -154,11 +160,11 @@
  * last hop of a message, hearing the destination's acknowledgement does. Without it after
  * hop_wait, plus twice the frame's airtime from when it went, the hop sends the frame again, up to
  * hop_retries times, and then counts it against the link as four of the neighbour's announces
- * missed. A link that keeps losing frames soon costs more than another, or more than etx_max
- * allows; one that lost a frame to a busy moment recovers as its announces come in. The last hop
- * of an acknowledgement has nothing to hear and sends once. A forwarder that is sent a frame it
- * has already forwarded sends it on again if it no longer has it waiting, so a hop whose implicit
- * acknowledgement was lost hears one.
+ * missed. A link that keeps losing frames soon goes over etx_max and unused - with `etx`, it costs
+ * more than another first - and one that lost a frame to a busy moment recovers as its announces
+ * come in. The last hop of an acknowledgement has nothing to hear and sends once. A forwarder that
+ * is sent a frame it has already forwarded sends it on again if it no longer has it waiting, so a
+ * hop whose implicit acknowledgement was lost hears one.
  *
  * The source waits for the acknowledgement ack_wait plus ack_factor times the route's metric in
  * milliseconds - the metric being airtime, it is a round trip's worth - counted from when its frame
@@ -229,7 +235,8 @@ struct tsim_distvec_config {
     uint8_t ihu_max; /* IHU entries per announce frame, 0..48, less what leaves no route room */
 
     uint32_t ref_len;  /* bytes of the reference frame the metric is reckoned in */
-    double etx_max;    /* at least 1 */
+    bool etx;          /* links cost their ETX times the reference frame; off, every one the same */
+    double etx_max;    /* at least 1; links over it are not used */
     double hysteresis; /* 0 to 1 */
     double change;     /* 0 to 1 */
     tsim_time request_interval;
@@ -257,13 +264,14 @@ struct tsim_distvec_config {
 /* Every node infrastructure; Trickle from 8 s to 8 min (six doublings), redundancy 3, announcing
  * at least every third interval and forgetting a neighbour after an hour; a 0.5% cap, a quarter
  * of it for requests, with 1-minute buckets; up to 4 frames an event and 8 IHUs a frame; a
- * 32-byte reference frame, ETX up to 8, 10% hysteresis and a 25% change threshold, a request
- * every 10 s while starved; a jitter of up to 2 airtimes; 32 hops, 2 hop retries after 4 s, 3
- * retries waiting 5 s plus 4 times the metric; broadcasts over 4 hops, waiting up to 3 airtimes
- * and dropped on the second copy heard. Power control on, with power_k 8 - without it, the
- * region's unicast fell from 22% to 2% as density rose (MSH-45) - frames going no quieter than
- * -9 dBm, the SX1262's least, with a 10 dB margin and 3 dB more for each try lost, and the SNR
- * floor Semtech's for the SF: -7.5 dB at SF7, 2.5 dB lower for each SF above.
+ * 32-byte reference frame, every link costing the same (ETX off) and none used over ETX 32, 10%
+ * hysteresis and a 25% change threshold, a request every 10 s while starved; a jitter of up to 2
+ * airtimes; 32 hops, 2 hop retries after 4 s, 3 retries waiting 5 s plus 4 times the metric;
+ * broadcasts over 4 hops, waiting up to 3 airtimes and dropped on the second copy heard. Power
+ * control on, with power_k 8 - without it, the region's unicast fell from 22% to 2% as density rose
+ * (MSH-45) - frames going no quieter than -9 dBm, the SX1262's least, with a 10 dB margin and 3 dB
+ * more for each try lost, and the SNR floor Semtech's for the SF: -7.5 dB at SF7, 2.5 dB lower for
+ * each SF above.
  *
  * The cap is per node, so in a neighbourhood of n nodes routing may take n times it of the
  * channel: 2% - Reticulum's announce cap - saturated a 200-node town at SF9, which 0.5% did not.

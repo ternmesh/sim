@@ -514,6 +514,9 @@ static const char *distvec_set(void *config, const char *key, const char *value)
         c->ref_len = (uint32_t)v;
         return NULL;
     }
+    if (strcmp(key, "etx") == 0) {
+        return parse_yes_no(value, &c->etx) ? NULL : "expected yes or no";
+    }
     if (strcmp(key, "etx_max") == 0) {
         return distvec_factor(value, 1, 1e6, &c->etx_max);
     }

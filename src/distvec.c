@@ -280,7 +280,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .burst = 4,
         .ihu_max = 8,
         .ref_len = 32,
-        .etx_max = 8,
+        .etx_max = 32,
         .hysteresis = 0.1,
         .change = 0.25,
         .request_interval = TSIM_S(10),
@@ -463,12 +463,11 @@ static uint16_t link_cost(const struct router *r, const struct neighbour *n) {
     if (n->dr == 0 || got == 0) {
         return INF; /* not heard both ways */
     }
-    double df = got / 255.0;
-    double etx = 1.0 / (df * (n->dr / 255.0));
+    double etx = 1.0 / (got / 255.0 * (n->dr / 255.0));
     if (etx > r->config.etx_max) {
         return INF;
     }
-    double cost = ceil(etx * r->ref_ms);
+    double cost = ceil((r->config.etx ? etx : 1.0) * r->ref_ms);
     return cost < 1 ? 1 : cost >= INF ? INF - 1 : (uint16_t)cost;
 }
 
@@ -1356,8 +1355,9 @@ static void on_request(struct router *r, const uint8_t *b, uint32_t len) {
 /* --- Next hops and their implicit acknowledgements --- */
 
 /* A frame never reached the neighbour in slot `s`: evidence against the link, as good as HOP_MISS
- * of its announces missed. A link that keeps losing frames soon costs more than another, or more
- * than etx_max allows; one that lost a frame to a busy moment recovers as its announces come in. */
+ * of its announces missed. A link that keeps losing frames soon goes over etx_max and unused -
+ * with etx, it costs more than another first - and one that lost a frame to a busy moment recovers
+ * as its announces come in. */
 static void missed(struct router *r, uint16_t s) {
     struct neighbour *n = slot(r, s);
     double room = r->config.tx_dbm - r->config.tx_min_dbm;
