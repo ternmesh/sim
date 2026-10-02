@@ -28,6 +28,7 @@ struct tsim_traffic {
     uint32_t n;
     struct source *sources;
     struct scripted *scripted;
+    bool scripting; /* a set send is being originated, and may finish before its id is known */
     uint64_t made;
 };
 
@@ -88,7 +89,9 @@ static void send_scripted(struct tsim_sched *sched, void *ctx) {
     (void)sched;
     struct scripted *sc = ctx;
     sc->event = (struct tsim_event){0};
+    sc->traffic->scripting = true;
     sc->id = tsim_net_originate(sc->traffic->net, sc->send.src, sc->send.dst, sc->send.len);
+    sc->traffic->scripting = false;
     if (sc->id) {
         sc->traffic->made++;
     }
@@ -98,6 +101,9 @@ static void send_scripted(struct tsim_sched *sched, void *ctx) {
  * was a set send, which no gap was waiting on. */
 static void on_finished(void *ctx, const struct tsim_message_record *record) {
     struct tsim_traffic *t = ctx;
+    if (t->scripting) {
+        return; /* a set send, finished as it was made */
+    }
     for (uint32_t i = 0; i < t->params.send_count; i++) {
         if (t->scripted[i].id == record->msg.id) {
             return;

@@ -77,7 +77,8 @@ struct tsim_scenario {
      * tsim_scenario_read_positions(). The scenario does not own them. */
     char positions_file[256];
     const struct tsim_pos *positions;
-    /* Set, the losses come from this file instead of the channel model and the positions: the
+    /* Set, the losses come from this file instead of the channel model and the positions, which
+     * are then neither needed nor read, whatever the placement says: the
      * path as written, and the links the driver read from it with tsim_scenario_read_links(),
      * which the scenario does not own. A link the file leaves out loses everything. */
     char links_file[256];

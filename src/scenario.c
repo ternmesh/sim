@@ -889,7 +889,7 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     if (ok && !s->mac) {
         ok = fail(err, 0, "mac is not set");
     }
-    if (ok && s->placement == TSIM_PLACEMENT_FILE && !s->positions_file[0]) {
+    if (ok && s->placement == TSIM_PLACEMENT_FILE && !s->positions_file[0] && !s->links_file[0]) {
         ok = fail(err, 0, "positions is not set: placement = file reads them from that file");
     }
     for (uint32_t i = 0; ok && i < s->send_count; i++) {
@@ -1150,10 +1150,13 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         tsim_place_line(pos, s->nodes, s->spacing_m);
         break;
     case TSIM_PLACEMENT_FILE:
-        if (!s->positions) {
+        if (s->links_file[0]) {
+            memset(pos, 0, s->nodes * sizeof *pos); /* the links replace them */
+        } else if (!s->positions) {
             goto done;
+        } else {
+            memcpy(pos, s->positions, s->nodes * sizeof *pos);
         }
-        memcpy(pos, s->positions, s->nodes * sizeof *pos);
         break;
     }
 

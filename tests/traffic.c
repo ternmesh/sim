@@ -391,6 +391,37 @@ static void a_send_finishing_starts_no_gap(void) {
     rig_close(&r);
 }
 
+/* A send the routing refuses is finished inside the call that makes it, before its id is known:
+ * still a send, so in the closed loop it starts no gap. The process's messages are those of the
+ * same run without it. */
+static void a_send_finished_as_it_is_made_starts_no_gap(void) {
+    struct tsim_traffic_params p = params();
+    p.closed = true;
+    struct rig plain;
+    rig_open(&plain, 2, &refuser, false, &p);
+    tsim_sched_run_until(plain.sched, p.stop);
+    struct tsim_send send = {TSIM_S(1), 0, 1, 10};
+    p.sends = &send;
+    p.send_count = 1;
+    struct rig with;
+    rig_open(&with, 2, &refuser, false, &p);
+    tsim_sched_run_until(with.sched, p.stop);
+    uint64_t made = tsim_net_message_count(plain.net);
+    CHECK(made > 10);
+    CHECK_EQ_U64(tsim_net_message_count(with.net), made + 1);
+    rig_close(&plain);
+    rig_close(&with);
+
+    /* With no process at all, the send is all there is. */
+    p.interval = 0;
+    struct rig alone;
+    rig_open(&alone, 2, &refuser, false, &p);
+    tsim_sched_run_until(alone.sched, p.stop);
+    CHECK_EQ_U64(tsim_net_message_count(alone.net), 1);
+    CHECK(tsim_sched_size(alone.sched) == 0);
+    rig_close(&alone);
+}
+
 static void a_lone_node_sends_nothing(void) {
     struct tsim_traffic_params p = params();
     struct rig r;
@@ -429,6 +460,7 @@ int main(void) {
     RUN(sends_are_made_when_set_and_nothing_else_without_an_interval);
     RUN(a_send_moves_none_of_the_process_draws);
     RUN(a_send_finishing_starts_no_gap);
+    RUN(a_send_finished_as_it_is_made_starts_no_gap);
     RUN(a_lone_node_sends_nothing);
     RUN(destroy_stops_the_traffic);
     return CHECK_DONE();

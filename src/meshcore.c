@@ -753,8 +753,8 @@ static void ack_timeout(void *ctx) {
 /* An acknowledgement has come: whether it was for one of this node's messages. */
 static struct awaiting *acknowledged(struct router *r, uint32_t code) {
     for (struct awaiting *a = r->awaiting; a; a = a->next) {
-        for (uint8_t i = 0; i <= a->attempt; i++) {
-            if (ack_code(r->self, a->id, i) == code) {
+        for (unsigned i = 0; i <= a->attempt; i++) {
+            if (ack_code(r->self, a->id, (uint8_t)i) == code) {
                 return a;
             }
         }

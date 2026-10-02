@@ -436,6 +436,37 @@ static void estimate_cr_reckons_the_delays_at_another_coding_rate(void) {
     }
 }
 
+/* With 255 retries a message reaches attempt 255, and an acknowledgement for another node's
+ * message still has to be told apart from every one of its attempts. Node 0 tries node 2, which
+ * hears nobody, while node 3 sends to node 1 every second; nobody relays, so node 1's
+ * acknowledgements go zero-hop, and node 0 overhears and looks at every one. */
+static void the_last_attempt_of_the_most_retries_still_ends(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.retries = 255;
+    strcpy(r.rc.relays, "9");
+    build(&r, 4, 1);
+    link(&r, 0, 1, LOSS_LOUD);
+    link(&r, 0, 3, LOSS_LOUD);
+    link(&r, 1, 3, LOSS_LOUD);
+    tsim_net_start(r.net);
+    uint64_t lost = tsim_net_originate(r.net, 0, 2, 20);
+    tsim_time t = 0;
+    while (!tsim_net_message(r.net, lost)->finished && t < TSIM_S(7200)) {
+        tsim_net_originate(r.net, 3, 1, 20);
+        t += TSIM_S(1);
+        tsim_sched_run_until(r.sched, t);
+    }
+    CHECK(tsim_net_message(r.net, lost)->finished);
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 256);
+    uint64_t messages = tsim_net_message_count(r.net), delivered = 0;
+    for (uint64_t id = 2; id <= messages; id++) {
+        delivered += tsim_net_message(r.net, id)->delivered;
+    }
+    CHECK(messages > 100 && delivered + 5 >= messages - 1);
+    rig_close(&r);
+}
+
 static void a_seed_repeats_a_run(void) {
     uint64_t relays[2];
     tsim_time last[2];
@@ -523,6 +554,7 @@ int main(void) {
     RUN(a_repeater_adverts_every_interval_and_a_companion_never);
     RUN(a_message_a_frame_cannot_carry_is_refused);
     RUN(estimate_cr_reckons_the_delays_at_another_coding_rate);
+    RUN(the_last_attempt_of_the_most_retries_still_ends);
     RUN(a_seed_repeats_a_run);
     RUN(bad_configs_are_refused);
     RUN(destroy_mid_flood_leaves_the_scheduler_runnable);

@@ -254,7 +254,8 @@ int main(int argc, char **argv) {
     }
     struct tsim_pos *positions = NULL;
     struct tsim_link *links = NULL;
-    if ((scenario.placement == TSIM_PLACEMENT_FILE &&
+    /* A links file replaces the positions, so they are not read. */
+    if ((scenario.placement == TSIM_PLACEMENT_FILE && !scenario.links_file[0] &&
          !(positions = load_positions(&scenario, path))) ||
         (scenario.links_file[0] && !(links = load_links(&scenario, path)))) {
         free(positions);

@@ -496,6 +496,17 @@ static void a_run_with_links_uses_them(void) {
     CHECK(tsim_scenario_run(&s, &rep));
     CHECK_EQ_U64(rep.broadcast.delivered, 2);
     CHECK_EQ_U64(rep.frames[TSIM_PURPOSE_RELAY], 2); /* node 1's, and node 2's, heard by node 1 */
+
+    /* Placed from a file it never read, it runs on its links all the same. */
+    struct tsim_scenario placed;
+    CHECK(parse(&placed, "nodes = 3\nrouting = flood\nmac = aloha\nlinks = l\n"
+                         "placement = file\ntraffic.interval = none\n"
+                         "traffic.send = 1 s, 0, all, 20\nduration = 10 s\n"));
+    placed.links = links;
+    placed.link_count = s.link_count;
+    struct tsim_report again;
+    CHECK(tsim_scenario_run(&placed, &again));
+    CHECK_EQ_U64(again.broadcast.delivered, 2);
     free(links);
 }
 
