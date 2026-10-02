@@ -27,24 +27,33 @@
  *
  * Announces. A node's one periodic frame, charged as announce:
  *
- *     type 0x01 | sender 4 | announce seq 2 | source seq 2 | flags 1 | ihu count 1 | route count 1
- *     | ihu: neighbour 4, receive rate 1 ... | route: destination 4, seq 2, metric 2 ...
+ *     type 0x01 | sender 4 | announce seq 2 | source seq 2 | flags 1 | promise 2 | ihu count 1
+ *     | route count 1 | ihu: neighbour 4, receive rate 1 ... | route: destination 4, seq 2, metric
+ * 2 ...
  *
  * The announce seq numbers the sender's announces, so a receiver learns how many it missed - the
  * hello of Babel. The source seq is the sender's own route's sequence number; its route to itself,
- * metric 0, is implied. The flags say whether it is infrastructure. Each IHU ("I heard you") is
- * the share of a neighbour's announces the sender received, in 255ths. The routes are the
- * sender's selected routes: what it would forward through, with the sequence number of the source
- * and the metric from the sender. A metric of 0xFFFF retracts a route. A table too big for one
- * frame goes out in slices: changed routes first, then the rest in turn, so every route is
- * repeated every so many announces.
+ * metric 0, is implied. The flags say whether it is infrastructure, and whether the frame's IHUs
+ * name every neighbour the sender hears. The promise is the longest, in seconds, the sender may go
+ * before it announces again - Babel's hello interval, for a sender whose interval Trickle varies:
+ * two of its current intervals for every interval it may keep quiet and the one it then announces
+ * in, and the time its cap takes to pay for a full frame. Each IHU ("I heard you") is the share of
+ * a neighbour's announces the sender received, in 255ths. The routes are the sender's selected
+ * routes: what it would forward through, with the sequence number of the source and the metric
+ * from the sender. A metric of 0xFFFF retracts a route. A table too big for one frame goes out in
+ * slices: changed routes first, then the rest in turn, so every route is repeated every so many
+ * announces. An announce the node's queue refuses is undone: its routes go back on the list of
+ * changes, so a retraction is never lost.
  *
  * Links. A neighbour is a node whose announces this node hears. Its receive rate d_f is the share
- * of its last 16 announces heard (Babel's hello history); the rate it reports back, d_r, is its
- * IHU for this node. The link's ETX is 1 / (d_f d_r), and a neighbour without an IHU for this node
- * - one that has not heard it - is not used at all: LoRa links are often one-way, and Babel
- * assumes they are not. Nor is one with an ETX over etx_max. A neighbour not heard for
- * neighbour_timeout is forgotten, and so is one that a frame sent to it fails to reach (below).
+ * of its last 16 announces heard (Babel's hello history), with one more counted missed for every
+ * promise it has let pass since it was last heard; the rate it reports back, d_r, is its IHU for
+ * this node. The link's ETX is 1 / (d_f d_r), and a neighbour without an IHU for this node - one
+ * that has not heard it - is not used at all: LoRa links are often one-way, and Babel assumes they
+ * are not. Nor is one with an ETX over etx_max. A frame from the neighbour whose IHUs name every
+ * node it hears, and not this one, takes its IHU away; so does neighbour_timeout without one. A
+ * neighbour not heard for neighbour_timeout, and for two of its promises, is forgotten; one that
+ * frames sent to it keep failing to reach costs more and more (below).
  *
  * The metric is ETX times time on air: the link's cost is its ETX times the airtime of a
  * reference frame, ref_len bytes at the link's modulation, in milliseconds, at least 1. Every link

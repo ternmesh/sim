@@ -223,6 +223,92 @@ static void an_ihu_lost_is_sent_again_in_turn(void) {
     rig_close(&r);
 }
 
+/* A link that goes one-way after it was in use: node 1 stops hearing node 0, and says so as node
+ * 0's promised announces fail to come. Node 0, still hearing node 1, has to stop using the link
+ * from what node 1 reports, well before anyone's neighbour timeout. */
+static void a_link_gone_one_way_is_dropped_by_the_side_still_hearing(void) {
+    struct rig r;
+    rig_init(&r);
+    line(&r, 3, 8);
+    tsim_sched_run_until(r.sched, TSIM_S(600));
+    uint32_t next;
+    CHECK(route(&r, 0, 2, &next));
+    tsim_phy_set_loss_from(tsim_net_phy(r.net), 0, 1, LOSS_NONE);
+    tsim_time gone = -1;
+    for (tsim_time t = TSIM_S(600); t < TSIM_S(600) + r.rc.neighbour_timeout; t += TSIM_S(30)) {
+        tsim_sched_run_until(r.sched, t);
+        if (tsim_distvec_neighbours(at(&r, 0)) == 0) {
+            gone = t;
+            break;
+        }
+    }
+    CHECK(gone > 0);
+    CHECK(!route(&r, 0, 2, &next));
+    rig_close(&r);
+}
+
+/* A MAC for one test: it sends whatever is queued as soon as the radio is free, except at node
+ * 1 while the test holds that node's gate shut, so a queue of one frame there stays full and the
+ * next send is refused. */
+static bool gate_shut;
+static void *gate_create(struct tsim_node *node, const void *config) {
+    (void)config;
+    return node;
+}
+static void gate_destroy(void *self) { (void)self; }
+static void gate_kick(void *self) {
+    struct tsim_node *node = self;
+    if (!(gate_shut && tsim_node_index(node) == 1) && !tsim_node_sending(node)) {
+        tsim_node_transmit(node);
+    }
+}
+static const struct tsim_mac gate_mac = {"gate", gate_create, gate_destroy, gate_kick};
+
+/* Node 1 retracts its routes through node 2 while its queue is full. The retractions it could not
+ * queue must still go once it can, or node 0 - which still hears node 1, and whose routes never
+ * expire - would keep them for ever. Node 1 loses node 2 first and is gated a little later, so
+ * node 0 has heard it recently when it times node 2 out, and does not time node 1 out itself
+ * before the gate opens. */
+static void a_retraction_the_queue_refused_goes_later(void) {
+    struct rig r;
+    rig_init(&r);
+    /* Announces quick enough that a two-minute neighbour timeout is two promises long. */
+    r.rc.imin = TSIM_S(2);
+    r.rc.doublings = 3;
+    r.rc.quiet_max = 0;
+    r.rc.cap = 0.05;
+    r.rc.neighbour_timeout = TSIM_S(120);
+    struct tsim_net_params p = tsim_net_defaults(9);
+    p.queue_limit = 1;
+    r.nodes = 4;
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 4, &tsim_distvec, &r.rc, &gate_mac, NULL);
+    for (uint32_t i = 0; i + 1 < 4; i++) {
+        link(&r, i, i + 1, LOSS_LOUD);
+    }
+    gate_shut = false;
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(600));
+    uint32_t next;
+    CHECK(route(&r, 0, 3, &next));
+
+    link(&r, 1, 2, LOSS_NONE);
+    tsim_sched_run_until(r.sched, TSIM_S(700));
+    CHECK(route(&r, 1, 3, &next)); /* not timed out yet */
+    gate_shut = true;
+    tsim_net_originate(r.net, 1, 0, 20); /* fills node 1's queue, and stays there */
+    tsim_sched_run_until(r.sched, TSIM_S(790));
+    CHECK(!route(&r, 1, 3, &next)); /* timed out, and its retractions refused */
+    CHECK(route(&r, 0, 3, &next));
+    gate_shut = false;
+    tsim_node_transmit(tsim_net_node(r.net, 1));
+    tsim_sched_run_until(r.sched, TSIM_S(1400));
+    CHECK(!route(&r, 0, 3, &next));
+    CHECK(!route(&r, 0, 2, &next));
+    CHECK(route(&r, 0, 1, &next));
+    rig_close(&r);
+}
+
 static void a_leaf_never_forwards(void) {
     struct rig r;
     rig_init(&r);
@@ -402,6 +488,8 @@ int main(void) {
     RUN(a_one_way_link_is_never_used);
     RUN(every_neighbour_hears_its_ihu_in_turn);
     RUN(an_ihu_lost_is_sent_again_in_turn);
+    RUN(a_link_gone_one_way_is_dropped_by_the_side_still_hearing);
+    RUN(a_retraction_the_queue_refused_goes_later);
     RUN(a_leaf_never_forwards);
     RUN(trickle_backs_off_and_resets_on_a_new_neighbour);
     RUN(announces_stay_under_the_cap);

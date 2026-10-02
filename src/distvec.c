@@ -22,7 +22,7 @@
 #define TYPE_ACK 0x04
 #define TYPE_BCAST 0x05
 
-#define ANNOUNCE_HEAD 12
+#define ANNOUNCE_HEAD 14
 #define IHU_LEN 5
 #define ROUTE_LEN 8
 #define REQUEST_HEAD 6
@@ -33,6 +33,7 @@
 #define BCAST_HEAD 10
 
 #define FLAG_INFRA 0x01
+#define FLAG_IHU_ALL 0x02 /* the frame names every neighbour the sender hears */
 
 /* Higher goes first. */
 #define PRIORITY_CONTROL 3
@@ -115,6 +116,8 @@ struct neighbour {
     uint16_t cost;      /* the link's, or INF */
     uint16_t cost_used; /* the cost every route through it was last chosen with */
     tsim_time heard;
+    tsim_time promise; /* how soon it said it would announce again */
+    tsim_time ihu_at;  /* when it last named this node */
 };
 
 /* A frame sent to a next hop, waiting to hear the next hop pass it on. */
@@ -329,12 +332,25 @@ static struct tsim_tx frame(const struct router *r, enum tsim_purpose purpose, u
 
 static struct neighbour *slot(struct router *r, uint16_t s) { return &r->nb[s - 1]; }
 
+/* The share of a neighbour's announces heard, in 255ths: its history, with an announce counted
+ * missed for every promise it has let pass since it was last heard. */
+static uint8_t heard_rate(const struct router *r, const struct neighbour *n) {
+    tsim_time silent = now(r) - n->heard;
+    int64_t missed = n->promise > 0 ? silent / n->promise : 0;
+    if (missed >= HISTORY) {
+        return 0;
+    }
+    unsigned history = (unsigned)n->history << missed & 0xFFFFu;
+    int span = n->span + (int)missed > HISTORY ? HISTORY : n->span + (int)missed;
+    return (uint8_t)(255 * __builtin_popcount(history) / span);
+}
+
 static uint16_t link_cost(const struct router *r, const struct neighbour *n) {
-    if (n->dr == 0 || n->history == 0) {
+    uint8_t got = heard_rate(r, n);
+    if (n->dr == 0 || got == 0) {
         return INF; /* not heard both ways */
     }
-    int got = __builtin_popcount(n->history);
-    double df = (double)got / n->span;
+    double df = got / 255.0;
     double etx = 1.0 / (df * (n->dr / 255.0));
     if (etx > r->config.etx_max) {
         return INF;
@@ -814,6 +830,17 @@ static bool advertise(struct router *r, uint32_t d, uint8_t *out) {
     return true;
 }
 
+/* The longest this node may go before it announces again, in whole seconds: two of its current
+ * intervals - the interval may double meanwhile - for every interval it may keep quiet and the
+ * one it then announces in, and the time its bucket takes to pay for a full frame. A neighbour
+ * that hears nothing from it for that long counts an announce missed. */
+static uint16_t promise_s(const struct router *r) {
+    double ns = 2.0 * (r->config.quiet_max + 1) * (double)r->interval +
+                (double)tsim_lora_airtime(&r->config.lora, FRAME_MAX) / r->announces.rate;
+    double s = ceil(ns / (double)TSIM_S(1));
+    return s < 1 ? 1 : s > UINT16_MAX ? UINT16_MAX : (uint16_t)s;
+}
+
 /* Builds one announce frame. Returns its length. */
 static uint32_t build(struct router *r, uint8_t *b) {
     uint32_t i = ANNOUNCE_HEAD;
@@ -822,6 +849,7 @@ static uint32_t build(struct router *r, uint8_t *b) {
     put16(b + 5, r->ann_seq);
     put16(b + 7, r->seq);
     b[9] = r->infra ? FLAG_INFRA : 0;
+    put16(b + 10, promise_s(r));
 
     /* IHUs: neighbours owed one first, then the rest in turn from where the last frame stopped,
      * none twice. */
@@ -836,8 +864,7 @@ static uint32_t build(struct router *r, uint8_t *b) {
             }
             n->ihu_owed = pass == 0; /* listed in this frame, so skipped by the second pass */
             put32(b + i, n->id);
-            int got = __builtin_popcount(n->history);
-            b[i + 4] = (uint8_t)(255 * got / n->span);
+            b[i + 4] = heard_rate(r, n);
             i += IHU_LEN;
             ihus++;
             if (pass) {
@@ -845,10 +872,15 @@ static uint32_t build(struct router *r, uint8_t *b) {
             }
         }
     }
+    size_t heard = 0;
     for (size_t k = 0; k < r->nb_count; k++) {
         r->nb[k].ihu_owed = false;
+        heard += r->nb[k].used;
     }
-    b[10] = ihus;
+    b[12] = ihus;
+    if (ihus == heard) {
+        b[9] |= FLAG_IHU_ALL;
+    }
 
     uint8_t routes = 0;
     if (r->infra) {
@@ -874,7 +906,7 @@ static uint32_t build(struct router *r, uint8_t *b) {
             }
         }
     }
-    b[11] = routes;
+    b[13] = routes;
     return i;
 }
 
@@ -892,6 +924,20 @@ static uint32_t planned(const struct router *r) {
         len += (uint32_t)(routes < room ? routes : room) * ROUTE_LEN;
     }
     return len;
+}
+
+/* An announce the queue would not take: what it said goes on the list of changes again, and a
+ * route it retracted counts as still announced, so the next announce says it all. The feasibility
+ * distances it set stay set, which is only ever stricter than need be. */
+static void unsent(struct router *r, const uint8_t *b) {
+    const uint8_t *p = b + ANNOUNCE_HEAD + (uint32_t)b[12] * IHU_LEN;
+    for (uint8_t k = 0; k < b[13]; k++, p += ROUTE_LEN) {
+        uint32_t d = get32(p);
+        if (get16(p + 6) == INF) {
+            r->dest[d].advertised = true;
+        }
+        push_urgent(r, d);
+    }
 }
 
 static void announce(struct router *r) {
@@ -915,8 +961,11 @@ static void announce(struct router *r) {
         struct tsim_tx tx = frame(r, TSIM_PURPOSE_ANNOUNCE, PRIORITY_ANNOUNCE);
         tx.len = build(r, tx.bytes);
         r->ann_seq++;
+        if (!tsim_node_send(r->node, &tx)) {
+            unsent(r, tx.bytes);
+            return; /* the queue is full: no use building more */
+        }
         b->ns -= (double)tsim_lora_airtime(&tx.lora, tx.len);
-        tsim_node_send(r->node, &tx);
     }
 }
 
@@ -925,7 +974,7 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len) {
         return;
     }
     uint32_t from = get32(b + 1);
-    uint8_t ihus = b[10], routes = b[11];
+    uint8_t ihus = b[12], routes = b[13];
     if (from >= r->nodes || from == r->self ||
         ANNOUNCE_HEAD + (uint32_t)ihus * IHU_LEN + (uint32_t)routes * ROUTE_LEN > len) {
         return;
@@ -951,11 +1000,24 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len) {
     n->last_seq = seq;
     n->heard = now(r);
     n->infra = b[9] & FLAG_INFRA;
+    n->promise = (tsim_time)get16(b + 10) * TSIM_S(1);
+    if (fresh) {
+        n->ihu_at = n->heard;
+    }
+    /* Its IHU for this node, if this frame has one. A frame that names every neighbour it hears
+     * and not this one says it does not hear this node; one that names only some leaves the last
+     * IHU standing, until neighbour_timeout passes without another (house_fire()). */
     const uint8_t *p = b + ANNOUNCE_HEAD;
+    bool named = false;
     for (uint8_t k = 0; k < ihus; k++, p += IHU_LEN) {
         if (get32(p) == r->self) {
             n->dr = p[4];
+            n->ihu_at = n->heard;
+            named = true;
         }
+    }
+    if (!named && (b[9] & FLAG_IHU_ALL)) {
+        n->dr = 0;
     }
 
     r->changed = fresh;
@@ -1492,21 +1554,52 @@ static void router_tx_done(void *self, uint64_t handle) {
 
 /* --- Housekeeping and life --- */
 
+/* How often a node looks over its links for neighbours gone quiet. */
+static tsim_time house_period(const struct router *r) {
+    tsim_time p = r->config.neighbour_timeout / 4;
+    return (p < imax(r) ? p : imax(r)) + 1;
+}
+
+/* Forgets the neighbours unheard for neighbour_timeout - and for two of their promises - and the
+ * IHUs as old, and charges the rest for the announces they promised and have not sent. */
 static void house_fire(void *ctx) {
     struct router *r = ctx;
     tsim_time t = now(r);
     for (size_t i = 0; i < r->nb_count; i++) {
-        if (r->nb[i].used && t - r->nb[i].heard > r->config.neighbour_timeout) {
-            forget(r, (uint16_t)(i + 1));
+        struct neighbour *n = &r->nb[i];
+        uint16_t s = (uint16_t)(i + 1);
+        if (!n->used) {
+            continue;
+        }
+        /* Never before it has let two of its promises pass: a node may go quiet that long. */
+        if (t - n->heard > r->config.neighbour_timeout && t - n->heard > 2 * n->promise) {
+            forget(r, s);
+            continue;
+        }
+        if (t - n->ihu_at > r->config.neighbour_timeout) {
+            n->dr = 0;
+        }
+        uint16_t was = n->cost;
+        n->cost = link_cost(r, n);
+        bool flipped = (was == INF) != (n->cost == INF);
+        if (flipped || fabs((double)n->cost - (double)n->cost_used) >
+                           r->config.change * (double)n->cost_used) {
+            n->cost_used = n->cost;
+            r->changed |= flipped;
+            reselect_through(r, s);
         }
     }
-    tsim_timer_start(r->house, r->config.neighbour_timeout / 4 + 1);
+    if (r->changed) {
+        trickle_reset(r);
+        r->changed = false;
+    }
+    tsim_timer_start(r->house, house_period(r));
 }
 
 static void router_start(void *self) {
     struct router *r = self;
     trickle_begin(r);
-    tsim_timer_start(r->house, r->config.neighbour_timeout / 4 + 1);
+    tsim_timer_start(r->house, house_period(r));
 }
 
 static void router_destroy(void *self) {
