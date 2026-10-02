@@ -85,7 +85,7 @@ enough for candidate 3's route tables to fill: 3 h on the town, 6 h on the regio
 | `traffic.interval` | `15 min` | mean time between one node's messages (exponentially distributed), or `none` for no messages but those `traffic.send` sets |
 | `traffic.len` | 32 | message length in bytes, either `32` or a range such as `16..64` |
 | `traffic.broadcast` | 1 | fraction of messages sent as broadcasts; the rest go to one other node chosen at random |
-| `traffic.send` | none | one message at a set time, as `30 s, 2, all, 40`: when, from which node, to which node or to `all`, and how many bytes. Each adds one, up to 64. It uses none of the traffic process's draws, and in the closed loop its finishing starts no gap |
+| `traffic.send` | none | one message at a set time, as `30 s, 2, all, 40`: when (not during the warmup), from which node, to which node or to `all`, and how many bytes. Each adds one, up to 64. It uses none of the traffic process's draws, and in the closed loop its finishing starts no gap |
 | `traffic.peers` | 0 | each node's regular correspondents: it picks this many others at the start, the picks are made mutual, and its unicasts go only to its peers, chosen uniformly. 0 sends each unicast to anyone, which leaves a route found once almost never used again |
 | `traffic.reply` | 0 | fraction of the traffic process's unicasts answered, from the destination back to the source; a `traffic.send` is not, so script its answer too. Whether, when and how long are drawn with the message, and the answer goes whether or not the message arrived, so every candidate is offered the same messages. Answers are not answered. Not with `traffic.closed` |
 | `traffic.reply_delay` | `2 min` | mean time from a unicast to its answer, exponentially distributed |

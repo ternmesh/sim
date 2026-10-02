@@ -1091,6 +1091,9 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     for (uint32_t i = 0; ok && i < s->send_count; i++) {
         if (s->sends[i].at >= s->warmup + s->duration + s->deadline) {
             ok = fail(err, 0, "traffic.send %" PRIu32 " is at or after the end of the run", i + 1);
+        } else if (s->sends[i].at < s->warmup) {
+            /* Its deliveries would count against the airtime after the warmup, not its own. */
+            ok = fail(err, 0, "traffic.send %" PRIu32 " is during the warmup", i + 1);
         }
     }
     if (ok) {

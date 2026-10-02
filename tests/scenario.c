@@ -196,6 +196,9 @@ static void problems_say_where_they_are(void) {
         {"nodes = 2\nrouting = flood\nmac = aloha\nduration = 1 min\ndeadline = 1 min\n"
          "traffic.send = 2 min, 0, all, 40\n",
          0, "traffic.send 1 is at or after the end"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nwarmup = 1 min\n"
+         "traffic.send = 30 s, 0, all, 40\n",
+         0, "traffic.send 1 is during the warmup"},
         {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.relays = some\n", 4,
          "node numbers and ranges"},
         {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.hash_size = 4\n", 4,

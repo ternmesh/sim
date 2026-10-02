@@ -280,6 +280,6 @@ int main(int argc, char **argv) {
     free(positions);
     free(links);
     fprintf(stderr, "%s: %" PRIu32 " nodes, %.1f simulated s in %.2f s of CPU\n", path,
-            scenario.nodes, seconds(report.elapsed), cpu);
+            scenario.nodes, seconds(report.warmup + report.elapsed), cpu);
     return 0;
 }

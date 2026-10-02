@@ -93,7 +93,8 @@ void tsim_metrics_destroy(struct tsim_metrics *metrics);
 /* Starts the measured window now, once its routing has had its warmup: from here on are the
  * airtime, frames, duty cycles, queue drops and receptions reported, so a protocol that takes hours
  * to settle can be judged settled; the airtime before goes in warmup_airtime_s, and the routes held
- * now in routes and routes_reach. Called at most once; without it, the window is the whole run. */
+ * now in routes and routes_reach. Called at most once, before the first message is originated,
+ * since deliveries are counted whenever they happen; without it, the window is the whole run. */
 void tsim_metrics_begin(struct tsim_metrics *metrics);
 
 /* The run so far. */
