@@ -149,8 +149,8 @@ default.
 | `routing.bcast_hops` (`distvec`) | 4 | relays a broadcast may have along any path, 0 to 254 |
 | `routing.bcast_window` (`distvec`) | 3 | the longest a broadcast relay waits, in airtimes of the frame |
 | `routing.bcast_cancel` (`distvec`) | 2 | copies of a broadcast heard, the first included, that drop a relay still waiting; 0 never drops one |
-| `routing.power` (`distvec`) | `no` | power control: frames to one neighbour go at its floor plus `routing.margin`, and a relay loud enough for the hop before too |
-| `routing.power_k` (`distvec`) | 0 | with `routing.power`, announces, requests and broadcasts go loud enough for this many nearest neighbours; 0 sends them at `radio.tx_dbm` |
+| `routing.power` (`distvec`) | `yes` | power control: frames to one neighbour go at its floor plus `routing.margin`, and a relay loud enough for the hop before too |
+| `routing.power_k` (`distvec`) | 8 | with `routing.power`, announces, requests and broadcasts go loud enough for this many nearest neighbours; 0 sends them at `radio.tx_dbm` |
 | `routing.tx_min`, `routing.margin`, `routing.step` (`distvec`) | -9, 10, 3 | power control's quietest frame in dBm, its margin above a neighbour's floor in dB, and the dB each lost try adds |
 | `routing.snr_floor` (`distvec`) | Semtech's for the SF | the SNR the radio demodulates down to, in dB, from which a neighbour's floor is reckoned |
 

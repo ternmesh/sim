@@ -260,9 +260,10 @@ struct tsim_distvec_config {
  * 32-byte reference frame, ETX up to 8, 10% hysteresis and a 25% change threshold, a request
  * every 10 s while starved; a jitter of up to 2 airtimes; 32 hops, 2 hop retries after 4 s, 3
  * retries waiting 5 s plus 4 times the metric; broadcasts over 4 hops, waiting up to 3 airtimes
- * and dropped on the second copy heard. Power control off; when on, frames go no quieter than
+ * and dropped on the second copy heard. Power control on, with power_k 8 - without it, the
+ * region's unicast fell from 22% to 2% as density rose (MSH-45) - frames going no quieter than
  * -9 dBm, the SX1262's least, with a 10 dB margin and 3 dB more for each try lost, and the SNR
- * floor is Semtech's for the SF: -7.5 dB at SF7, 2.5 dB lower for each SF above.
+ * floor Semtech's for the SF: -7.5 dB at SF7, 2.5 dB lower for each SF above.
  *
  * The cap is per node, so in a neighbourhood of n nodes routing may take n times it of the
  * channel: 2% - Reticulum's announce cap - saturated a 200-node town at SF9, which 0.5% did not.

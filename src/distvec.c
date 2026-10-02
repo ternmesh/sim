@@ -294,10 +294,12 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .bcast_hops = 4,
         .bcast_window = 3,
         .bcast_cancel = 2,
+        .power = true,
         .tx_min_dbm = -9,
         .margin_db = 10,
         .step_db = 3,
         .snr_floor_db = -7.5 - 2.5 * (lora->sf - 7), /* Semtech's */
+        .power_k = 8,
     };
 }
 

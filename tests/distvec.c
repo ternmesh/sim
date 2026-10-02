@@ -23,6 +23,7 @@ struct rig {
 static void rig_init(struct rig *r) {
     struct tsim_lora l = tsim_lora_default(7, 125000);
     r->rc = tsim_distvec_default(0, &l, 14.0);
+    r->rc.power = false; /* frames and links as these tests know them; power_rig turns it on */
     r->mc = tsim_meshcore_mac_default();
 }
 
@@ -1130,6 +1131,7 @@ static void the_config_is_checked(void) {
 static void power_rig(struct rig *r, uint32_t nodes, const double *losses) {
     rig_init(r);
     r->rc.power = true;
+    r->rc.power_k = 0;
     build(r, nodes, 1);
     for (uint32_t i = 0; i + 1 < nodes; i++) {
         link(r, i, i + 1, losses[i]);
@@ -1213,7 +1215,7 @@ static void power_settings_are_checked(void) {
     struct tsim_lora l = tsim_lora_default(9, 125000);
     struct tsim_distvec_config c = tsim_distvec_default(0, &l, 14.0);
     CHECK(c.snr_floor_db == -12.5);
-    c.power = true;
+    CHECK(c.power && c.power_k == 8); /* the default */
     CHECK(tsim_distvec_check(&c) == NULL);
     struct tsim_distvec_config bad = c;
     bad.tx_min_dbm = 14.5; /* no whole dBm between */
