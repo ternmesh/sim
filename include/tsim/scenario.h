@@ -33,10 +33,13 @@
  * defaults are listed in docs/scenarios.md. traffic.send is the one setting that can be given more
  * than once to add, not replace: each is one more message at a set time.
  *
- * The run's clock: a warmup with no traffic, for protocols that announce themselves before they
- * can route; `duration` of traffic; then `deadline` more with none, so the last messages have as
- * long to arrive as the first. Every airtime and duty cycle counts the last two: the warmup is for
- * settling, and what it cost is reported apart, with how many routes it left the nodes holding. */
+ * The run's clock: a warmup, for protocols that announce themselves before they can route;
+ * `duration` of traffic; then `deadline` more with none, so the last messages have as long to
+ * arrive as the first. Every airtime and duty cycle counts the last two: the warmup is for
+ * settling, and what it cost is reported apart, with how many routes it left the nodes holding.
+ * The traffic starts `lead` before the warmup ends, so a protocol is judged on a network already
+ * carrying it, not one that settled on a quiet channel; only the messages made after the warmup
+ * are counted. */
 
 enum tsim_placement {
     TSIM_PLACEMENT_UNIFORM,
@@ -103,6 +106,7 @@ struct tsim_scenario {
     uint32_t peers;
     double reply;
     tsim_time reply_delay;
+    tsim_time lead; /* traffic before the warmup ends, at most the warmup */
     struct tsim_send sends[TSIM_SENDS_MAX];
     uint32_t send_count;
 

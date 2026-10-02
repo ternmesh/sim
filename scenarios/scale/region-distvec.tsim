@@ -16,9 +16,13 @@ traffic.interval  = 30 min
 traffic.len       = 16..64
 traffic.broadcast = 0.25
 
-# Six hours to settle, the same for every candidate: candidate 3's tables hold about 97% of routes
-# by then, at every density the region is swept over, and under 12% after ten minutes. Airtime is
-# counted from when traffic starts; the warmup's is reported apart.
-warmup   = 6 h
-duration = 1 h
-deadline = 60 s
+# Six hours to settle, the same for every candidate: on a quiet channel candidate 3's tables hold
+# about 97% of routes by then, at every density the region is swept over, and under 12% after ten
+# minutes. The traffic starts for the last three of them, so what is measured is a network already
+# carrying it: candidate 3 decays under load, from 34% of unicasts on time in the first hour after a
+# quiet warmup to under 10% from the third (MSH-50). Only the messages made after the warmup are
+# counted, and only the airtime after it; the warmup's is reported apart.
+warmup       = 6 h
+traffic.lead = 3 h
+duration     = 1 h
+deadline     = 60 s
