@@ -160,6 +160,7 @@ The run's CPU time goes to stderr, because it differs between runs.
 
 | Field | Meaning |
 |---|---|
+| `links` | how connected the map is at the scenario's `radio.*` modulation and power: `degree_mean`, `degree_min` and `degree_max` links per node, and `component_max`, the nodes in the largest set the links join. A link is two nodes that each decode the other with nothing else on the air (mean loss, no fading). Read every other figure against it: a protocol ranks differently where nodes hear a dozen others and where they hear hundreds |
 | `on_time_per_airtime_s` | **the headline:** deliveries that arrived within the deadline, per second of airtime spent by all nodes for any purpose |
 | `duty_max`, `duty_max_node` | the busiest node's airtime as a fraction of the run, and which node that is (the lowest-numbered, if several tie) |
 | `duty_mean` | the average across all nodes |
@@ -192,6 +193,10 @@ The latency percentiles are rounded down by at most 1.6%. The maximum latency is
   `fife.tsim` for each seed and arm and fails if a mean is too far from MeshBench's; the script says
   how the reference was made.
 - **`scenarios/scale/*.tsim`:** these are too large for a sanitized debug build. CI's `scale` job
-  runs `region.tsim` (1000 nodes, one hour of traffic), `region-meshtastic.tsim` (the same, under
-  candidate 1) and `region-distvec.tsim` (under candidate 3) as a release build with a 60-second
-  budget.
+  runs `region.tsim` (1000 nodes, one hour of traffic), and the same under each candidate
+  (`region-meshtastic.tsim`, `region-meshcore.tsim`, `region-distvec.tsim`), as a release build with
+  a 60-second budget each. At their 20 dBm the region is close to one collision domain, about 470
+  links per node; `tools/density.py --tsim build/tsim` runs all four at several powers and seeds,
+  from about 12 links per node to that, and prints each candidate's delivery at each density. Power
+  stands in for spacing: under the log-distance channel, 5 dB quieter loses what standing 1.64
+  times further apart does. The script says more.

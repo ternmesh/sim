@@ -1,0 +1,21 @@
+# The scale check under candidate 2: region.tsim with MeshCore's flood-then-direct routing and its
+# listen-before-talk MAC. A thousand repeaters each learn paths from the floods they hear, so this is
+# the run whose timing and memory a slow path table would show first.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf     = 9
+radio.bw     = 125000
+radio.tx_dbm = 20
+
+routing = meshcore
+mac     = meshcore
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+warmup   = 10 min
+duration = 1 h
+deadline = 60 s

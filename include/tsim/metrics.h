@@ -5,6 +5,7 @@
 
 #include "tsim/net.h"
 #include "tsim/node.h"
+#include "tsim/phy.h"
 #include "tsim/time.h"
 
 /* What a run is judged by.
@@ -63,6 +64,12 @@ struct tsim_report {
     uint64_t rx_preempted;
     uint64_t rx_aborted;
     uint64_t rx_missed;
+
+    /* The links the run had to work with, which a result means little without: the same protocol
+     * ranks differently where every node hears a dozen others and where it hears hundreds.
+     * tsim_metrics_report() leaves it zero, since only the scenario knows the radio settings;
+     * tsim_scenario_run() measures it at the scenario's radio.* modulation and power. */
+    struct tsim_phy_links links;
 };
 
 struct tsim_metrics;

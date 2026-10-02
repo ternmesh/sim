@@ -337,6 +337,28 @@ static void a_run_relays_across_its_map(void) {
     CHECK(rep.on_time_per_airtime_s > 0);
 }
 
+/* A line 2 km apart at 20 dBm: each node decodes those two hops away, not three, so the ends
+ * have two links and the middle four. At 0 dBm a neighbour is out of reach. */
+static void a_run_reports_its_links(void) {
+    struct tsim_scenario s;
+    const char *text = "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
+                       "routing = flood\nmac = aloha\nradio.tx_dbm = %d\nduration = 1 min\n";
+    char buf[256];
+    snprintf(buf, sizeof buf, text, 20);
+    CHECK(parse(&s, buf));
+    struct tsim_report rep;
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK(rep.links.degree_mean == 3.0);
+    CHECK_EQ_I64(rep.links.degree_min, 2);
+    CHECK_EQ_I64(rep.links.degree_max, 4);
+    CHECK_EQ_I64(rep.links.component_max, 6);
+    snprintf(buf, sizeof buf, text, 0);
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK(rep.links.degree_mean == 0.0);
+    CHECK_EQ_I64(rep.links.component_max, 1);
+}
+
 /* Forty radios at 1 Hz, SF12 and a 65535-symbol preamble send frames years long, and between
  * them spend more airtime than a tsim_time holds. The report adds it up regardless. */
 static void airtime_past_what_a_time_holds_still_adds_up(void) {
@@ -595,6 +617,7 @@ int main(void) {
     RUN(problems_say_where_they_are);
     RUN(meshtastic_settings_read_in_any_order);
     RUN(a_run_relays_across_its_map);
+    RUN(a_run_reports_its_links);
     RUN(a_meshtastic_run_floods_a_line);
     RUN(a_run_repeats_with_its_seed);
     RUN(compatibility_settings_read);

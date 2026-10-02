@@ -488,6 +488,71 @@ double tsim_phy_loss(const struct tsim_phy *phy, uint32_t a, uint32_t b) {
     return phy->loss[(size_t)a * phy->n + b];
 }
 
+static uint32_t root(uint32_t *up, uint32_t x) {
+    while (up[x] != x) {
+        x = up[x] = up[up[x]];
+    }
+    return x;
+}
+
+bool tsim_phy_links(const struct tsim_phy *phy, const struct tsim_lora *lora, double tx_dbm,
+                    struct tsim_phy_links *out) {
+    *out = (struct tsim_phy_links){0};
+    if (!tsim_lora_valid(lora) || lora->sf < TSIM_SF_MIN ||
+        lora->sf >= TSIM_SF_MIN + TSIM_SF_COUNT) {
+        return false;
+    }
+    uint32_t n = phy->n;
+    uint32_t *up = malloc(n * sizeof *up);
+    uint32_t *degree = calloc(n, sizeof *degree);
+    if (!up || !degree) {
+        free(up);
+        free(degree);
+        return false;
+    }
+    /* Received at least this far below the sender: the floor, as decodable() has it. */
+    double budget =
+        tx_dbm - noise_dbm(phy, lora->bw_hz) - phy->params.snr_min_db[lora->sf - TSIM_SF_MIN];
+    for (uint32_t a = 0; a < n; a++) {
+        up[a] = a;
+    }
+    uint64_t links = 0;
+    for (uint32_t a = 0; a < n; a++) {
+        for (uint32_t b = a + 1; b < n; b++) {
+            if (phy->loss[(size_t)a * n + b] <= budget && phy->loss[(size_t)b * n + a] <= budget) {
+                degree[a]++;
+                degree[b]++;
+                links++;
+                up[root(up, a)] = root(up, b);
+            }
+        }
+    }
+    uint32_t *size = calloc(n, sizeof *size);
+    if (!size) {
+        free(up);
+        free(degree);
+        return false;
+    }
+    out->degree_min = n ? UINT32_MAX : 0;
+    for (uint32_t a = 0; a < n; a++) {
+        uint32_t c = ++size[root(up, a)];
+        if (c > out->component_max) {
+            out->component_max = c;
+        }
+        if (degree[a] < out->degree_min) {
+            out->degree_min = degree[a];
+        }
+        if (degree[a] > out->degree_max) {
+            out->degree_max = degree[a];
+        }
+    }
+    out->degree_mean = n ? 2.0 * (double)links / n : 0;
+    free(size);
+    free(up);
+    free(degree);
+    return true;
+}
+
 void tsim_phy_set_losses(struct tsim_phy *phy, const struct tsim_channel_params *channel,
                          const struct tsim_pos *pos) {
     for (uint32_t a = 0; a < phy->n; a++) {
