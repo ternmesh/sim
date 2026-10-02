@@ -826,7 +826,9 @@ static void relay_flood(struct router *r, const uint8_t *bytes, const struct pac
                         uint64_t hash, enum tsim_purpose purpose, uint64_t carries,
                         uint32_t carries_at) {
     uint32_t path_bytes = (uint32_t)p->count * p->hash_size;
-    if (!r->relay || r->hold_relay || p->count >= r->config.flood_max ||
+    /* The count is six bits. The firmware would write a 64th hop into the hash size's bits and
+     * corrupt its own frame; this stops at 63 instead. */
+    if (!r->relay || r->hold_relay || p->count >= r->config.flood_max || p->count >= 63 ||
         path_bytes + p->hash_size > TSIM_MESHCORE_PATH_MAX) {
         return;
     }

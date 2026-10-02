@@ -66,6 +66,9 @@
  * all announce at once. The 47-hour flood advert, and adverts from companions, which the app sends
  * on demand, are not sent; every node knows every other's key from the start.
  *
+ * A flood stops at 63 hops, the most its six-bit count holds, whatever flood_max says. MeshCore
+ * lets a flood_max of 64 write a 64th hop into the hash size's bits, which garbles the frame.
+ *
  * Not ported: regions - a scoped flood is relayed by every relay here, so a scenario lists as
  * relays only the repeaters that forward its scope - loop detection, which is off by default, extra
  * acknowledgements, which are off by default, and requests, responses and traces.

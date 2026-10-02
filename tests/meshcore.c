@@ -140,6 +140,21 @@ static void a_flood_goes_no_further_than_flood_max(void) {
     rig_close(&r);
 }
 
+/* The path count is six bits: at the default flood_max of 64 a flood still stops at 63 hops, and
+ * the 64th node does not relay it with its count spilt into the hash size's bits. */
+static void a_flood_stops_at_the_most_hops_its_count_holds(void) {
+    struct rig r;
+    rig_init(&r);
+    CHECK_EQ_U64(r.rc.flood_max, 64);
+    line(&r, 66, 1);
+    uint64_t b = tsim_net_originate(r.net, 0, TSIM_BROADCAST, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(600));
+    CHECK_EQ_U64(tsim_net_message(r.net, b)->delivered, 64); /* nodes 1 to 64 */
+    CHECK_EQ_U64(frames(&r, 63, TSIM_PURPOSE_RELAY), 1);
+    CHECK_EQ_U64(frames(&r, 64, TSIM_PURPOSE_RELAY), 0);
+    rig_close(&r);
+}
+
 /* A relay waits a whole number of milliseconds from 0 to 5t, t half the airtime of what it sends,
  * after hearing the flood, and nothing else delays it on a quiet line. */
 static void a_flood_relay_waits_up_to_five_halves_of_its_airtime(void) {
@@ -564,6 +579,7 @@ int main(void) {
     RUN(a_broadcast_is_relayed_once_by_every_relay_it_reaches);
     RUN(a_companion_relays_nothing);
     RUN(a_flood_goes_no_further_than_flood_max);
+    RUN(a_flood_stops_at_the_most_hops_its_count_holds);
     RUN(a_flood_relay_waits_up_to_five_halves_of_its_airtime);
     RUN(a_faint_flood_waits_out_its_receive_delay);
     RUN(hearing_a_relay_cancels_a_queued_one_only_when_queued);
