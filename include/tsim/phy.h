@@ -175,7 +175,14 @@ bool tsim_phy_carrier(struct tsim_phy *phy, uint32_t node);
  * preamble raising the carrier until then - and it stays set whatever is heard after. Only the
  * driver's stale-flag timeout clears it: a look that finds it set for longer than `hold` clears
  * both flags and reads the channel clear, and so does every later look until a reception that
- * begins after that one. 0 releases the hold; the flag starts clear either way. */
+ * begins after that one. 0 releases the hold; the flag starts clear either way.
+ *
+ * The flag goes up by timing alone, once the reception has lasted to the header, as MeshBench's
+ * virtual SX1262 raises it "after the LoRa header would have been demodulated": a header a
+ * collision spoils sets it too. A real radio would need the header to get through, but its driver
+ * clears the flag on reading, so only a hold - which exists to reproduce MeshBench - sees the
+ * difference. Checking the header against the interference over it puts rx outside the MeshBench
+ * check's limit, for both a sender and an arm. */
 void tsim_phy_hold_header(struct tsim_phy *phy, uint32_t node, tsim_time hold);
 
 /* Channel activity detection, as answered at this instant: whether a frame the node could decode

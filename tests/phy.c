@@ -822,6 +822,21 @@ static void a_stale_header_flag_clears_when_first_looked_at(void) {
     world_free(w);
 }
 
+/* The held flag goes up by timing, as MeshBench's radio raises it: two frames 2 dB apart from the
+ * same instant spoil each other, header and all, and the one the receiver is on still sets it. */
+static void a_held_header_flag_is_set_by_timing_even_through_a_collision(void) {
+    struct world *w = world_new(3, NULL);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -82.0);
+    tsim_phy_hold_header(w->phy, 0, TSIM_MS(100));
+    tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_phy_transmit(w->phy, 2, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_sched_run_until(w->sched, TSIM_MS(60));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_lost, 1);
+    CHECK(tsim_phy_carrier(w->phy, 0));
+    world_free(w);
+}
+
 /* A reception cut short before its header sets nothing. */
 static void a_reception_cut_short_before_its_header_sets_no_flag(void) {
     struct world *w = world_new(2, NULL);
@@ -1130,6 +1145,7 @@ int main(void) {
     RUN(the_carrier_is_the_reception_without_a_hold);
     RUN(a_held_header_flag_stays_up_for_the_hold_from_the_first_header);
     RUN(a_stale_header_flag_clears_when_first_looked_at);
+    RUN(a_held_header_flag_is_set_by_timing_even_through_a_collision);
     RUN(a_reception_cut_short_before_its_header_sets_no_flag);
     RUN(pairwise_takes_interferers_one_at_a_time);
     RUN(pairwise_does_not_weigh_by_overlap);
