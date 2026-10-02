@@ -1,10 +1,10 @@
 #include "tsim/meshcore.h"
 
-#include <ctype.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "tsim/nodeset.h"
 #include "tsim/rng.h"
 
 /* --- Shared --- */
@@ -385,49 +385,9 @@ struct tsim_meshcore_config tsim_meshcore_default(uint16_t channel, const struct
     };
 }
 
-/* Whether `node` is in `spec`, or -1 if the spec does not parse. */
-static int relays_contain(const char *spec, uint32_t node) {
-    if (strcmp(spec, "all") == 0) {
-        return 1;
-    }
-    int found = 0;
-    const char *p = spec;
-    while (*p) {
-        char *end;
-        if (!isdigit((unsigned char)*p)) {
-            return -1;
-        }
-        unsigned long lo = strtoul(p, &end, 10), hi = lo;
-        p = end;
-        if (*p == '-') {
-            p++;
-            if (!isdigit((unsigned char)*p)) {
-                return -1;
-            }
-            hi = strtoul(p, &end, 10);
-            p = end;
-            if (hi < lo) {
-                return -1;
-            }
-        }
-        if (node >= lo && node <= hi) {
-            found = 1;
-        }
-        if (*p == ',') {
-            p++;
-            if (!*p) {
-                return -1;
-            }
-        } else if (*p) {
-            return -1;
-        }
-    }
-    return p == spec ? -1 : found;
-}
-
 bool tsim_meshcore_relays_valid(const char *spec) {
     return strlen(spec) < sizeof((struct tsim_meshcore_config *)0)->relays &&
-           relays_contain(spec, 0) >= 0;
+           tsim_nodeset_contains(spec, 0) >= 0;
 }
 
 static bool seen(const struct router *r, uint64_t hash) {
@@ -1161,7 +1121,7 @@ static void router_start(void *self) {
 
 static void *router_create(struct tsim_node *node, const void *config) {
     const struct tsim_meshcore_config *c = config;
-    int relay = relays_contain(c->relays, tsim_node_index(node));
+    int relay = tsim_nodeset_contains(c->relays, tsim_node_index(node));
     if (relay < 0 || c->hash_size < 1 || c->hash_size > 3 || c->flood_max < 1 ||
         c->flood_max > 64 || !(c->rx_delay_base >= 0 && c->rx_delay_base <= 20) ||
         !(c->tx_delay_factor >= 0 && c->tx_delay_factor <= 2) ||

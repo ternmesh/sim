@@ -49,6 +49,10 @@ uint32_t tsim_net_nodes(const struct tsim_net *net);
 /* A node, as its plugins see it - for a test that stands in for a plugin. */
 struct tsim_node *tsim_net_node(struct tsim_net *net, uint32_t node);
 
+/* A node's routing instance, as its create() returned it - for a test or a report that reads a
+ * candidate's own state through that candidate's header. Never for a plugin. */
+void *tsim_net_routing(struct tsim_net *net, uint32_t node);
+
 /* Makes a message at `src` and hands it to its routing. Returns its id, or 0 if a node is out of
  * range, `dst` is `src`, or `len` is over TSIM_FRAME_MAX. A message the routing refuses keeps its
  * record, marked refused: it stays in every delivery ratio's denominator, so a protocol that

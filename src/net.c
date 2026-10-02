@@ -205,6 +205,10 @@ struct tsim_node *tsim_net_node(struct tsim_net *net, uint32_t node) {
     return node < net->n ? &net->nodes[node] : NULL;
 }
 
+void *tsim_net_routing(struct tsim_net *net, uint32_t node) {
+    return node < net->n ? net->nodes[node].routing : NULL;
+}
+
 /* Marks a message finished and tells the application, once. */
 static bool finish(struct tsim_net *net, uint64_t msg) {
     struct tsim_message_record *r = &net->messages[msg - 1].r;
