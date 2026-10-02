@@ -1,0 +1,21 @@
+# The town scenario under candidate 3: distance-vector routing over MeshCore's dispatcher, every
+# node infrastructure. Ten minutes of warmup, so the routes have converged before traffic starts:
+# what the announces cost while they do is still counted.
+nodes     = 200
+placement = uniform
+area      = 8000 x 8000
+
+radio.sf     = 9
+radio.bw     = 125000
+radio.tx_dbm = 20
+
+routing = distvec
+mac     = meshcore
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+warmup   = 10 min
+duration = 1 h
+deadline = 60 s

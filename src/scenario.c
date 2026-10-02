@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "tsim/baseline.h"
+#include "tsim/distvec.h"
 #include "tsim/meshcore.h"
 #include "tsim/meshtastic.h"
 #include "tsim/place.h"
@@ -438,6 +439,128 @@ static const char *meshcore_mac_set(void *config, const char *key, const char *v
     return "is not a setting of meshcore";
 }
 
+static void distvec_defaults(void *config, const struct tsim_radio *radio) {
+    *(struct tsim_distvec_config *)config =
+        tsim_distvec_default(radio->channel, &radio->lora, radio->tx_dbm);
+}
+
+static const char *distvec_count(const char *value, uint64_t lo, uint64_t hi, uint8_t *out) {
+    uint64_t v;
+    if (!parse_u64(value, hi, &v) || v < lo) {
+        return lo ? "expected a count from 1 to its limit" : "expected a count from 0 to its limit";
+    }
+    *out = (uint8_t)v;
+    return NULL;
+}
+
+static const char *distvec_factor(const char *value, double lo, double hi, double *out) {
+    return parse_double(value, out) && *out >= lo && *out <= hi ? NULL
+                                                                : "expected a number in range";
+}
+
+static const char *distvec_time(const char *value, bool zero, tsim_time *out) {
+    return parse_time(value, out) && (zero || *out > 0) ? NULL : "expected a time, such as 2 s";
+}
+
+static const char *distvec_set(void *config, const char *key, const char *value) {
+    struct tsim_distvec_config *c = config;
+    uint64_t v;
+    if (strcmp(key, "relays") == 0) {
+        if (!tsim_meshcore_relays_valid(value)) {
+            return "expected all, or node numbers and ranges such as 0-45,50";
+        }
+        strcpy(c->relays, value);
+        return NULL;
+    }
+    if (strcmp(key, "imin") == 0) {
+        return distvec_time(value, false, &c->imin);
+    }
+    if (strcmp(key, "doublings") == 0) {
+        return distvec_count(value, 0, 16, &c->doublings);
+    }
+    if (strcmp(key, "redundancy") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->redundancy);
+    }
+    if (strcmp(key, "quiet_max") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->quiet_max);
+    }
+    if (strcmp(key, "neighbour_timeout") == 0) {
+        return distvec_time(value, false, &c->neighbour_timeout);
+    }
+    if (strcmp(key, "cap") == 0) {
+        return parse_double(value, &c->cap) && c->cap > 0 && c->cap <= 1
+                   ? NULL
+                   : "expected a share above 0 and at most 1";
+    }
+    if (strcmp(key, "request_share") == 0) {
+        return parse_double(value, &c->request_share) && c->request_share > 0 &&
+                       c->request_share < 1
+                   ? NULL
+                   : "expected a share above 0 and below 1";
+    }
+    if (strcmp(key, "cap_window") == 0) {
+        return distvec_time(value, false, &c->cap_window);
+    }
+    if (strcmp(key, "burst") == 0) {
+        return distvec_count(value, 1, 16, &c->burst);
+    }
+    if (strcmp(key, "ihu_max") == 0) {
+        return distvec_count(value, 0, 48, &c->ihu_max);
+    }
+    if (strcmp(key, "ref_len") == 0) {
+        if (!parse_u64(value, 255, &v)) {
+            return "expected a length from 0 to 255 bytes";
+        }
+        c->ref_len = (uint32_t)v;
+        return NULL;
+    }
+    if (strcmp(key, "etx_max") == 0) {
+        return distvec_factor(value, 1, 1e6, &c->etx_max);
+    }
+    if (strcmp(key, "hysteresis") == 0) {
+        return distvec_factor(value, 0, 1, &c->hysteresis);
+    }
+    if (strcmp(key, "change") == 0) {
+        return distvec_factor(value, 0, 1, &c->change);
+    }
+    if (strcmp(key, "request_interval") == 0) {
+        return distvec_time(value, true, &c->request_interval);
+    }
+    if (strcmp(key, "hop_max") == 0) {
+        return distvec_count(value, 1, UINT8_MAX, &c->hop_max);
+    }
+    if (strcmp(key, "hop_retries") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->hop_retries);
+    }
+    if (strcmp(key, "hop_wait") == 0) {
+        return distvec_time(value, true, &c->hop_wait);
+    }
+    if (strcmp(key, "retries") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->retries);
+    }
+    if (strcmp(key, "ack_wait") == 0) {
+        return distvec_time(value, false, &c->ack_wait);
+    }
+    if (strcmp(key, "ack_factor") == 0) {
+        return distvec_factor(value, 0, 1e3, &c->ack_factor);
+    }
+    if (strcmp(key, "jitter") == 0) {
+        return distvec_factor(value, 0, 1e3, &c->jitter);
+    }
+    if (strcmp(key, "bcast_hops") == 0) {
+        return distvec_count(value, 0, 254, &c->bcast_hops);
+    }
+    if (strcmp(key, "bcast_window") == 0) {
+        return distvec_factor(value, 0, 1e3, &c->bcast_window);
+    }
+    if (strcmp(key, "bcast_cancel") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->bcast_cancel);
+    }
+    return "is not a setting of distvec";
+}
+
+static const char *distvec_check(const void *config) { return tsim_distvec_check(config); }
+
 _Static_assert(sizeof(struct tsim_flood_config) <= TSIM_PLUGIN_CONFIG_MAX, "flood config");
 _Static_assert(sizeof(struct tsim_aloha_config) <= TSIM_PLUGIN_CONFIG_MAX, "aloha config");
 _Static_assert(sizeof(struct tsim_meshtastic_config) <= TSIM_PLUGIN_CONFIG_MAX,
@@ -447,6 +570,7 @@ _Static_assert(sizeof(struct tsim_meshtastic_mac_config) <= TSIM_PLUGIN_CONFIG_M
 _Static_assert(sizeof(struct tsim_meshcore_config) <= TSIM_PLUGIN_CONFIG_MAX, "meshcore config");
 _Static_assert(sizeof(struct tsim_meshcore_mac_config) <= TSIM_PLUGIN_CONFIG_MAX,
                "meshcore mac config");
+_Static_assert(sizeof(struct tsim_distvec_config) <= TSIM_PLUGIN_CONFIG_MAX, "distvec config");
 
 static const struct tsim_plugin plugins[] = {
     {"flood", &tsim_flood, NULL, sizeof(struct tsim_flood_config), flood_defaults, flood_set, NULL},
@@ -459,6 +583,8 @@ static const struct tsim_plugin plugins[] = {
      meshcore_set, NULL},
     {"meshcore", NULL, &tsim_meshcore_mac, sizeof(struct tsim_meshcore_mac_config),
      meshcore_mac_defaults, meshcore_mac_set, NULL},
+    {"distvec", &tsim_distvec, NULL, sizeof(struct tsim_distvec_config), distvec_defaults,
+     distvec_set, distvec_check},
 };
 
 static const struct tsim_plugin *find_plugin(const char *name, bool routing) {

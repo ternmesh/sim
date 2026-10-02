@@ -44,7 +44,7 @@ Airtime and duty cycles are measured over all three parts.
 | Setting | Default | Meaning |
 |---|---|---|
 | `nodes` | required | number of nodes, 1 to 1048576 |
-| `routing` | required | routing plugin: `flood`, `meshtastic` or `meshcore` |
+| `routing` | required | routing plugin: `flood`, `meshtastic`, `meshcore` or `distvec` |
 | `mac` | required | MAC plugin: `aloha`, `meshtastic` or `meshcore` |
 | `seed` | 1 | the seed for every random draw in the run: positions, shadowing, traffic, message content, plugins |
 | `placement` | `uniform` | `uniform`, `grid`, `line`, or `file` to read them from `positions` |
@@ -123,6 +123,29 @@ default.
 | `routing.estimate_cr` (`meshcore`) | `radio` | the coding rate the firmware reckons its delays and timeouts from; MeshBench's firmware reckons at 4/5 (`1`) whatever the air runs at |
 | `mac.airtime_factor` (`meshcore`) | 1 | the duty cycle budget is 1/(1 + this) of an hour |
 | `mac.latched_header` (`meshcore`) | `no` | not MeshCore's: how long the radio's header flag stays set once a header sets it, as on MeshBench, whose radio never clears it on reading a packet; MeshCore's driver then times it out after `3934 ms` |
+| `routing.relays` (`distvec`) | `all` | which nodes are infrastructure, which forward and announce routes, as `all` or numbers and ranges such as `0-45,50`; the rest are leaves |
+| `routing.imin`, `routing.doublings` (`distvec`) | `8 s`, 6 | Trickle's shortest announce interval, and how many times it doubles to the longest (0 to 16) |
+| `routing.redundancy` (`distvec`) | 3 | consistent announces heard in an interval that suppress this node's; 0 never suppresses |
+| `routing.quiet_max` (`distvec`) | 2 | intervals running a node may keep quiet before it announces anyway |
+| `routing.neighbour_timeout` (`distvec`) | `1 h` | how long a neighbour may go unheard before it is forgotten |
+| `routing.cap` (`distvec`) | 0.005 | the share of a node's time announces and seqno requests may take together, above 0 and at most 1; per node, so a neighbourhood of n nodes may spend n times it |
+| `routing.request_share` (`distvec`) | 0.25 | the part of the cap kept for seqno requests, above 0 and below 1; the rest is the announces' |
+| `routing.cap_window` (`distvec`) | `1 min` | how much of its share each of the two buckets holds, at least one full-length frame |
+| `routing.burst` (`distvec`) | 4 | announce frames one announce event may send while changed routes are waiting, 1 to 16 |
+| `routing.ihu_max` (`distvec`) | 8 | neighbours an announce frame reports hearing, 0 to 48; the rest take their turn in later frames |
+| `routing.ref_len` (`distvec`) | 32 | bytes of the frame whose airtime, times the link's ETX, is the link's cost |
+| `routing.etx_max` (`distvec`) | 8 | links with a higher ETX are not used |
+| `routing.hysteresis` (`distvec`) | 0.1 | how much better, as a share, another route has to be to replace the current one |
+| `routing.change` (`distvec`) | 0.25 | how far, as a share, a route's metric must move before it is announced at once, and within which the last metric announced is announced again |
+| `routing.request_interval` (`distvec`) | `10 s` | how often a node with no feasible route to a destination asks again, five times at most |
+| `routing.hop_max` (`distvec`) | 32 | hops a message may take, 1 to 255 |
+| `routing.hop_retries`, `routing.hop_wait` (`distvec`) | 2, `4 s` | how often a hop sends a frame again when it does not hear its next hop pass it on, and how long it waits, beyond twice the frame's airtime |
+| `routing.retries` (`distvec`) | 3 | sends after the first, for a message the destination does not acknowledge |
+| `routing.ack_wait`, `routing.ack_factor` (`distvec`) | `5 s`, 4 | the source waits this long, plus this many times the route's metric in milliseconds, for the acknowledgement |
+| `routing.jitter` (`distvec`) | 2 | the longest a frame sent in answer to one received waits before it is queued, in its own airtimes |
+| `routing.bcast_hops` (`distvec`) | 4 | relays a broadcast may have along any path, 0 to 254 |
+| `routing.bcast_window` (`distvec`) | 3 | the longest a broadcast relay waits, in airtimes of the frame |
+| `routing.bcast_cancel` (`distvec`) | 2 | copies of a broadcast heard, the first included, that drop a relay still waiting; 0 never drops one |
 
 The routing and the MAC each keep their own copy of the window: the routing sizes its
 acknowledgement wait by it. Settings that bound each other, such as `cw_min` and `cw_max`, are
@@ -169,5 +192,6 @@ The latency percentiles are rounded down by at most 1.6%. The maximum latency is
   `fife.tsim` for each seed and arm and fails if a mean is too far from MeshBench's; the script says
   how the reference was made.
 - **`scenarios/scale/*.tsim`:** these are too large for a sanitized debug build. CI's `scale` job
-  runs `region.tsim` (1000 nodes, one hour of traffic) and `region-meshtastic.tsim` (the same,
-  under candidate 1) as a release build with a 60-second budget.
+  runs `region.tsim` (1000 nodes, one hour of traffic), `region-meshtastic.tsim` (the same, under
+  candidate 1) and `region-distvec.tsim` (under candidate 3) as a release build with a 60-second
+  budget.
