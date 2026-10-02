@@ -22,7 +22,7 @@
 #define TYPE_ACK 0x04
 #define TYPE_BCAST 0x05
 
-#define ANNOUNCE_HEAD 15
+#define ANNOUNCE_HEAD 16
 #define IHU_LEN 5
 #define ROUTE_LEN 8
 #define REQUEST_HEAD 6
@@ -31,6 +31,10 @@
 #define DATA_HEAD 18
 #define ACK_LEN 18
 #define BCAST_HEAD 10
+/* The longest IHU round an announce can tell: twice it and one more must still fit the 16-bit
+ * count of announces a receiver keeps between IHUs. Only a node naming one neighbour to a frame
+ * among more than 32767 would need more. */
+#define ROUND_MAX 32767
 
 #define FLAG_INFRA 0x01
 
@@ -197,7 +201,9 @@ struct router {
     uint32_t cursor;   /* the next destination a slice starts from */
     uint32_t selected; /* destinations with a selected route */
     uint16_t promised; /* in its last announce, in seconds */
+    uint16_t round;    /* in its last announce, in frames */
     bool changed;      /* something this node announces changed: a Trickle inconsistency */
+    bool asked;        /* a seqno request for this node waits on its next announce */
 
     tsim_time interval; /* Trickle */
     tsim_time interval_end;
@@ -802,7 +808,7 @@ static void trickle_fire(void *ctx) {
         r->fired = true;
         /* Changed routes waiting are an inconsistency of this node's own: never suppressed. */
         if (r->config.redundancy == 0 || r->heard < r->config.redundancy ||
-            r->quiet >= r->config.quiet_max || r->urgent_count > 0) {
+            r->quiet >= r->config.quiet_max || r->urgent_count > 0 || r->asked) {
             r->quiet = 0;
             announce(r);
         } else {
@@ -813,7 +819,7 @@ static void trickle_fire(void *ctx) {
     }
     /* With changes of its own still waiting - one that came after it announced in this interval -
      * it stays at imin rather than doubling, so they go within the next one. */
-    if (r->urgent_count == 0) {
+    if (r->urgent_count == 0 && !r->asked) {
         r->interval = r->interval * 2 > imax(r) ? imax(r) : r->interval * 2;
     }
     trickle_begin(r);
@@ -953,8 +959,9 @@ static uint32_t build(struct router *r, uint8_t *b) {
      * than that has been left out of the round. */
     uint8_t per = ihu_room(r);
     size_t rotation = per ? (heard + per - 1) / per : 0;
-    b[12] = (uint8_t)(rotation > UINT8_MAX ? UINT8_MAX : rotation);
-    b[13] = ihus;
+    r->round = (uint16_t)(rotation > ROUND_MAX ? ROUND_MAX : rotation);
+    put16(b + 12, r->round);
+    b[14] = ihus;
 
     uint8_t routes = 0;
     if (r->infra) {
@@ -980,7 +987,7 @@ static uint32_t build(struct router *r, uint8_t *b) {
             }
         }
     }
-    b[14] = routes;
+    b[15] = routes;
     return i;
 }
 
@@ -1003,8 +1010,8 @@ static uint32_t planned(const struct router *r) {
  * route it retracted counts as still announced, so the next announce says it all. The feasibility
  * distances it set stay set, which is only ever stricter than need be. */
 static void unsent(struct router *r, const uint8_t *b) {
-    const uint8_t *p = b + ANNOUNCE_HEAD + (uint32_t)b[13] * IHU_LEN;
-    for (uint8_t k = 0; k < b[14]; k++, p += ROUTE_LEN) {
+    const uint8_t *p = b + ANNOUNCE_HEAD + (uint32_t)b[14] * IHU_LEN;
+    for (uint8_t k = 0; k < b[15]; k++, p += ROUTE_LEN) {
         uint32_t d = get32(p);
         if (get16(p + 6) == INF) {
             r->dest[d].advertised = true;
@@ -1040,6 +1047,7 @@ static void announce(struct router *r) {
         /* Numbered and charged only once queued: a gap in the numbers tells the neighbours of
          * announces lost on the air, which a refused one never reached. */
         r->ann_seq++;
+        r->asked = false;
         b->ns -= (double)tsim_lora_airtime(&tx.lora, tx.len);
     }
 }
@@ -1049,7 +1057,8 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len) {
         return;
     }
     uint32_t from = get32(b + 1);
-    uint8_t rotation = b[12], ihus = b[13], routes = b[14];
+    uint16_t rotation = get16(b + 12);
+    uint8_t ihus = b[14], routes = b[15];
     if (from >= r->nodes || from == r->self ||
         ANNOUNCE_HEAD + (uint32_t)ihus * IHU_LEN + (uint32_t)routes * ROUTE_LEN > len) {
         return;
@@ -1093,7 +1102,7 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len) {
             named = true;
         }
     }
-    unsigned allowed = rotation <= 1 ? 1u : 2u * rotation + 1u;
+    uint32_t allowed = rotation <= 1 ? 1u : 2u * rotation + 1u;
     if (!named && (uint16_t)(seq - n->ihu_seq) >= allowed) {
         n->dr = 0;
     }
@@ -1138,12 +1147,17 @@ static void on_ask(struct router *r, uint32_t d, uint16_t seq, uint8_t hops) {
         return;
     }
     if (d == r->self) {
+        /* Answered by the next announce, whatever Trickle would suppress: the seq rides on every
+         * one. A new seq starts a fresh Imin; a request for one it has already gone up to only
+         * brings it down to Imin, so a stream of them cannot keep putting the answer off. */
+        r->asked = true;
         if (newer(seq, r->seq)) {
             r->seq = seq;
+            r->interval = r->config.imin;
+            trickle_begin(r);
+        } else {
+            trickle_reset(r);
         }
-        r->interval =
-            r->config.imin; /* answer within an interval: the seq rides on every announce */
-        trickle_begin(r);
         return;
     }
     struct dest *ds = &r->dest[d];
@@ -1844,6 +1858,8 @@ uint32_t tsim_distvec_neighbours(const void *self) {
 tsim_time tsim_distvec_promise(const void *self) {
     return (tsim_time)((const struct router *)self)->promised * TSIM_S(1);
 }
+
+uint32_t tsim_distvec_round(const void *self) { return ((const struct router *)self)->round; }
 
 tsim_time tsim_distvec_interval(const void *self) {
     return ((const struct router *)self)->interval;

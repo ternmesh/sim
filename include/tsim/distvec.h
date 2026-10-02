@@ -27,7 +27,7 @@
  *
  * Announces. A node's one periodic frame, charged as announce:
  *
- *     type 0x01 | sender 4 | announce seq 2 | source seq 2 | flags 1 | promise 2 | round 1
+ *     type 0x01 | sender 4 | announce seq 2 | source seq 2 | flags 1 | promise 2 | round 2
  *     | ihu count 1 | route count 1 | ihu: neighbour 4, receive rate 1 ...
  *     | route: destination 4, seq 2, metric 2 ...
  *
@@ -84,7 +84,8 @@
  *
  * A request goes to the neighbour with the best of the infeasible routes, or to every neighbour
  * (next hop 0xFFFFFFFF) if none can be used, and a node that cannot answer it passes it on to its
- * next hop towards the source while hops last. The source answers by raising its seq; a node with
+ * next hop towards the source while hops last. The source answers by raising its seq and
+ * announcing it - its next announce, which Trickle never suppresses, at imin - and a node with
  * a route at that seq or newer answers by announcing it. A node that has never announced a route
  * to the source has no feasibility distance, so nothing a seq could be newer than: it sends a
  * route request instead, a request with hops 0, which any neighbour with a route answers and none
@@ -101,15 +102,17 @@
  * When to announce: Trickle. Each node's announce interval runs from imin, doubling to imax; in
  * each interval it announces once, at a random point in its second half, unless it has heard
  * `redundancy` consistent announces in that interval already - or has changed routes of its own
- * waiting to go, which are an inconsistency and never suppressed. An announce is consistent unless
- * it changes this node's routes. Anything that does - a route gained, lost or moved to another
- * neighbour, a metric that changes by more than `change` since it was last announced, a newer seq,
- * a neighbour found or lost - is an inconsistency, and sends the interval back to imin. As in RFC
- * 6206 an inconsistency at imin does nothing; departing from it, an interval that ends with
- * changes still waiting does not double, so a change that comes after the node has announced in an
- * imin interval goes within the next, not in the second half of one twice as long. A node
- * that has kept quiet quiet_max intervals running announces anyway, so its neighbours do not
- * forget it.
+ * waiting to go, or a request for its own seq to answer, which are never suppressed. An announce is
+ * consistent unless it changes this node's routes. Anything that does - a route gained, lost or
+ * moved to another neighbour, a metric that changes by more than `change` since it was last
+ * announced, a newer seq, a neighbour found or lost - is an inconsistency, and sends the interval
+ * back to imin. As in RFC 6206 an inconsistency at imin does nothing; departing from it, an
+ * interval that ends with changes still waiting does not double, so a change that comes after the
+ * node has announced in an imin interval goes within the next, not in the second half of one twice
+ * as long. A request restarts the interval only when it raises the seq: one for a seq already
+ * reached, at imin, leaves the firing to come where it was, so a stream of them cannot put the
+ * answer off. A node that has kept quiet quiet_max intervals running announces anyway, so its
+ * neighbours do not forget it.
  *
  * The cap. Announces and seqno requests together may take no more than `cap` of a node's time:
  * request_share of it for requests and the rest for announces, each kept as a token bucket that
@@ -240,5 +243,8 @@ tsim_time tsim_distvec_interval(const void *self);
 /* The promise the node would make if it announced now: the longest it may then go before it
  * announces again. */
 tsim_time tsim_distvec_promise(const void *self);
+
+/* The IHU round its last announce told: how many frames it takes to name every neighbour. */
+uint32_t tsim_distvec_round(const void *self);
 
 #endif

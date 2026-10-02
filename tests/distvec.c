@@ -325,16 +325,30 @@ static void a_retraction_the_queue_refused_goes_later(void) {
  * header, so one radio can stand in for any number of neighbours. The frame is infrastructure's,
  * promises another within ten minutes, names node 0 as heard in a round of one frame, and carries
  * one route. */
-static void announce_as(struct rig *r, uint32_t sender, uint16_t ann_seq, uint32_t dst,
-                        uint16_t seq, uint16_t metric) {
+static void announce_as_then(struct rig *r, uint32_t sender, uint16_t ann_seq, uint32_t dst,
+                             uint16_t seq, uint16_t metric, tsim_time wait) {
     struct tsim_tx tx = {
         .lora = r->rc.lora,
         .tx_dbm = r->rc.tx_dbm,
         .purpose = TSIM_PURPOSE_ANNOUNCE,
     };
     uint8_t *b = tx.bytes;
-    uint8_t head[] = {
-        0x01, (uint8_t)sender, 0, 0, 0, (uint8_t)ann_seq, 0, 0, 0, 0x01, 0x58, 0x02, 1, 1, 1};
+    uint8_t head[] = {0x01,
+                      (uint8_t)sender,
+                      (uint8_t)(sender >> 8),
+                      0,
+                      0,
+                      (uint8_t)ann_seq,
+                      0,
+                      0,
+                      0,
+                      0x01,
+                      0x58,
+                      0x02,
+                      1,
+                      0,
+                      1,
+                      1};
     memcpy(b, head, sizeof head);
     uint8_t rest[] = {0,
                       0,
@@ -342,7 +356,7 @@ static void announce_as(struct rig *r, uint32_t sender, uint16_t ann_seq, uint32
                       0,
                       255,
                       (uint8_t)dst,
-                      0,
+                      (uint8_t)(dst >> 8),
                       0,
                       0,
                       (uint8_t)seq,
@@ -352,7 +366,26 @@ static void announce_as(struct rig *r, uint32_t sender, uint16_t ann_seq, uint32
     memcpy(b + sizeof head, rest, sizeof rest);
     tx.len = sizeof head + sizeof rest;
     CHECK(tsim_node_send(tsim_net_node(r->net, 1), &tx) != 0);
-    tsim_sched_run_until(r->sched, tsim_sched_now(r->sched) + TSIM_S(5));
+    tsim_sched_run_until(r->sched, tsim_sched_now(r->sched) + wait);
+}
+
+static void announce_as(struct rig *r, uint32_t sender, uint16_t ann_seq, uint32_t dst,
+                        uint16_t seq, uint16_t metric) {
+    announce_as_then(r, sender, ann_seq, dst, seq, metric, TSIM_S(5));
+}
+
+/* Node 1 sends node 0 a seqno request for node 0's own route, at `seq`, as if passed on from
+ * further away. */
+static void ask_for(struct rig *r, uint16_t seq) {
+    struct tsim_tx tx = {
+        .lora = r->rc.lora,
+        .tx_dbm = r->rc.tx_dbm,
+        .purpose = TSIM_PURPOSE_CONTROL,
+    };
+    uint8_t b[] = {0x02, 0, 0, 0, 0, 1, 0, 0, 0, 0, (uint8_t)seq, (uint8_t)(seq >> 8), 3};
+    memcpy(tx.bytes, b, sizeof b);
+    tx.len = sizeof b;
+    CHECK(tsim_node_send(tsim_net_node(r->net, 1), &tx) != 0);
 }
 
 /* Node 0's four places for routes to node 7 hold routes that are cheap but infeasible, at an old
@@ -447,6 +480,50 @@ static void a_change_after_announcing_at_imin_waits_no_longer_than_imin(void) {
         tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + TSIM_S(1));
     }
     CHECK(tsim_sched_now(r.sched) <= asked + r.rc.imin * 3 / 2 + TSIM_S(1));
+    rig_close(&r);
+}
+
+/* Node 1 keeps asking node 0 for a seq node 0 has already gone up to, several times an imin, as
+ * starved nodes beyond it would. The requests must not keep putting off the announce that answers
+ * them: it goes within an imin and a half of the first. */
+static void requests_for_a_seq_reached_do_not_put_off_the_answer(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.imin = TSIM_S(60);
+    r.rc.doublings = 3;
+    line(&r, 2, 21);
+    tsim_sched_run_until(r.sched, TSIM_S(1500));
+    CHECK_EQ_I64(tsim_distvec_interval(at(&r, 0)), r.rc.imin << r.rc.doublings);
+    uint64_t count = frames(&r, 0, TSIM_PURPOSE_ANNOUNCE);
+    tsim_time asked = tsim_sched_now(r.sched);
+    ask_for(&r, 1); /* a newer seq */
+    while (frames(&r, 0, TSIM_PURPOSE_ANNOUNCE) == count &&
+           tsim_sched_now(r.sched) < asked + 4 * r.rc.imin) {
+        tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + TSIM_S(20));
+        ask_for(&r, 1); /* and again, for the seq it has now */
+    }
+    CHECK(tsim_sched_now(r.sched) <= asked + r.rc.imin * 3 / 2);
+    rig_close(&r);
+}
+
+/* Node 0 hears 600 neighbours and names one to a frame, so its IHU round is 600 frames - more
+ * than a byte holds, and more than twice it and one: told as 255, a neighbour would drop node 0's
+ * IHU after 511 frames, before its turn came round. Node 1 speaks for the other 599. */
+static void an_ihu_round_of_hundreds_of_frames_is_told_whole(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.ihu_max = 1;
+    r.rc.imin = TSIM_S(60); /* the rest, which hear nobody, kept quiet */
+    r.rc.doublings = 0;
+    const uint32_t many = 601;
+    build(&r, many, 22);
+    link(&r, 0, 1, LOSS_LOUD);
+    tsim_net_start(r.net);
+    for (uint32_t v = 2; v < many; v++) {
+        announce_as_then(&r, v, 0, v, 0, 50, TSIM_MS(200));
+    }
+    tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + 2 * r.rc.imin);
+    CHECK_EQ_U64(tsim_distvec_round(at(&r, 0)), many - 1);
     rig_close(&r);
 }
 
@@ -850,6 +927,8 @@ int main(void) {
     RUN(a_newer_route_displaces_infeasible_cheaper_ones);
     RUN(announces_the_queue_refused_are_not_counted_missed);
     RUN(a_change_after_announcing_at_imin_waits_no_longer_than_imin);
+    RUN(requests_for_a_seq_reached_do_not_put_off_the_answer);
+    RUN(an_ihu_round_of_hundreds_of_frames_is_told_whole);
     RUN(a_queued_message_is_neither_repeated_nor_given_up);
     RUN(a_full_ihu_list_leaves_room_for_a_route);
     RUN(a_node_announces_within_its_promise);
