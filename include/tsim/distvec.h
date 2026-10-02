@@ -36,8 +36,9 @@
  * metric 0, is implied. The flags say whether it is infrastructure, and whether the frame's IHUs
  * name every neighbour the sender hears. The promise is the longest, in seconds, the sender may go
  * before it announces again - Babel's hello interval, for a sender whose interval Trickle varies:
- * two of its current intervals for every interval it may keep quiet and the one it then announces
- * in, and the time its cap takes to pay for a full frame. Each IHU ("I heard you") is the share of
+ * the rest of its current interval, then every interval it may keep quiet and the one it then
+ * announces in, each doubling up to imax and taken whole, and the time its cap takes to pay for a
+ * full frame. Each IHU ("I heard you") is the share of
  * a neighbour's announces the sender received, in 255ths. The routes are the sender's selected
  * routes: what it would forward through, with the sequence number of the source and the metric
  * from the sender. A metric of 0xFFFF retracts a route. A table too big for one frame goes out in
@@ -142,8 +143,9 @@
  * acknowledgement was lost hears one.
  *
  * The source waits for the acknowledgement ack_wait plus ack_factor times the route's metric in
- * milliseconds - the metric being airtime, it is a round trip's worth - and without one sends the
- * message again, up to `retries` times. A source with no route to the destination asks for one
+ * milliseconds - the metric being airtime, it is a round trip's worth - counted from when its frame
+ * goes on the air, however long it queued, or from when the queue refused it; and without one sends
+ * the message again, up to `retries` times. A source with no route to the destination asks for one
  * and counts that as an attempt, waiting ack_wait. It gives up after the last.
  *
  * Broadcast, for now: a flood that infrastructure relays once,
@@ -176,7 +178,7 @@ struct tsim_distvec_config {
     double request_share; /* of the cap, for seqno requests: above 0 and below 1 */
     tsim_time cap_window; /* how much of its share each bucket holds */
     uint8_t burst;        /* frames an announce event may send, 1..16 */
-    uint8_t ihu_max;      /* IHU entries per announce frame, 0..48 */
+    uint8_t ihu_max; /* IHU entries per announce frame, 0..48, less what leaves no route room */
 
     uint32_t ref_len;  /* bytes of the reference frame the metric is reckoned in */
     double etx_max;    /* at least 1 */
@@ -227,5 +229,9 @@ uint32_t tsim_distvec_neighbours(const void *self);
 
 /* The node's current Trickle interval. */
 tsim_time tsim_distvec_interval(const void *self);
+
+/* The promise the node would make if it announced now: the longest it may then go before it
+ * announces again. */
+tsim_time tsim_distvec_promise(const void *self);
 
 #endif

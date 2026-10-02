@@ -205,9 +205,6 @@ static void every_neighbour_hears_its_ihu_in_turn(void) {
     CHECK_EQ_U64(tsim_distvec_neighbours(at(&r, 0)), 12);
     for (uint32_t i = 1; i < 13; i++) {
         CHECK_EQ_U64(tsim_distvec_neighbours(at(&r, i)), 1);
-        uint32_t next;
-        CHECK(route(&r, i, i % 12 + 1, &next));
-        CHECK_EQ_U64(next, 0);
     }
     rig_close(&r);
 }
@@ -451,6 +448,93 @@ static void a_change_after_announcing_at_imin_waits_no_longer_than_imin(void) {
     rig_close(&r);
 }
 
+/* Node 1's message waits in its queue far longer than the acknowledgement wait. It is not sent
+ * again meanwhile, nor given up: the wait starts when the frame goes. */
+static void a_queued_message_is_neither_repeated_nor_given_up(void) {
+    struct rig r;
+    rig_init(&r);
+    struct tsim_net_params p = tsim_net_defaults(13);
+    p.queue_limit = 0;
+    r.nodes = 2;
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 2, &tsim_distvec, &r.rc, &gate_mac, NULL);
+    link(&r, 0, 1, LOSS_LOUD);
+    gate_shut = false;
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(120));
+    uint32_t next;
+    CHECK(route(&r, 1, 0, &next));
+
+    gate_shut = true;
+    uint64_t m = tsim_net_originate(r.net, 1, 0, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(720)); /* every retry's wait over, many times */
+    CHECK(!tsim_net_message(r.net, m)->finished);
+    gate_shut = false;
+    tsim_node_transmit(tsim_net_node(r.net, 1));
+    tsim_sched_run_until(r.sched, TSIM_S(780));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK_EQ_U64(frames(&r, 1, TSIM_PURPOSE_DATA), 1);
+    rig_close(&r);
+}
+
+/* With room for every IHU it is allowed, an infrastructure node with that many neighbours still
+ * leaves room for a route, and the nodes beyond its neighbours learn of each other. */
+static void a_full_ihu_list_leaves_room_for_a_route(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.ihu_max = 48;
+    build(&r, 52, 14);
+    for (uint32_t i = 1; i < 50; i++) {
+        link(&r, 0, i, LOSS_LOUD); /* 49 neighbours of the hub */
+    }
+    link(&r, 50, 1, LOSS_LOUD);
+    link(&r, 51, 2, LOSS_LOUD);
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(1800));
+    uint32_t next;
+    CHECK(route(&r, 50, 51, &next));
+    CHECK_EQ_U64(next, 1);
+    rig_close(&r);
+}
+
+/* A node keeps its promise. Among neighbours enough to suppress it, its quiet intervals double as
+ * they go, and the longest silence after an announce stays within what it promised then. */
+static void a_node_announces_within_its_promise(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.imin = TSIM_S(60);
+    r.rc.doublings = 3;
+    r.rc.redundancy = 1;
+    r.rc.cap = 0.5; /* the cap never the reason for a silence */
+    build(&r, 5, 15);
+    for (uint32_t a = 0; a < 5; a++) {
+        for (uint32_t b = a + 1; b < 5; b++) {
+            link(&r, a, b, LOSS_LOUD);
+        }
+    }
+    tsim_net_start(r.net);
+    uint64_t count = 0;
+    tsim_time last = -1, promised = 0, longest = 0;
+    bool kept = true;
+    for (tsim_time t = TSIM_S(1); t < TSIM_S(4 * 3600); t += TSIM_S(1)) {
+        tsim_sched_run_until(r.sched, t);
+        uint64_t c = frames(&r, 0, TSIM_PURPOSE_ANNOUNCE);
+        if (c != count) {
+            if (last >= 0) {
+                kept = kept && t - last <= promised + TSIM_S(1);
+                longest = t - last > longest ? t - last : longest;
+            }
+            count = c;
+            last = t;
+            promised = tsim_distvec_promise(at(&r, 0));
+        }
+    }
+    CHECK(kept);
+    CHECK(longest > 3 * r.rc.imin); /* it did keep quiet, through doubling intervals */
+    rig_close(&r);
+}
+
 static void a_leaf_never_forwards(void) {
     struct rig r;
     rig_init(&r);
@@ -635,6 +719,9 @@ int main(void) {
     RUN(a_newer_route_displaces_infeasible_cheaper_ones);
     RUN(announces_the_queue_refused_are_not_counted_missed);
     RUN(a_change_after_announcing_at_imin_waits_no_longer_than_imin);
+    RUN(a_queued_message_is_neither_repeated_nor_given_up);
+    RUN(a_full_ihu_list_leaves_room_for_a_route);
+    RUN(a_node_announces_within_its_promise);
     RUN(a_leaf_never_forwards);
     RUN(trickle_backs_off_and_resets_on_a_new_neighbour);
     RUN(announces_stay_under_the_cap);

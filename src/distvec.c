@@ -161,6 +161,8 @@ struct awaiting {
     uint32_t dst;
     uint8_t attempt;
     struct tsim_timer *timer;
+    uint64_t handle; /* the attempt's frame, while it waits in the queue; 0 once it has gone */
+    tsim_time wait;  /* how long to wait for the acknowledgement once it has */
     uint32_t len;
     uint8_t content[FRAME_MAX];
 };
@@ -868,15 +870,28 @@ static bool advertise(struct router *r, uint32_t d, uint8_t *out) {
     return true;
 }
 
-/* The longest this node may go before it announces again, in whole seconds: two of its current
- * intervals - the interval may double meanwhile - for every interval it may keep quiet and the
- * one it then announces in, and the time its bucket takes to pay for a full frame. A neighbour
- * that hears nothing from it for that long counts an announce missed. */
+/* The longest this node may go before it announces again, in whole seconds, announcing now: the
+ * rest of its current interval, then quiet_max intervals it may keep quiet and the one it must
+ * announce in, each twice the last up to imax and announced in at its very end at worst, then the
+ * time its bucket takes to pay for a full frame. A neighbour that hears nothing from it for that
+ * long counts an announce missed. */
 static uint16_t promise_s(const struct router *r) {
-    double ns = 2.0 * (r->config.quiet_max + 1) * (double)r->interval +
-                (double)tsim_lora_airtime(&r->config.lora, FRAME_MAX) / r->announces.rate;
+    double ns = (double)r->interval / 2;
+    tsim_time i = r->interval;
+    for (int k = 0; k <= r->config.quiet_max; k++) {
+        i = i * 2 > imax(r) ? imax(r) : i * 2;
+        ns += (double)i;
+    }
+    ns += (double)tsim_lora_airtime(&r->config.lora, FRAME_MAX) / r->announces.rate;
     double s = ceil(ns / (double)TSIM_S(1));
     return s < 1 ? 1 : s > UINT16_MAX ? UINT16_MAX : (uint16_t)s;
+}
+
+/* How many IHUs an announce frame may carry: ihu_max, less what would leave infrastructure no
+ * room for a single route. */
+static uint8_t ihu_room(const struct router *r) {
+    uint32_t room = (FRAME_MAX - ANNOUNCE_HEAD - (r->infra ? ROUTE_LEN : 0)) / IHU_LEN;
+    return (uint8_t)(r->config.ihu_max < room ? r->config.ihu_max : room);
 }
 
 /* Builds one announce frame. Returns its length. */
@@ -891,10 +906,10 @@ static uint32_t build(struct router *r, uint8_t *b) {
 
     /* IHUs: neighbours owed one first, then the rest in turn from where the last frame stopped,
      * none twice. */
-    uint8_t ihus = 0;
+    uint8_t ihus = 0, ihu_max = ihu_room(r);
     size_t start = r->ihu_cursor;
     for (int pass = 0; pass < 2; pass++) {
-        for (size_t k = 0; k < r->nb_count && ihus < r->config.ihu_max; k++) {
+        for (size_t k = 0; k < r->nb_count && ihus < ihu_max; k++) {
             size_t at = pass ? (start + k) % r->nb_count : k;
             struct neighbour *n = &r->nb[at];
             if (!n->used || n->ihu_owed != (pass == 0)) {
@@ -954,8 +969,7 @@ static uint32_t planned(const struct router *r) {
     for (size_t k = 0; k < r->nb_count; k++) {
         named += r->nb[k].used;
     }
-    uint32_t len =
-        ANNOUNCE_HEAD + (uint32_t)(named < r->config.ihu_max ? named : r->config.ihu_max) * IHU_LEN;
+    uint32_t len = ANNOUNCE_HEAD + (uint32_t)(named < ihu_room(r) ? named : ihu_room(r)) * IHU_LEN;
     if (r->infra) {
         uint64_t routes = (uint64_t)r->urgent_count + r->selected;
         uint64_t room = (FRAME_MAX - len) / ROUTE_LEN;
@@ -1180,16 +1194,17 @@ static void drop_hop(struct router *r, size_t i) { r->hops[i] = r->hops[--r->hop
 
 /* Sends a data or acknowledgement frame to its next hop, and, if `listen`, waits to hear it passed
  * on. */
-static void send_hop(struct router *r, const struct tsim_tx *tx, bool listen) {
+/* Returns the frame's handle, or 0 if the queue refused it. */
+static uint64_t send_hop(struct router *r, const struct tsim_tx *tx, bool listen) {
     uint64_t handle = tsim_node_send(r->node, tx);
     if (!handle || !listen) {
-        return;
+        return handle;
     }
     if (r->hop_count == r->hop_cap) {
         size_t cap = r->hop_cap ? 2 * r->hop_cap : 8;
         struct hop *grown = realloc(r->hops, cap * sizeof *grown);
         if (!grown) {
-            return;
+            return handle; /* queued, but not listened for */
         }
         r->hops = grown;
         r->hop_cap = cap;
@@ -1206,6 +1221,7 @@ static void send_hop(struct router *r, const struct tsim_tx *tx, bool listen) {
         .hops = b[17],
         .tx = *tx,
     };
+    return handle;
 }
 
 static void hop_fire(void *ctx) {
@@ -1265,10 +1281,11 @@ static void hold(struct router *r, const struct tsim_tx *tx, uint64_t key, bool 
                  double airtimes);
 
 /* A data or acknowledgement frame towards `dst`, along the selected route: at once if this node
- * made it, and after a jitter if it answers one received. Returns false with no route. */
+ * made it, and after a jitter if it answers one received. Returns false with no route; with one,
+ * `queued`, if given, is the handle of a frame this node made, or 0 if the queue refused it. */
 static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t dst, uint32_t id,
                         uint8_t hops, const uint8_t *content, uint32_t len,
-                        enum tsim_purpose purpose, uint64_t carries) {
+                        enum tsim_purpose purpose, uint64_t carries, uint64_t *queued) {
     struct dest *ds = &r->dest[dst];
     if (!ds->sel) {
         return false;
@@ -1295,7 +1312,10 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
     /* The last hop of an acknowledgement has nothing to hear. */
     bool listen = !(type == TYPE_ACK && next == dst);
     if (purpose == TSIM_PURPOSE_DATA) {
-        send_hop(r, &tx, listen);
+        uint64_t handle = send_hop(r, &tx, listen);
+        if (queued) {
+            *queued = handle;
+        }
     } else {
         hold(r, &tx, 0, listen, r->config.jitter);
     }
@@ -1318,10 +1338,19 @@ static void send_attempt(struct awaiting *a) {
     struct router *r = a->owner;
     struct dest *ds = &r->dest[a->dst];
     tsim_time wait = r->config.ack_wait;
+    uint64_t handle = 0;
     if (route_frame(r, TYPE_DATA, r->self, a->dst, a->id, r->config.hop_max, a->content, a->len,
-                    TSIM_PURPOSE_DATA, a->id)) {
+                    TSIM_PURPOSE_DATA, a->id, &handle)) {
         uint16_t metric = total(entry_by(ds, ds->sel)->metric, slot(r, ds->sel)->cost);
         wait += (tsim_time)(r->config.ack_factor * metric * (double)TSIM_MS(1));
+        if (handle) {
+            /* The wait starts when the frame goes: however long it queues behind other traffic,
+             * no second copy joins it, and the message is not given up while one still waits. */
+            a->handle = handle;
+            a->wait = wait;
+            return;
+        }
+        /* Refused by a full queue: tried again after the wait, as if it had been lost. */
     } else {
         ds->asked = -1; /* a message waits on it: ask now */
         starved(r, a->dst);
@@ -1490,7 +1519,7 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len) {
     if (type == TYPE_DATA && dst == r->self) {
         tsim_node_deliver(r->node, id);
         if (!route_frame(r, TYPE_ACK, r->self, src, id, r->config.hop_max, NULL, 0,
-                         TSIM_PURPOSE_CONTROL, 0)) {
+                         TSIM_PURPOSE_CONTROL, 0, NULL)) {
             starved(r, src);
         }
         return;
@@ -1505,7 +1534,7 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len) {
     mark_seen(r, key);
     bool data = type == TYPE_DATA;
     if (!route_frame(r, type, src, dst, id, (uint8_t)(hops - 1), b + DATA_HEAD, len - DATA_HEAD,
-                     data ? TSIM_PURPOSE_RELAY : TSIM_PURPOSE_CONTROL, data ? id : 0)) {
+                     data ? TSIM_PURPOSE_RELAY : TSIM_PURPOSE_CONTROL, data ? id : 0, NULL)) {
         starved(r, dst);
     }
 }
@@ -1576,6 +1605,13 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
 
 static void router_tx_done(void *self, uint64_t handle) {
     struct router *r = self;
+    for (struct awaiting *a = r->awaiting; a; a = a->next) {
+        if (a->handle == handle) {
+            a->handle = 0;
+            tsim_timer_start(a->timer, a->wait);
+            break;
+        }
+    }
     for (size_t i = 0; i < r->hop_count; i++) {
         struct hop *h = &r->hops[i];
         if (h->handle == handle) {
@@ -1750,6 +1786,8 @@ uint32_t tsim_distvec_neighbours(const void *self) {
     }
     return count;
 }
+
+tsim_time tsim_distvec_promise(const void *self) { return (tsim_time)promise_s(self) * TSIM_S(1); }
 
 tsim_time tsim_distvec_interval(const void *self) {
     return ((const struct router *)self)->interval;
