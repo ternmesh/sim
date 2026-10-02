@@ -77,15 +77,15 @@ struct tsim_meshtastic_mac_config tsim_meshtastic_mac_default(const struct tsim_
 }
 
 /* What a frame's wait is drawn from: a fixed part, then 0 to `slots` slots. */
-struct wait {
+struct mac_wait {
     tsim_time fixed;
     uint64_t slots;
 };
 
-static struct wait wait_for(const struct mac *m, const struct tsim_tx *tx) {
+static struct mac_wait wait_for(const struct mac *m, const struct tsim_tx *tx) {
     const struct tsim_meshtastic_window *w = &m->config.window;
     if (!(tx->hint & HINT_RELAY)) {
-        return (struct wait){0, (uint64_t)1 << window_by_utilisation(m->node, w)};
+        return (struct mac_wait){0, (uint64_t)1 << window_by_utilisation(m->node, w)};
     }
     double lo = m->config.snr_min_db;
     double hi = m->config.snr_max_db;
@@ -93,12 +93,12 @@ static struct wait wait_for(const struct mac *m, const struct tsim_tx *tx) {
     snr = snr < lo ? lo : snr > hi ? hi : snr;
     int cw = (int)((snr - lo) * (w->cw_max - w->cw_min) / (hi - lo)) + w->cw_min;
     if (tx->hint & HINT_ROUTER) {
-        return (struct wait){0, 2 * (uint64_t)cw};
+        return (struct mac_wait){0, 2 * (uint64_t)cw};
     }
-    return (struct wait){2 * (tsim_time)w->cw_max * w->slot, (uint64_t)1 << cw};
+    return (struct mac_wait){2 * (tsim_time)w->cw_max * w->slot, (uint64_t)1 << cw};
 }
 
-static tsim_time draw(struct mac *m, struct wait wait) {
+static tsim_time draw(struct mac *m, struct mac_wait wait) {
     return wait.fixed + (tsim_time)tsim_rng_below(&m->rng, wait.slots + 1) * m->config.window.slot;
 }
 
@@ -106,7 +106,7 @@ static tsim_time draw(struct mac *m, struct wait wait) {
  * same, so a wait of nothing is no wait at all: the draw is from the waits that take some time,
  * which is what drawing again until one does would come to, and a window with none - a router's
  * at cw 0 - waits one slot. */
-static tsim_time draw_busy(struct mac *m, struct wait wait) {
+static tsim_time draw_busy(struct mac *m, struct mac_wait wait) {
     if (wait.fixed > 0) {
         return draw(m, wait);
     }
