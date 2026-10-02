@@ -23,7 +23,17 @@
  * Closed, a node's next gap starts not when its last message was made but when its routing is
  * finished with it (tsim_node_finished()), so a node waiting on an acknowledgement makes nothing
  * new - as Meshtasticator's nodes behave. The draws are the same, but when they fall then depends
- * on the protocol, so candidates are no longer offered the same messages at the same times. */
+ * on the protocol, so candidates are no longer offered the same messages at the same times.
+ *
+ * Two settings give unicasts the locality real messaging has, which is what lets a route found
+ * once be used again. With `peers`, each node picks that many other nodes at the start, and the
+ * picks are made mutual: a node's unicasts go to one of its peers, chosen uniformly, and nobody
+ * else. With `reply`, each unicast is answered with that probability, from its destination to its
+ * source, an exponential delay of mean `reply_delay` after it was made. Whether, when and how long
+ * are drawn with the message, from its sender's stream, and the answer is sent whether or not the
+ * message arrived: a protocol that delivers more is not offered more. An answer is not answered,
+ * and like any message it is sent only before stop. With both at 0 the draws are exactly those
+ * of the plain process. */
 
 /* A message sent at a set time, as well as or instead of the ones the process makes: to put one
  * flood through a network and count what it costs, say. It uses none of the process's draws. */
@@ -42,7 +52,10 @@ struct tsim_traffic_params {
     tsim_time start;  /* messages are made in [start, stop) */
     tsim_time stop;
     uint64_t seed;
-    bool closed; /* each gap starts when the node's previous message is finished */
+    bool closed;           /* each gap starts when the node's previous message is finished */
+    uint32_t peers;        /* each node's regular correspondents, at least; 0 for anyone */
+    double reply;          /* fraction of unicasts answered, 0..1; not with closed */
+    tsim_time reply_delay; /* mean time from a unicast to its answer */
     const struct tsim_send *sends; /* copied: they need not outlive the call */
     uint32_t send_count;
 };
@@ -51,9 +64,11 @@ struct tsim_traffic;
 
 /* Starts traffic on every node of `net`, which must outlive it. Returns NULL for an invalid
  * parameter - a negative interval, len_min over len_max or over TSIM_FRAME_MAX, a broadcast
- * fraction outside 0..1, stop before start, a send from or to a node that is not there, to its own
- * node or over TSIM_FRAME_MAX - or when memory runs out. A send is made whenever it falls, whatever
- * start and stop say, and in the closed loop its finishing starts no gap. */
+ * fraction outside 0..1, stop before start, more peers than other nodes, a
+ * reply fraction outside 0..1 or with closed, a negative reply delay, a send from or to a node
+ * that is not there, to its own node or over TSIM_FRAME_MAX - or when memory runs out. A send is
+ * made whenever it falls, whatever start and stop say, and in the closed loop its finishing starts
+ * no gap. */
 struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
                                          const struct tsim_traffic_params *params);
 

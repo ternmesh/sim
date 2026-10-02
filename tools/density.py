@@ -21,6 +21,10 @@ the map, the seeds and the shadowing field as they are; spreading the same nodes
 would change how far apart the field's cells are. On the default map the region's 20 dBm gives
 about 470 links per node, and -5 dBm about 12.
 
+Every scenario's settings can be overridden with -s, as with tsim: `-s traffic.peers=3 -s
+traffic.reply=0.5` gives each node three regular correspondents who answer half its messages, which
+is what lets a routed candidate use a route more than once.
+
 The sweep is too long for CI, which runs each region scenario once, at 20 dBm. It wants a release
 build: each run takes 5 to 60 s of CPU there, and the runs go in parallel.
 """
