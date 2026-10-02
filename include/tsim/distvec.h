@@ -276,10 +276,10 @@ struct tsim_distvec_config {
  * airtime: the most better routing could gain.
  *
  * A link is one each end decodes the other on with oracle_margin_db to spare, at tx_dbm, by the
- * mean loss. A route is a path of the fewest links, each hop to the neighbour of those one hop
- * nearer with the least loss. A hop goes at the power its next hop needs with margin_db, and
- * frames for every neighbour at what the power_k nearest need, as power control would set them
- * knowing every floor exactly; without power control, at tx_dbm. */
+ * mean loss. A route is a path of the fewest links through relays only, each hop to the neighbour
+ * of those one hop nearer with the least loss. A hop goes at the power its next hop needs with
+ * margin_db, and frames for every neighbour at what the power_k nearest need, as power control
+ * would set them knowing every floor exactly; without power control, at tx_dbm. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */

@@ -1196,6 +1196,22 @@ static void the_oracle_routes_by_the_fewest_hops_and_announces_nothing(void) {
     rig_close(&r);
     tsim_distvec_oracle_free(&o);
 
+    /* With only the ends relays, the line's middle passes nothing on: no route across it. */
+    rig_init(&r);
+    r.rc.oracle = true;
+    r.rc.oracle_routes = &o;
+    strcpy(r.rc.relays, "0,2");
+    build(&r, 3, 1);
+    link(&r, 0, 1, LOSS_LOUD);
+    link(&r, 1, 2, LOSS_LOUD);
+    CHECK(tsim_distvec_oracle_build(&o, tsim_net_phy(r.net), &r.rc));
+    tsim_net_start(r.net);
+    CHECK(!route(&r, 0, 2, &next));
+    CHECK(route(&r, 0, 1, &next) && next == 1);
+    CHECK(route(&r, 1, 2, &next) && next == 2);
+    rig_close(&r);
+    tsim_distvec_oracle_free(&o);
+
     struct tsim_distvec_config bad = r.rc;
     bad.oracle_margin_db = -1;
     CHECK(tsim_distvec_check(&bad) != NULL);

@@ -2215,6 +2215,9 @@ bool tsim_distvec_oracle_build(struct tsim_distvec_oracle *o, const struct tsim_
         queue[tail++] = d;
         while (head < tail) {
             uint32_t a = queue[head++];
+            if (a != d && tsim_nodeset_contains(c->relays, a) != 1) {
+                continue; /* a leaf can be reached, but never passes anything on */
+            }
             for (uint32_t i = start[a]; i < start[a + 1]; i++) {
                 if (dist[adj[i]] == UINT32_MAX) {
                     dist[adj[i]] = dist[a] + 1;
@@ -2231,7 +2234,8 @@ bool tsim_distvec_oracle_build(struct tsim_distvec_oracle *o, const struct tsim_
             float best = INFINITY;
             for (uint32_t i = start[a]; i < start[a + 1]; i++) {
                 uint32_t b = adj[i];
-                if (dist[b] + 1 == dist[a] && need[(size_t)a * n + b] < best) {
+                bool passes = b == d || tsim_nodeset_contains(c->relays, b) == 1;
+                if (passes && dist[b] + 1 == dist[a] && need[(size_t)a * n + b] < best) {
                     best = need[(size_t)a * n + b];
                     rt->next = b;
                 }
