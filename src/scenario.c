@@ -577,6 +577,12 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "snr_floor") == 0) {
         return parse_double(value, &c->snr_floor_db) ? NULL : "expected an SNR in dB";
     }
+    if (strcmp(key, "oracle") == 0) {
+        return parse_yes_no(value, &c->oracle) ? NULL : "expected yes or no";
+    }
+    if (strcmp(key, "oracle_margin") == 0) {
+        return distvec_factor(value, 0, 60, &c->oracle_margin_db);
+    }
     return "is not a setting of distvec";
 }
 
@@ -1329,7 +1335,17 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     struct tsim_net *net = NULL;
     struct tsim_metrics *metrics = NULL;
     struct tsim_traffic *traffic = NULL;
+    struct tsim_distvec_oracle oracle = {0};
     bool ok = false;
+    /* The oracle's routes are the driver's to hand down: the plugin is given where they will be,
+     * and they are built once the links are laid. */
+    _Alignas(max_align_t) unsigned char routing_config[TSIM_PLUGIN_CONFIG_MAX];
+    memcpy(routing_config, s->routing_config, sizeof routing_config);
+    struct tsim_distvec_config *dv = NULL;
+    if (s->routing->routing == &tsim_distvec) {
+        dv = (struct tsim_distvec_config *)routing_config;
+        dv->oracle_routes = dv->oracle ? &oracle : NULL;
+    }
     if (!pos || !sched) {
         goto done;
     }
@@ -1358,7 +1374,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     np.channel = s->radio.channel;
     np.listen = s->radio.lora;
     np.seed = s->seed;
-    net = tsim_net_create(sched, &np, s->nodes, s->routing->routing, s->routing_config, s->mac->mac,
+    net = tsim_net_create(sched, &np, s->nodes, s->routing->routing, routing_config, s->mac->mac,
                           s->mac_config);
     if (!net) {
         goto done;
@@ -1375,6 +1391,9 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         struct tsim_channel_params channel = s->channel;
         channel.seed = s->seed;
         tsim_phy_set_losses(tsim_net_phy(net), &channel, pos);
+    }
+    if (dv && dv->oracle && !tsim_distvec_oracle_build(&oracle, tsim_net_phy(net), dv)) {
+        goto done;
     }
 
     metrics = tsim_metrics_create(net, s->deadline);
@@ -1411,6 +1430,7 @@ done:
     tsim_traffic_destroy(traffic);
     tsim_metrics_destroy(metrics);
     tsim_net_destroy(net);
+    tsim_distvec_oracle_free(&oracle);
     tsim_sched_destroy(sched);
     free(pos);
     return ok;

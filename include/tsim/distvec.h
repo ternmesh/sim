@@ -216,6 +216,8 @@
 
 #define TSIM_DISTVEC_METRIC_INF 0xFFFF
 
+struct tsim_distvec_oracle;
+
 struct tsim_distvec_config {
     uint16_t channel;
     struct tsim_lora lora;
@@ -259,7 +261,46 @@ struct tsim_distvec_config {
     double step_db;      /* added for each try a hop has lost, 0 to 60 */
     double snr_floor_db; /* the lowest SNR the modulation demodulates at */
     uint8_t power_k;     /* neighbours frames for all of them reach; 0 for tx_dbm */
+
+    /* The oracle, below: off for the protocol itself. */
+    bool oracle;
+    double oracle_margin_db; /* a link's loss leaves at least this above the floor, both ways */
+    const struct tsim_distvec_oracle *oracle_routes; /* set by the driver, never parsed */
 };
+
+/* The oracle: a yardstick for the protocol, never a candidate. With `oracle`, a node announces
+ * nothing, asks for nothing and keeps no neighbours: its routes and its powers are handed to it
+ * from the simulator's own links, which no protocol can know, and everything else - hops, their
+ * retries and implicit acknowledgements, end-to-end acknowledgements, broadcasts, the MAC - is the
+ * protocol's own. What it delivers is what this data path could with perfect routes that cost no
+ * airtime: the most better routing could gain.
+ *
+ * A link is one each end decodes the other on with oracle_margin_db to spare, at tx_dbm, by the
+ * mean loss. A route is a path of the fewest links, each hop to the neighbour of those one hop
+ * nearer with the least loss. A hop goes at the power its next hop needs with margin_db, and
+ * frames for every neighbour at what the power_k nearest need, as power control would set them
+ * knowing every floor exactly; without power control, at tx_dbm. */
+struct tsim_distvec_oracle_route {
+    uint32_t next; /* TSIM_BROADCAST for no route */
+    uint8_t hops;  /* at most 255 */
+    float dbm;
+};
+
+struct tsim_distvec_oracle {
+    uint32_t nodes;
+    struct tsim_distvec_oracle_route *route; /* [src * nodes + dst] */
+    float *node_dbm;                         /* per node */
+};
+
+struct tsim_phy;
+
+/* Builds the oracle's routes for `config` from the links `phy` has now. Returns false, leaving
+ * `oracle` empty, when memory runs out or the modulation is invalid. Takes time in proportion to
+ * the node count times the links. */
+bool tsim_distvec_oracle_build(struct tsim_distvec_oracle *oracle, const struct tsim_phy *phy,
+                               const struct tsim_distvec_config *config);
+
+void tsim_distvec_oracle_free(struct tsim_distvec_oracle *oracle);
 
 /* Every node infrastructure; Trickle from 8 s to 8 min (six doublings), redundancy 3, announcing
  * at least every third interval and forgetting a neighbour after an hour; a 0.5% cap, a quarter
@@ -271,7 +312,7 @@ struct tsim_distvec_config {
  * control on, with power_k 8 - without it, the region's unicast fell from 22% to 2% as density rose
  * (MSH-45) - frames going no quieter than -9 dBm, the SX1262's least, with a 10 dB margin and 3 dB
  * more for each try lost, and the SNR floor Semtech's for the SF: -7.5 dB at SF7, 2.5 dB lower for
- * each SF above.
+ * each SF above. The oracle off, with a 3 dB margin when on.
  *
  * The cap is per node, so in a neighbourhood of n nodes routing may take n times it of the
  * channel: 2% - Reticulum's announce cap - saturated a 200-node town at SF9, which 0.5% did not.

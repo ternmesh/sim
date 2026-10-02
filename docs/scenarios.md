@@ -162,6 +162,8 @@ default.
 | `routing.power_k` (`distvec`) | 8 | with `routing.power`, announces, requests and broadcasts go loud enough for this many nearest neighbours; 0 sends them at `radio.tx_dbm` |
 | `routing.tx_min`, `routing.margin`, `routing.step` (`distvec`) | -9, 10, 3 | power control's quietest frame in dBm, its margin above a neighbour's floor in dB, and the dB each lost try adds |
 | `routing.snr_floor` (`distvec`) | Semtech's for the SF | the SNR the radio demodulates down to, in dB, from which a neighbour's floor is reckoned |
+| `routing.oracle` (`distvec`) | `no` | `yes` makes candidate 3 a yardstick, not a candidate: no announces or requests, and routes and powers handed down from the simulator's own links - the fewest hops over links with `routing.oracle_margin` to spare - with the data path, broadcasts and MAC unchanged. What it delivers is the most better routing could gain |
+| `routing.oracle_margin` (`distvec`) | 3 | dB above the floor, at `radio.tx_dbm` by the mean loss, that both ends of a link the oracle uses must have, 0 to 60 |
 
 The routing and the MAC each keep their own copy of the window: the routing sizes its
 acknowledgement wait by it. Settings that bound each other, such as `cw_min` and `cw_max`, are
