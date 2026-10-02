@@ -258,10 +258,11 @@ static void a_link_gone_one_way_is_dropped_by_the_side_still_hearing(void) {
     rig_close(&r);
 }
 
-/* A MAC for one test: it sends whatever is queued as soon as the radio is free, except at node
- * 1 while the test holds that node's gate shut, so a queue of one frame there stays full and the
- * next send is refused. */
+/* A MAC for tests: it sends whatever is queued as soon as the radio is free, except at gate_node
+ * while the test holds its gate shut - so a queue of one frame there stays full and the next send
+ * is refused, or a frame there waits as long as the test likes. */
 static bool gate_shut;
+static uint32_t gate_node = 1;
 static void *gate_create(struct tsim_node *node, const void *config) {
     (void)config;
     return node;
@@ -269,7 +270,7 @@ static void *gate_create(struct tsim_node *node, const void *config) {
 static void gate_destroy(void *self) { (void)self; }
 static void gate_kick(void *self) {
     struct tsim_node *node = self;
-    if (!(gate_shut && tsim_node_index(node) == 1) && !tsim_node_sending(node)) {
+    if (!(gate_shut && tsim_node_index(node) == gate_node) && !tsim_node_sending(node)) {
         tsim_node_transmit(node);
     }
 }
@@ -535,6 +536,45 @@ static void a_node_announces_within_its_promise(void) {
     rig_close(&r);
 }
 
+/* Node 0's retry of a message waits in its queue when node 1, retrying the first copy, is heard
+ * passing it on, so the retry is taken back as needless. The acknowledgement of that copy never
+ * comes - node 1 cannot hear node 2 - so node 0 has to go on waiting, retrying and at last giving
+ * up, not wait for ever on the frame it took back. */
+static void a_retry_taken_back_still_ends_in_an_answer_or_giving_up(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.ack_wait = TSIM_S(1);
+    r.rc.ack_factor = 0;
+    r.rc.hop_wait = TSIM_S(10);
+    struct tsim_net_params p = tsim_net_defaults(16);
+    p.queue_limit = 0;
+    r.nodes = 4;
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 4, &tsim_distvec, &r.rc, &gate_mac, NULL);
+    for (uint32_t i = 0; i + 1 < 4; i++) {
+        link(&r, i, i + 1, LOSS_LOUD);
+    }
+    gate_node = 0;
+    gate_shut = false;
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    uint32_t next;
+    CHECK(route(&r, 0, 3, &next));
+
+    tsim_phy_set_loss_from(tsim_net_phy(r.net), 2, 1, LOSS_NONE); /* node 1 stops hearing node 2 */
+    uint64_t m = tsim_net_originate(r.net, 0, 3, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(300) + TSIM_MS(500)); /* the first copy has gone */
+    gate_shut = true;                           /* node 0's retry, after a second, waits */
+    tsim_sched_run_until(r.sched, TSIM_S(320)); /* node 1 sends its copy again, at ten seconds */
+    gate_shut = false;
+    tsim_node_transmit(tsim_net_node(r.net, 0));
+    tsim_sched_run_until(r.sched, TSIM_S(420));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1); /* node 3 has it; its answer is lost */
+    CHECK(tsim_net_message(r.net, m)->finished);
+    gate_node = 1;
+    rig_close(&r);
+}
+
 static void a_leaf_never_forwards(void) {
     struct rig r;
     rig_init(&r);
@@ -729,6 +769,7 @@ int main(void) {
     RUN(a_queued_message_is_neither_repeated_nor_given_up);
     RUN(a_full_ihu_list_leaves_room_for_a_route);
     RUN(a_node_announces_within_its_promise);
+    RUN(a_retry_taken_back_still_ends_in_an_answer_or_giving_up);
     RUN(a_leaf_never_forwards);
     RUN(trickle_backs_off_and_resets_on_a_new_neighbour);
     RUN(announces_stay_under_the_cap);

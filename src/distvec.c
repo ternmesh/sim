@@ -1266,6 +1266,20 @@ static void hop_fire(void *ctx) {
     arm_hops(r);
 }
 
+/* A queued frame of this node's was taken back before it went. If it was a message's attempt the
+ * source was waiting to send - a retry that an earlier copy, heard passed on, made needless - the
+ * wait for the acknowledgement starts now, as it would have when the frame went: a withdrawn frame
+ * never goes, and the message must not wait on it for ever. */
+static void withdrawn(struct router *r, uint64_t handle) {
+    for (struct awaiting *a = r->awaiting; a; a = a->next) {
+        if (a->handle == handle) {
+            a->handle = 0;
+            tsim_timer_start(a->timer, a->wait);
+            return;
+        }
+    }
+}
+
 /* Something passed on what a hop of this node's was waiting to hear: a data or acknowledgement
  * frame, one hop further on. */
 static void overheard(struct router *r, const uint8_t *b) {
@@ -1277,8 +1291,8 @@ static void overheard(struct router *r, const uint8_t *b) {
         bool answered = h->type == TYPE_DATA && type == TYPE_ACK && h->next == h->dst &&
                         src == h->dst && dst == h->src && id == h->id;
         if (passed || answered) {
-            if (h->due < 0) {
-                tsim_node_cancel(r->node, h->handle);
+            if (h->due < 0 && tsim_node_cancel(r->node, h->handle)) {
+                withdrawn(r, h->handle);
             }
             drop_hop(r, i);
             continue;
