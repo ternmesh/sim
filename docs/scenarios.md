@@ -32,14 +32,19 @@ against that override, and a missing required setting against the file as a whol
 
 A run has three parts:
 
-1. **Warmup:** a period with no traffic, so protocols that announce themselves can do so first.
+1. **Warmup:** a period for settling, so protocols that announce themselves can do so first. Its
+   last `traffic.lead` carries traffic, so they settle on a loaded channel, not a quiet one.
 2. **Duration:** the period in which traffic is generated.
 3. **Deadline:** a final period with no new traffic, so the last messages have as long to arrive as
    the first.
 
-Airtime and duty cycles are measured over the last two: the warmup is for settling, and what it
-cost is reported apart. The town and region scenarios give every candidate the same warmup, long
-enough for candidate 3's route tables to fill: 3 h on the town, 6 h on the region.
+Airtime and duty cycles are measured over the last two, and only the messages made in them are
+counted: the warmup is for settling, and what it cost is reported apart. The town and region
+scenarios give every candidate the same warmup, long enough for candidate 3's route tables to fill:
+3 h on the town, 6 h on the region. Traffic runs for the last 2 h and 3 h of it. After a quiet
+warmup, candidate 3 does far better in the first hour of traffic than it goes on to: as the load
+raises link costs its routes become infeasible (MSH-50), and a result taken then would be
+misleading.
 
 ## Settings
 
@@ -54,7 +59,7 @@ enough for candidate 3's route tables to fill: 3 h on the town, 6 h on the regio
 | `links` | none | a file with the loss of each link, which then replaces the channel model and the positions: one link per line, as `a b loss` in dB, or `a b there back` where the two directions differ; a link the file leaves out loses everything. `tsim` reads a relative path from the scenario file's directory |
 | `area` | `5000 x 5000` | metres, for `uniform` |
 | `spacing` | 1000 | metres between neighbours, for `grid` and `line` |
-| `warmup` | `0 s` | time before traffic starts |
+| `warmup` | `0 s` | time before the measured window: before traffic starts, unless `traffic.lead` starts it sooner |
 | `duration` | `1 h` | time during which traffic is generated |
 | `deadline` | `60 s` | how long a message has to arrive to count as on time, and how long the run continues after the traffic stops |
 | `queue` | 16 | frames each node may have waiting; 0 means no limit |
@@ -89,6 +94,7 @@ enough for candidate 3's route tables to fill: 3 h on the town, 6 h on the regio
 | `traffic.peers` | 0 | each node's regular correspondents: it picks this many others at the start, the picks are made mutual, and its unicasts go only to its peers, chosen uniformly. 0 sends each unicast to anyone, which leaves a route found once almost never used again |
 | `traffic.reply` | 0 | fraction of the traffic process's unicasts answered, from the destination back to the source; a `traffic.send` is not, so script its answer too. Whether, when and how long are drawn with the message, and the answer goes whether or not the message arrived, so every candidate is offered the same messages. Answers are not answered. Not with `traffic.closed` |
 | `traffic.reply_delay` | `2 min` | mean time from a unicast to its answer, exponentially distributed |
+| `traffic.lead` | `0 s` | how long before the warmup ends the traffic process starts, at most the warmup. Its messages load the network but are not counted, only those made after the warmup are; the airtime spent on them after it is, since airtime is not told apart by message |
 | `traffic.closed` | `no` | `yes` starts a node's next gap only when its routing is done with its last message - acknowledged, or given up on - as Meshtasticator's nodes do. The messages then depend on the protocol, so candidates are no longer offered the same ones |
 
 The channel defaults come from Petäjäjärvi et al. (ITST 2015). The phy defaults are placeholders
@@ -203,9 +209,9 @@ The latency percentiles are rounded down by at most 1.6%. The maximum latency is
   `fife.tsim` for each seed and arm and fails if a mean is too far from MeshBench's; the script says
   how the reference was made.
 - **`scenarios/scale/*.tsim`:** these are too large for a sanitized debug build. CI's `scale` job
-  runs `region.tsim` (1000 nodes, six hours' warmup, one hour of traffic), and the same under each candidate
-  (`region-meshtastic.tsim`, `region-meshcore.tsim`, `region-distvec.tsim`), as a release build with
-  a 60-second budget each. At their 20 dBm the region is close to one collision domain, about 470
+  runs `region.tsim` (1000 nodes, six hours' warmup with traffic for the last three, then one hour
+  of traffic measured), and the same under each candidate (`region-meshtastic.tsim`,
+  `region-meshcore.tsim`, `region-distvec.tsim`), as a release build with a 120-second budget each. At their 20 dBm the region is close to one collision domain, about 470
   links per node; `tools/density.py --tsim build/tsim` runs all four at several powers and seeds,
   from about 12 links per node to that, and prints each candidate's delivery at each density. Power
   stands in for spacing: under the log-distance channel, 5 dB quieter loses what standing 1.64

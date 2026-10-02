@@ -24,7 +24,7 @@
 
 /* Deliveries of one kind of message. */
 struct tsim_delivery {
-    uint64_t messages;  /* originated, including those refused */
+    uint64_t messages;  /* originated in the window, including those refused */
     uint64_t refused;   /* that the source's routing could not carry */
     uint64_t wanted;    /* destinations, over every message */
     uint64_t delivered; /* destinations reached, however late */
@@ -93,8 +93,10 @@ void tsim_metrics_destroy(struct tsim_metrics *metrics);
 /* Starts the measured window now, once its routing has had its warmup: from here on are the
  * airtime, frames, duty cycles, queue drops and receptions reported, so a protocol that takes hours
  * to settle can be judged settled; the airtime before goes in warmup_airtime_s, and the routes held
- * now in routes and routes_reach. Called at most once, before the first message is originated,
- * since deliveries are counted whenever they happen; without it, the window is the whole run. */
+ * now in routes and routes_reach. Only the messages originated from now on are counted, wherever
+ * their deliveries fall, so traffic during the warmup loads the network without being judged. The
+ * airtime still spent on its messages after now is the window's: airtime is not told apart by
+ * message. Called at most once; without it, the window is the whole run. */
 void tsim_metrics_begin(struct tsim_metrics *metrics);
 
 /* The run so far. */

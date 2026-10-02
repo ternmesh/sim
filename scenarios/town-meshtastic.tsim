@@ -17,8 +17,11 @@ traffic.len       = 16..64
 traffic.broadcast = 0.25
 
 # Three hours to settle, the same for every candidate: candidate 3's tables hold 98% of routes by
-# then, and 48% after ten minutes. Airtime is counted from when traffic starts; the warmup's is
-# reported apart.
-warmup   = 3 h
-duration = 1 h
-deadline = 60 s
+# then, and 48% after ten minutes. The traffic starts for the last two of them, so what is measured
+# is a network already carrying it: after a quiet warmup candidate 3 delivers 99% of unicasts in the
+# first hour, and about 70% once the traffic has run two (MSH-50). Only the messages made after the
+# warmup are counted, and only the airtime after it; the warmup's is reported apart.
+warmup       = 3 h
+traffic.lead = 2 h
+duration     = 1 h
+deadline     = 60 s

@@ -109,6 +109,7 @@ static void unset_settings_take_their_defaults(void) {
     CHECK(s.net.queue_limit == 16);
     CHECK(s.len_min == 32 && s.len_max == 32 && s.broadcast == 1.0);
     CHECK_EQ_I64(s.warmup, 0);
+    CHECK_EQ_I64(s.lead, 0);
     CHECK_EQ_I64(s.duration, TSIM_S(3600));
     CHECK_EQ_I64(s.deadline, TSIM_S(60));
     CHECK(flood_of(&s)->hops == 3);
@@ -199,6 +200,9 @@ static void problems_say_where_they_are(void) {
         {"nodes = 2\nrouting = flood\nmac = aloha\nwarmup = 1 min\n"
          "traffic.send = 30 s, 0, all, 40\n",
          0, "traffic.send 1 is during the warmup"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nwarmup = 1 h\ntraffic.lead = 2 h\n", 0,
+         "traffic.lead is longer than the warmup"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.lead = soon\n", 4, "expected a time"},
         {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.relays = some\n", 4,
          "node numbers and ranges"},
         {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.hash_size = 4\n", 4,
@@ -388,6 +392,35 @@ static void a_send_as_the_warmup_ends_is_in_the_window(void) {
     CHECK_EQ_U64(rep.unicast.on_time, 1);
     CHECK_EQ_U64(rep.frames[TSIM_PURPOSE_DATA], 1);
     CHECK(rep.airtime_s[TSIM_PURPOSE_DATA] > 0);
+}
+
+/* Traffic that starts before the warmup ends loads the network, but only the messages made after
+ * it are counted: the same messages, by the same draws, as a run whose traffic starts with the
+ * window, and more airtime spent on them, since the window opens on a network already busy. */
+static void traffic_in_the_warmup_is_not_counted(void) {
+    struct tsim_scenario s;
+    const char *text = "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
+                       "routing = flood\nmac = aloha\ntraffic.interval = 1 min\n"
+                       "warmup = 30 min\ntraffic.lead = %s\nduration = 30 min\n";
+    char buf[512];
+    snprintf(buf, sizeof buf, text, "0 s");
+    CHECK(parse(&s, buf));
+    CHECK_EQ_I64(s.lead, 0);
+    struct tsim_report quiet;
+    CHECK(tsim_scenario_run(&s, &quiet));
+    snprintf(buf, sizeof buf, text, "30 min");
+    CHECK(parse(&s, buf));
+    CHECK_EQ_I64(s.lead, TSIM_S(30 * 60));
+    struct tsim_report loaded;
+    CHECK(tsim_scenario_run(&s, &loaded));
+    CHECK(quiet.warmup_airtime_s == 0);
+    CHECK(loaded.warmup_airtime_s > 0);
+    CHECK_EQ_I64(loaded.warmup, quiet.warmup);
+    CHECK_EQ_I64(loaded.elapsed, quiet.elapsed);
+    /* About 6 nodes x 30 messages each in the window, not twice that. */
+    CHECK(loaded.broadcast.messages > 120 && loaded.broadcast.messages < 240);
+    CHECK(quiet.broadcast.messages > 120 && quiet.broadcast.messages < 240);
+    CHECK(loaded.broadcast.wanted == 5 * loaded.broadcast.messages);
 }
 
 /* Peers and answers reach the traffic: four nodes with one peer each, every unicast answered. */
@@ -687,6 +720,7 @@ int main(void) {
     RUN(a_run_relays_across_its_map);
     RUN(a_warmup_is_reported_apart);
     RUN(a_send_as_the_warmup_ends_is_in_the_window);
+    RUN(traffic_in_the_warmup_is_not_counted);
     RUN(a_run_reports_its_links);
     RUN(a_run_talks_to_its_peers_and_answers);
     RUN(a_meshtastic_run_floods_a_line);

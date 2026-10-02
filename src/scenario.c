@@ -917,6 +917,9 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     if (strcmp(key, "traffic.reply_delay") == 0) {
         return parse_time(v, &s->reply_delay) ? NULL : "expected a time, such as 2 min";
     }
+    if (strcmp(key, "traffic.lead") == 0) {
+        return parse_time(v, &s->lead) ? NULL : "expected a time, such as 3 h";
+    }
     return "is not a setting";
 }
 
@@ -1088,11 +1091,14 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
                s->deadline > INT64_MAX - s->warmup - s->duration)) {
         ok = fail(err, 0, "warmup, duration and deadline together are too long");
     }
+    if (ok && s->lead > s->warmup) {
+        ok = fail(err, 0, "traffic.lead is longer than the warmup");
+    }
     for (uint32_t i = 0; ok && i < s->send_count; i++) {
         if (s->sends[i].at >= s->warmup + s->duration + s->deadline) {
             ok = fail(err, 0, "traffic.send %" PRIu32 " is at or after the end of the run", i + 1);
         } else if (s->sends[i].at < s->warmup) {
-            /* Its deliveries would count against the airtime after the warmup, not its own. */
+            /* Made to be counted, and only messages made after the warmup are. */
             ok = fail(err, 0, "traffic.send %" PRIu32 " is during the warmup", i + 1);
         }
     }
@@ -1379,7 +1385,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         .len_min = s->len_min,
         .len_max = s->len_max,
         .broadcast = s->broadcast,
-        .start = s->warmup,
+        .start = s->warmup - s->lead,
         .stop = s->warmup + s->duration,
         .seed = s->seed,
         .closed = s->closed,
