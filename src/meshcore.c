@@ -105,7 +105,7 @@ static void try_send(struct mac *m) {
         wait_until(m, m->next_tx);
         return;
     }
-    if (tsim_node_receiving(m->node)) {
+    if (tsim_node_carrier(m->node)) {
         if (m->busy_since < 0) {
             m->busy_since = now;
         }
@@ -150,7 +150,7 @@ static void mac_kick(void *self) {
 
 static void *mac_create(struct tsim_node *node, const void *config) {
     const struct tsim_meshcore_mac_config *c = config;
-    if (!(c->airtime_factor >= 0 && c->airtime_factor <= 1e6)) {
+    if (!(c->airtime_factor >= 0 && c->airtime_factor <= 1e6) || c->latched_header < 0) {
         return NULL;
     }
     struct mac *m = calloc(1, sizeof *m);
@@ -167,6 +167,7 @@ static void *mac_create(struct tsim_node *node, const void *config) {
         free(m);
         return NULL;
     }
+    tsim_node_hold_header(node, c->latched_header);
     return m;
 }
 

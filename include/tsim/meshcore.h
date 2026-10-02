@@ -80,13 +80,22 @@
  * 360 ms and looks again, until the channel has been busy for 4 s, when it sends anyway. It keeps
  * a duty cycle budget of 1/(1 + airtime_factor) over an hour, starting full, and waits when the
  * budget will not cover half a maximum-length frame. MeshCore polls in a loop; this port acts at
- * once. */
+ * once.
+ *
+ * latched_header is not MeshCore's: it reproduces MeshBench v0.1.0, whose radio does not clear its
+ * header-valid flag when the driver reads a packet. MeshCore's CustomSX1262::isReceiving() takes
+ * that flag to mean the channel is busy, until a stale-flag timeout of 3934 ms clears it;
+ * RadioLib's readData() clears it at once on a real radio. Set to that timeout, a repeater finds
+ * the channel busy for 3.9 s from the first header it hears, then relays whatever it is hearing,
+ * and the repeaters that heard the same frame relay together. */
 
 /* The node's hash, its first `size` bytes in `out`, size 1 to 3. */
 void tsim_meshcore_hash(uint32_t node, uint8_t size, uint8_t *out);
 
 struct tsim_meshcore_mac_config {
     double airtime_factor; /* the budget is a share 1/(1 + this) of the hour; at least 0 */
+    /* 0, or how long the radio's header flag stays set once a header sets it: MeshBench's. */
+    tsim_time latched_header;
 };
 
 /* MeshCore's default: an airtime factor of 1, half the hour. */
