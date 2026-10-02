@@ -466,8 +466,11 @@ static void ask_fire(void *ctx) {
         }
         tx.bytes[5] = (uint8_t)n;
         tx.len = i;
+        if (!tsim_node_send(r->node, &tx)) {
+            r->ask_count = 0; /* the queue is full: dropped uncharged, and asked again */
+            return;
+        }
         b->ns -= (double)tsim_lora_airtime(&tx.lora, tx.len);
-        tsim_node_send(r->node, &tx);
     }
 }
 
@@ -799,7 +802,11 @@ static void trickle_fire(void *ctx) {
         tsim_timer_start(r->trickle, r->interval_end - now(r));
         return;
     }
-    r->interval = r->interval * 2 > imax(r) ? imax(r) : r->interval * 2;
+    /* With changes of its own still waiting - one that came after it announced in this interval -
+     * it stays at imin rather than doubling, so they go within the next one. */
+    if (r->urgent_count == 0) {
+        r->interval = r->interval * 2 > imax(r) ? imax(r) : r->interval * 2;
+    }
     trickle_begin(r);
 }
 
@@ -991,11 +998,13 @@ static void announce(struct router *r) {
         }
         struct tsim_tx tx = frame(r, TSIM_PURPOSE_ANNOUNCE, PRIORITY_ANNOUNCE);
         tx.len = build(r, tx.bytes);
-        r->ann_seq++;
         if (!tsim_node_send(r->node, &tx)) {
             unsent(r, tx.bytes);
             return; /* the queue is full: no use building more */
         }
+        /* Numbered and charged only once queued: a gap in the numbers tells the neighbours of
+         * announces lost on the air, which a refused one never reached. */
+        r->ann_seq++;
         b->ns -= (double)tsim_lora_airtime(&tx.lora, tx.len);
     }
 }

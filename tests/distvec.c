@@ -113,10 +113,22 @@ static void a_line_converges_on_its_one_path(void) {
             CHECK_EQ_U64(next, b > a ? a + 1 : a - 1);
         }
     }
-    uint16_t near, far;
-    CHECK(tsim_distvec_route(at(&r, 0), 1, NULL, &near));
-    CHECK(tsim_distvec_route(at(&r, 0), 5, NULL, &far));
-    CHECK(far >= 5 * near - 5 && far <= 5 * near + 5); /* five hops cost five times one */
+    /* Every hop costs more. The first costs at least a perfect link - the reference frame's
+     * airtime - and none more than etx_max of them; a further hop may add less than a link's cost,
+     * since a node announces its last metric again while the true one stays within `change`. */
+    struct tsim_lora l = r.rc.lora;
+    double hop = (double)tsim_lora_airtime(&l, r.rc.ref_len) / (double)TSIM_MS(1);
+    uint16_t last = 0;
+    for (uint32_t d = 1; d < 6; d++) {
+        uint16_t metric;
+        CHECK(tsim_distvec_route(at(&r, 0), d, NULL, &metric));
+        CHECK(metric > last);
+        CHECK(metric <= d * hop * r.rc.etx_max + d);
+        last = metric;
+        if (d == 1) {
+            CHECK(metric >= hop);
+        }
+    }
     rig_close(&r);
 }
 
@@ -224,8 +236,10 @@ static void an_ihu_lost_is_sent_again_in_turn(void) {
 }
 
 /* A link that goes one-way after it was in use: node 1 stops hearing node 0, and says so as node
- * 0's promised announces fail to come. Node 0, still hearing node 1, has to stop using the link
- * from what node 1 reports, well before anyone's neighbour timeout. */
+ * 0's promised announces fail to come, and at the latest once it forgets node 0 - after
+ * neighbour_timeout and two of node 0's promises - by leaving it out of an announce that names
+ * every node it hears. Node 0, still hearing node 1, has to stop using the link then, and not
+ * hold on to node 1's last IHU for ever. */
 static void a_link_gone_one_way_is_dropped_by_the_side_still_hearing(void) {
     struct rig r;
     rig_init(&r);
@@ -235,7 +249,7 @@ static void a_link_gone_one_way_is_dropped_by_the_side_still_hearing(void) {
     CHECK(route(&r, 0, 2, &next));
     tsim_phy_set_loss_from(tsim_net_phy(r.net), 0, 1, LOSS_NONE);
     tsim_time gone = -1;
-    for (tsim_time t = TSIM_S(600); t < TSIM_S(600) + r.rc.neighbour_timeout; t += TSIM_S(30)) {
+    for (tsim_time t = TSIM_S(600); t < TSIM_S(600) + 2 * r.rc.neighbour_timeout; t += TSIM_S(30)) {
         tsim_sched_run_until(r.sched, t);
         if (tsim_distvec_neighbours(at(&r, 0)) == 0) {
             gone = t;
@@ -367,6 +381,73 @@ static void a_newer_route_displaces_infeasible_cheaper_ones(void) {
     announce_as(&r, 8, 0, d, 1, 500);                     /* newer, dearer, feasible */
     CHECK(route(&r, 0, d, &next));
     CHECK_EQ_U64(next, 8);
+    rig_close(&r);
+}
+
+/* Node 1's queue is full for a while and refuses its announces. Node 0 heard none of them go
+ * missing on the air, and must not count them against the link once node 1 is heard again. */
+static void announces_the_queue_refused_are_not_counted_missed(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.imin = TSIM_S(8);
+    r.rc.doublings = 0;
+    r.rc.redundancy = 0;
+    r.rc.cap = 0.05;
+    struct tsim_net_params p = tsim_net_defaults(11);
+    p.queue_limit = 1;
+    r.nodes = 2;
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 2, &tsim_distvec, &r.rc, &gate_mac, NULL);
+    link(&r, 0, 1, LOSS_LOUD);
+    gate_shut = false;
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(120));
+    uint16_t before, after;
+    CHECK(tsim_distvec_route(at(&r, 0), 1, NULL, &before));
+
+    gate_shut = true;
+    tsim_net_originate(r.net, 1, 0, 20); /* fills node 1's queue */
+    uint64_t sent = tsim_net_ledger(r.net, 1)->frames[TSIM_PURPOSE_ANNOUNCE];
+    tsim_sched_run_until(r.sched, TSIM_S(160)); /* five or so announces refused */
+    CHECK_EQ_U64(tsim_net_ledger(r.net, 1)->frames[TSIM_PURPOSE_ANNOUNCE], sent);
+    gate_shut = false;
+    tsim_node_transmit(tsim_net_node(r.net, 1));
+    tsim_sched_run_until(r.sched, TSIM_S(180));
+    CHECK(tsim_distvec_route(at(&r, 0), 1, NULL, &after));
+    CHECK(after <= before); /* no announce counted missed */
+    rig_close(&r);
+}
+
+/* A change that comes after a node has announced in an imin interval goes in the next interval,
+ * which stays imin - within one and a half imin - and does not wait in the second half of one
+ * twice as long. */
+static void a_change_after_announcing_at_imin_waits_no_longer_than_imin(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.imin = TSIM_S(60);
+    r.rc.doublings = 3;
+    build(&r, 6, 12);
+    link(&r, 0, 1, LOSS_LOUD); /* node 1 speaks for nodes 2 to 5 */
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(1500));
+    CHECK_EQ_I64(tsim_distvec_interval(at(&r, 0)), r.rc.imin << r.rc.doublings);
+
+    announce_as(&r, 2, 0, 4, 0, 50); /* a new neighbour: back to imin */
+    CHECK_EQ_I64(tsim_distvec_interval(at(&r, 0)), r.rc.imin);
+    uint64_t count = tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_ANNOUNCE];
+    while (tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_ANNOUNCE] == count) {
+        tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + TSIM_S(1));
+    }
+    announce_as(&r, 3, 0, 5, 0, 50); /* a change after it announced in this interval */
+    CHECK_EQ_I64(tsim_distvec_interval(at(&r, 0)), r.rc.imin);
+    count = tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_ANNOUNCE];
+    tsim_time asked = tsim_sched_now(r.sched);
+    while (tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_ANNOUNCE] == count &&
+           tsim_sched_now(r.sched) < asked + 3 * r.rc.imin) {
+        CHECK_EQ_I64(tsim_distvec_interval(at(&r, 0)), r.rc.imin);
+        tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + TSIM_S(1));
+    }
+    CHECK(tsim_sched_now(r.sched) <= asked + r.rc.imin * 3 / 2 + TSIM_S(1));
     rig_close(&r);
 }
 
@@ -552,6 +633,8 @@ int main(void) {
     RUN(a_link_gone_one_way_is_dropped_by_the_side_still_hearing);
     RUN(a_retraction_the_queue_refused_goes_later);
     RUN(a_newer_route_displaces_infeasible_cheaper_ones);
+    RUN(announces_the_queue_refused_are_not_counted_missed);
+    RUN(a_change_after_announcing_at_imin_waits_no_longer_than_imin);
     RUN(a_leaf_never_forwards);
     RUN(trickle_backs_off_and_resets_on_a_new_neighbour);
     RUN(announces_stay_under_the_cap);

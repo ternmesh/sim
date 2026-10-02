@@ -42,8 +42,8 @@
  * routes: what it would forward through, with the sequence number of the source and the metric
  * from the sender. A metric of 0xFFFF retracts a route. A table too big for one frame goes out in
  * slices: changed routes first, then the rest in turn, so every route is repeated every so many
- * announces. An announce the node's queue refuses is undone: its routes go back on the list of
- * changes, so a retraction is never lost.
+ * announces. An announce the node's queue refuses is undone: it is neither numbered nor charged
+ * to the cap, and its routes go back on the list of changes, so a retraction is never lost.
  *
  * Links. A neighbour is a node whose announces this node hears. Its receive rate d_f is the share
  * of its last 16 announces heard (Babel's hello history), with one more counted missed for every
@@ -98,7 +98,10 @@
  * waiting to go, which are an inconsistency and never suppressed. An announce is consistent unless
  * it changes this node's routes. Anything that does - a route gained, lost or moved to another
  * neighbour, a metric that changes by more than `change` since it was last announced, a newer seq,
- * a neighbour found or lost - is an inconsistency, and sends the interval back to imin. A node
+ * a neighbour found or lost - is an inconsistency, and sends the interval back to imin. As in RFC
+ * 6206 an inconsistency at imin does nothing; departing from it, an interval that ends with
+ * changes still waiting does not double, so a change that comes after the node has announced in an
+ * imin interval goes within the next, not in the second half of one twice as long. A node
  * that has kept quiet quiet_max intervals running announces anyway, so its neighbours do not
  * forget it.
  *
@@ -108,9 +111,9 @@
  * a node asking about many routes cannot spend what it needs to be heard at all. An announce is
  * built only when its bucket can pay for the longest it could come to, and charged its own
  * airtime when it is queued; otherwise it waits until the bucket refills. A request its bucket
- * cannot pay for is dropped, and asked again. Neither share of the ledger runs over its part of
- * the cap by more than its bucket. An announce event sends up to `burst` frames, as long as there
- * are changed routes left to send and the bucket allows.
+ * cannot pay for is dropped, and asked again, as is one the queue refuses, uncharged. Neither share
+ * of the ledger runs over its part of the cap by more than its bucket. An announce event sends up
+ * to `burst` frames, as long as there are changed routes left to send and the bucket allows.
  *
  * Jitter. Every frame a node sends in answer to one it received - a relay, an acknowledgement, a
  * request passed on - waits a random time up to `jitter` of its own airtimes before it is queued,
