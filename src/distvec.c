@@ -39,6 +39,13 @@
 
 #define FLAG_INFRA 0x01
 
+/* A promise is two bytes: up to 32767 seconds, or with the top bit set a number of minutes up to
+ * 32766, or - all ones - no promise at all, for a node whose MAC has held its announces back for
+ * longer still. */
+#define PROMISE_MINUTES 0x8000u
+#define PROMISE_NONE 0xFFFFu
+#define PROMISE_UNBOUNDED (INT64_MAX / 4)
+
 /* Higher goes first. */
 #define PRIORITY_CONTROL 3
 #define PRIORITY_RELAY 2
@@ -206,7 +213,7 @@ struct router {
     uint32_t cursor;     /* the next destination a slice starts from */
     uint32_t selected;   /* destinations with a selected route */
     uint32_t retracting; /* destinations with retractions still to go */
-    uint16_t promised;   /* in its last announce, in seconds */
+    tsim_time promised;  /* in its last announce */
     uint16_t round;      /* in its last announce, in frames */
     uint64_t ann_handle; /* its last announce queued, until sent, and when it was queued */
     tsim_time ann_queued;
@@ -318,8 +325,7 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     }
     tsim_time top = c->imin << c->doublings;
     if (promise_secs(c, top, top) > UINT16_MAX) {
-        return "imax, quiet_max and the cap would let a node keep quiet longer than an announce "
-               "can promise: 65535 s";
+        return "imax, quiet_max and the cap would let a node keep quiet longer than 65535 s";
     }
     return NULL;
 }
@@ -925,15 +931,32 @@ static double promise_secs(const struct tsim_distvec_config *c, tsim_time interv
  * frame, then the longest its announces have lately waited in the MAC's queue - which the routing
  * cannot bound, a MAC holding frames back for its own duty cycle, say. A neighbour that hears
  * nothing from it for that long counts an announce missed. tsim_distvec_check() refuses a
- * configuration whose longest promise, at imax, would not fit the two bytes it goes in; the MAC's
- * part takes it to 65535 s at most. */
-static uint16_t promise_s(const struct router *r) {
+ * configuration whose Trickle and cap alone could keep it quiet for more than 65535 s; past what
+ * the two bytes it goes in can say, the MAC's part makes it no promise at all. */
+static double promise_s(const struct router *r) {
     tsim_time rest = r->interval_end - now(r);
     double s = promise_secs(&r->config, r->interval, rest > 0 ? rest : 0);
     tsim_time queued = r->ann_handle ? now(r) - r->ann_queued : 0; /* the one still waiting */
     tsim_time mac = queued > r->mac_wait ? queued : r->mac_wait;
     s += ceil((double)mac / (double)TSIM_S(1));
-    return s < 1 ? 1 : s > UINT16_MAX ? UINT16_MAX : (uint16_t)s;
+    return s < 1 ? 1 : s;
+}
+
+/* A promise of `s` seconds as it goes in an announce: rounded up, never down. */
+static uint16_t promise_code(double s) {
+    if (s <= PROMISE_MINUTES - 1) {
+        return (uint16_t)s;
+    }
+    double minutes = ceil(s / 60);
+    return minutes < PROMISE_NONE - PROMISE_MINUTES
+               ? (uint16_t)(PROMISE_MINUTES | (uint16_t)minutes)
+               : PROMISE_NONE;
+}
+
+static tsim_time promise_time(uint16_t code) {
+    return code == PROMISE_NONE     ? PROMISE_UNBOUNDED
+           : code & PROMISE_MINUTES ? (tsim_time)(code & ~PROMISE_MINUTES) * TSIM_S(60)
+                                    : (tsim_time)code * TSIM_S(1);
 }
 
 /* How many IHUs an announce frame may carry: ihu_max, less what would leave infrastructure no
@@ -951,8 +974,9 @@ static uint32_t build(struct router *r, uint8_t *b) {
     put16(b + 5, r->ann_seq);
     put16(b + 7, r->seq);
     b[9] = r->infra ? FLAG_INFRA : 0;
-    r->promised = promise_s(r);
-    put16(b + 10, r->promised);
+    uint16_t promise = promise_code(promise_s(r));
+    r->promised = promise_time(promise);
+    put16(b + 10, promise);
 
     /* IHUs: neighbours owed one first, then the rest in turn from where the last frame stopped,
      * none twice. */
@@ -1130,7 +1154,7 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len) {
     n->last_seq = seq;
     n->heard = now(r);
     n->infra = b[9] & FLAG_INFRA;
-    n->promise = (tsim_time)get16(b + 10) * TSIM_S(1);
+    n->promise = promise_time(get16(b + 10));
     if (fresh) {
         n->ihu_seq = seq;
     }
@@ -1920,9 +1944,7 @@ uint32_t tsim_distvec_neighbours(const void *self) {
     return count;
 }
 
-tsim_time tsim_distvec_promise(const void *self) {
-    return (tsim_time)((const struct router *)self)->promised * TSIM_S(1);
-}
+tsim_time tsim_distvec_promise(const void *self) { return ((const struct router *)self)->promised; }
 
 uint32_t tsim_distvec_round(const void *self) { return ((const struct router *)self)->round; }
 

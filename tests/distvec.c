@@ -493,6 +493,44 @@ static void a_node_whose_mac_holds_its_announces_promises_the_wait(void) {
     rig_close(&r);
 }
 
+/* Node 1's MAC holds its announces back 40 hours, longer than two of the most two bytes of
+ * seconds can promise: were the promise cut short there, node 0 would forget it between frames.
+ * The promise goes in minutes instead. */
+static void a_node_held_back_for_days_is_kept(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.imin = TSIM_S(60);
+    r.rc.doublings = 0;
+    r.rc.redundancy = 0;
+    r.rc.cap = 0.05;
+    struct tsim_net_params p = tsim_net_defaults(27);
+    p.queue_limit = 1;
+    r.nodes = 2;
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 2, &tsim_distvec, &r.rc, &gate_mac, NULL);
+    link(&r, 0, 1, LOSS_LOUD);
+    gate_shut = false;
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(600));
+    CHECK_EQ_U64(tsim_distvec_neighbours(at(&r, 0)), 1);
+    gate_shut = true;
+    const tsim_time hold = TSIM_S(40 * 3600);
+    uint32_t lost = 0;
+    for (tsim_time t = TSIM_S(600); t < TSIM_S(600) + 6 * hold; t += TSIM_S(600)) {
+        tsim_sched_run_until(r.sched, t);
+        if ((t - TSIM_S(600)) % hold == 0 && t > TSIM_S(600)) {
+            tsim_node_transmit(tsim_net_node(r.net, 1));
+        }
+        if (t >= TSIM_S(600) + 2 * hold + TSIM_S(600)) { /* once it has seen how long it waits */
+            lost += tsim_distvec_neighbours(at(&r, 0)) != 1;
+        }
+    }
+    CHECK(tsim_distvec_promise(at(&r, 1)) >= hold);
+    CHECK_EQ_U64(lost, 0);
+    gate_shut = false;
+    rig_close(&r);
+}
+
 /* Node 1 sends an announce as if from `sender`, which it is not: a sender is only bytes in the
  * header, so one radio can stand in for any number of neighbours. The frame is infrastructure's,
  * promises another within ten minutes, names node 0 as heard in a round of one frame, and carries
@@ -1101,6 +1139,7 @@ int main(void) {
     RUN(a_message_into_a_dead_end_brings_the_retraction_again);
     RUN(ihus_the_queue_refused_go_in_the_next_frame);
     RUN(a_node_whose_mac_holds_its_announces_promises_the_wait);
+    RUN(a_node_held_back_for_days_is_kept);
     RUN(a_newer_route_displaces_infeasible_cheaper_ones);
     RUN(announces_the_queue_refused_are_not_counted_missed);
     RUN(a_change_after_announcing_at_imin_waits_no_longer_than_imin);
