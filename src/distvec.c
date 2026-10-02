@@ -22,7 +22,7 @@
 #define TYPE_ACK 0x04
 #define TYPE_BCAST 0x05
 
-#define ANNOUNCE_HEAD 14
+#define ANNOUNCE_HEAD 15
 #define IHU_LEN 5
 #define ROUTE_LEN 8
 #define REQUEST_HEAD 6
@@ -33,7 +33,6 @@
 #define BCAST_HEAD 10
 
 #define FLAG_INFRA 0x01
-#define FLAG_IHU_ALL 0x02 /* the frame names every neighbour the sender hears */
 
 /* Higher goes first. */
 #define PRIORITY_CONTROL 3
@@ -117,7 +116,7 @@ struct neighbour {
     uint16_t cost_used; /* the cost every route through it was last chosen with */
     tsim_time heard;
     tsim_time promise; /* how soon it said it would announce again */
-    tsim_time ihu_at;  /* when it last named this node */
+    uint16_t ihu_seq;  /* the announce that last named this node */
 };
 
 /* A frame sent to a next hop, waiting to hear the next hop pass it on. */
@@ -197,6 +196,7 @@ struct router {
     size_t urgent_cap;
     uint32_t cursor;   /* the next destination a slice starts from */
     uint32_t selected; /* destinations with a selected route */
+    uint16_t promised; /* in its last announce, in seconds */
     bool changed;      /* something this node announces changed: a Trickle inconsistency */
 
     tsim_time interval; /* Trickle */
@@ -270,7 +270,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
     };
 }
 
-static double promise_secs(const struct tsim_distvec_config *c, tsim_time interval);
+static double promise_secs(const struct tsim_distvec_config *c, tsim_time interval, tsim_time rest);
 
 const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     if (memchr(c->relays, 0, sizeof c->relays) == NULL || tsim_nodeset_contains(c->relays, 0) < 0) {
@@ -301,7 +301,8 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     if (c->hop_max < 1 || c->bcast_hops > 254) {
         return "hop_max is 0, or bcast_hops is over 254";
     }
-    if (promise_secs(c, c->imin << c->doublings) > UINT16_MAX) {
+    tsim_time top = c->imin << c->doublings;
+    if (promise_secs(c, top, top) > UINT16_MAX) {
         return "imax, quiet_max and the cap would let a node keep quiet longer than an announce "
                "can promise: 65535 s";
     }
@@ -876,10 +877,12 @@ static bool advertise(struct router *r, uint32_t d, uint8_t *out) {
     return true;
 }
 
-/* The promise a node announcing now makes, in whole seconds: see promise_s(). */
-static double promise_secs(const struct tsim_distvec_config *c, tsim_time interval) {
+/* The promise a node announcing `rest` before the end of an interval of `interval` makes, in whole
+ * seconds: see promise_s(). */
+static double promise_secs(const struct tsim_distvec_config *c, tsim_time interval,
+                           tsim_time rest) {
     tsim_time top = c->imin << c->doublings;
-    double ns = (double)interval / 2;
+    double ns = (double)rest;
     tsim_time i = interval;
     for (int k = 0; k <= c->quiet_max; k++) {
         i = i * 2 > top ? top : i * 2;
@@ -889,14 +892,16 @@ static double promise_secs(const struct tsim_distvec_config *c, tsim_time interv
     return ceil(ns / (double)TSIM_S(1));
 }
 
-/* The longest this node may go before it announces again, in whole seconds, announcing now: the
- * rest of its current interval, then quiet_max intervals it may keep quiet and the one it must
- * announce in, each twice the last up to imax and announced in at its very end at worst, then the
- * time its bucket takes to pay for a full frame. A neighbour that hears nothing from it for that
- * long counts an announce missed. tsim_distvec_check() refuses a configuration whose longest
- * promise, at imax, would not fit the two bytes it goes in. */
+/* The longest this node may go before it announces again, in whole seconds, announcing now: what
+ * is left of its current interval - an announce the cap held back can go at any point of it - then
+ * quiet_max intervals it may keep quiet and the one it must announce in, each twice the last up to
+ * imax and announced in at its very end at worst, then the time its bucket takes to pay for a full
+ * frame. A neighbour that hears nothing from it for that long counts an announce missed.
+ * tsim_distvec_check() refuses a configuration whose longest promise, at imax, would not fit the
+ * two bytes it goes in. */
 static uint16_t promise_s(const struct router *r) {
-    double s = promise_secs(&r->config, r->interval);
+    tsim_time rest = r->interval_end - now(r);
+    double s = promise_secs(&r->config, r->interval, rest > 0 ? rest : 0);
     return s < 1 ? 1 : (uint16_t)s;
 }
 
@@ -915,7 +920,8 @@ static uint32_t build(struct router *r, uint8_t *b) {
     put16(b + 5, r->ann_seq);
     put16(b + 7, r->seq);
     b[9] = r->infra ? FLAG_INFRA : 0;
-    put16(b + 10, promise_s(r));
+    r->promised = promise_s(r);
+    put16(b + 10, r->promised);
 
     /* IHUs: neighbours owed one first, then the rest in turn from where the last frame stopped,
      * none twice. */
@@ -943,10 +949,12 @@ static uint32_t build(struct router *r, uint8_t *b) {
         r->nb[k].ihu_owed = false;
         heard += r->nb[k].used;
     }
-    b[12] = ihus;
-    if (ihus == heard) {
-        b[9] |= FLAG_IHU_ALL;
-    }
+    /* How many frames it takes to name every neighbour heard: a neighbour left out of more
+     * than that has been left out of the round. */
+    uint8_t per = ihu_room(r);
+    size_t rotation = per ? (heard + per - 1) / per : 0;
+    b[12] = (uint8_t)(rotation > UINT8_MAX ? UINT8_MAX : rotation);
+    b[13] = ihus;
 
     uint8_t routes = 0;
     if (r->infra) {
@@ -972,7 +980,7 @@ static uint32_t build(struct router *r, uint8_t *b) {
             }
         }
     }
-    b[13] = routes;
+    b[14] = routes;
     return i;
 }
 
@@ -995,8 +1003,8 @@ static uint32_t planned(const struct router *r) {
  * route it retracted counts as still announced, so the next announce says it all. The feasibility
  * distances it set stay set, which is only ever stricter than need be. */
 static void unsent(struct router *r, const uint8_t *b) {
-    const uint8_t *p = b + ANNOUNCE_HEAD + (uint32_t)b[12] * IHU_LEN;
-    for (uint8_t k = 0; k < b[13]; k++, p += ROUTE_LEN) {
+    const uint8_t *p = b + ANNOUNCE_HEAD + (uint32_t)b[13] * IHU_LEN;
+    for (uint8_t k = 0; k < b[14]; k++, p += ROUTE_LEN) {
         uint32_t d = get32(p);
         if (get16(p + 6) == INF) {
             r->dest[d].advertised = true;
@@ -1041,7 +1049,7 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len) {
         return;
     }
     uint32_t from = get32(b + 1);
-    uint8_t ihus = b[12], routes = b[13];
+    uint8_t rotation = b[12], ihus = b[13], routes = b[14];
     if (from >= r->nodes || from == r->self ||
         ANNOUNCE_HEAD + (uint32_t)ihus * IHU_LEN + (uint32_t)routes * ROUTE_LEN > len) {
         return;
@@ -1069,21 +1077,24 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len) {
     n->infra = b[9] & FLAG_INFRA;
     n->promise = (tsim_time)get16(b + 10) * TSIM_S(1);
     if (fresh) {
-        n->ihu_at = n->heard;
+        n->ihu_seq = seq;
     }
-    /* Its IHU for this node, if this frame has one. A frame that names every neighbour it hears
-     * and not this one says it does not hear this node; one that names only some leaves the last
-     * IHU standing, until neighbour_timeout passes without another (house_fire()). */
+    /* Its IHU for this node, if this frame has one. A sender names every neighbour it hears once
+     * in `rotation` frames; one that has gone more than that without naming this node - twice
+     * over, and one more, when it names them in turn, for the frames that name new neighbours
+     * first - does not hear it. Counted in its announce numbers, so a frame lost on the air counts
+     * too, and however slowly the sender announces, its last IHU stands until its round is done. */
     const uint8_t *p = b + ANNOUNCE_HEAD;
     bool named = false;
     for (uint8_t k = 0; k < ihus; k++, p += IHU_LEN) {
         if (get32(p) == r->self) {
             n->dr = p[4];
-            n->ihu_at = n->heard;
+            n->ihu_seq = seq;
             named = true;
         }
     }
-    if (!named && (b[9] & FLAG_IHU_ALL)) {
+    unsigned allowed = rotation <= 1 ? 1u : 2u * rotation + 1u;
+    if (!named && (uint16_t)(seq - n->ihu_seq) >= allowed) {
         n->dr = 0;
     }
 
@@ -1385,12 +1396,32 @@ static void send_attempt(struct awaiting *a) {
     tsim_timer_start(a->timer, wait);
 }
 
+/* The routing is done with a message: answered, or given up. Its attempts still queued are taken
+ * back, and those sent are no longer listened for or sent again, so nothing of it goes on the air
+ * after the application has been told. */
+static void finish(struct awaiting *a) {
+    struct router *r = a->owner;
+    for (size_t i = 0; i < r->hop_count;) {
+        struct hop *h = &r->hops[i];
+        if (h->type == TYPE_DATA && h->src == r->self && h->id == a->id) {
+            if (h->due < 0) {
+                tsim_node_cancel(r->node, h->handle);
+            }
+            drop_hop(r, i);
+            continue;
+        }
+        i++;
+    }
+    arm_hops(r);
+    tsim_node_finished(r->node, a->id);
+    forget_awaiting(a);
+}
+
 static void ack_timeout(void *ctx) {
     struct awaiting *a = ctx;
     struct router *r = a->owner;
     if (a->attempt >= r->config.retries) {
-        tsim_node_finished(r->node, a->id);
-        forget_awaiting(a);
+        finish(a);
         return;
     }
     a->attempt++;
@@ -1533,8 +1564,7 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len) {
     if (type == TYPE_ACK && dst == r->self) {
         for (struct awaiting *a = r->awaiting; a; a = a->next) {
             if (a->id == id && a->dst == src) {
-                tsim_node_finished(r->node, a->id);
-                forget_awaiting(a);
+                finish(a);
                 break;
             }
         }
@@ -1663,8 +1693,8 @@ static tsim_time house_period(const struct router *r) {
     return (p < imax(r) ? p : imax(r)) + 1;
 }
 
-/* Forgets the neighbours unheard for neighbour_timeout - and for two of their promises - and the
- * IHUs as old, and charges the rest for the announces they promised and have not sent. */
+/* Forgets the neighbours unheard for neighbour_timeout - and for two of their promises - and
+ * charges the rest for the announces they promised and have not sent. */
 static void house_fire(void *ctx) {
     struct router *r = ctx;
     tsim_time t = now(r);
@@ -1678,9 +1708,6 @@ static void house_fire(void *ctx) {
         if (t - n->heard > r->config.neighbour_timeout && t - n->heard > 2 * n->promise) {
             forget(r, s);
             continue;
-        }
-        if (t - n->ihu_at > r->config.neighbour_timeout) {
-            n->dr = 0;
         }
         uint16_t was = n->cost;
         n->cost = link_cost(r, n);
@@ -1814,7 +1841,9 @@ uint32_t tsim_distvec_neighbours(const void *self) {
     return count;
 }
 
-tsim_time tsim_distvec_promise(const void *self) { return (tsim_time)promise_s(self) * TSIM_S(1); }
+tsim_time tsim_distvec_promise(const void *self) {
+    return (tsim_time)((const struct router *)self)->promised * TSIM_S(1);
+}
 
 tsim_time tsim_distvec_interval(const void *self) {
     return ((const struct router *)self)->interval;

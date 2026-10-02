@@ -322,8 +322,9 @@ static void a_retraction_the_queue_refused_goes_later(void) {
 }
 
 /* Node 1 sends an announce as if from `sender`, which it is not: a sender is only bytes in the
- * header, so one radio can stand in for any number of neighbours. The frame names node 0 as heard,
- * says it names every node heard, promises another within ten minutes, and carries one route. */
+ * header, so one radio can stand in for any number of neighbours. The frame is infrastructure's,
+ * promises another within ten minutes, names node 0 as heard in a round of one frame, and carries
+ * one route. */
 static void announce_as(struct rig *r, uint32_t sender, uint16_t ann_seq, uint32_t dst,
                         uint16_t seq, uint16_t metric) {
     struct tsim_tx tx = {
@@ -333,7 +334,7 @@ static void announce_as(struct rig *r, uint32_t sender, uint16_t ann_seq, uint32
     };
     uint8_t *b = tx.bytes;
     uint8_t head[] = {
-        0x01, (uint8_t)sender, 0, 0, 0, (uint8_t)ann_seq, 0, 0, 0, 0x03, 0x58, 0x02, 1, 1};
+        0x01, (uint8_t)sender, 0, 0, 0, (uint8_t)ann_seq, 0, 0, 0, 0x01, 0x58, 0x02, 1, 1, 1};
     memcpy(b, head, sizeof head);
     uint8_t rest[] = {0,
                       0,
@@ -500,14 +501,16 @@ static void a_full_ihu_list_leaves_room_for_a_route(void) {
 }
 
 /* A node keeps its promise. Among neighbours enough to suppress it, its quiet intervals double as
- * they go, and the longest silence after an announce stays within what it promised then. */
-static void a_node_announces_within_its_promise(void) {
+ * they go, and the longest silence after an announce stays within what that announce promised.
+ * With a cap low enough, announces are held back and go when the bucket refills - at any point of
+ * an interval, not only its second half. */
+static void keeps_its_promise(double cap) {
     struct rig r;
     rig_init(&r);
     r.rc.imin = TSIM_S(60);
     r.rc.doublings = 3;
     r.rc.redundancy = 1;
-    r.rc.cap = 0.5; /* the cap never the reason for a silence */
+    r.rc.cap = cap;
     build(&r, 5, 15);
     for (uint32_t a = 0; a < 5; a++) {
         for (uint32_t b = a + 1; b < 5; b++) {
@@ -533,6 +536,87 @@ static void a_node_announces_within_its_promise(void) {
     }
     CHECK(kept);
     CHECK(longest > 3 * r.rc.imin); /* it did keep quiet, through doubling intervals */
+    rig_close(&r);
+}
+
+static void a_node_announces_within_its_promise(void) { keeps_its_promise(0.5); }
+
+static void a_node_held_back_by_its_cap_announces_within_its_promise(void) {
+    keeps_its_promise(0.0005);
+}
+
+/* A hub names its twelve neighbours two to a frame, and announces seldom: a round of its IHUs
+ * takes hours, far longer than neighbour_timeout. Its neighbours have to keep the link until the
+ * round comes back to them, not drop it for an IHU merely not yet due again. */
+static void an_ihu_round_longer_than_the_timeout_keeps_the_links(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.ihu_max = 2;
+    r.rc.imin = TSIM_S(60);
+    r.rc.doublings = 3;
+    r.rc.neighbour_timeout = TSIM_S(600);
+    build(&r, 13, 17);
+    for (uint32_t i = 1; i < 13; i++) {
+        link(&r, 0, i, LOSS_LOUD);
+    }
+    tsim_net_start(r.net);
+    /* The first round: until the hub has named every neighbour once. */
+    tsim_time t = 0, named = -1;
+    for (; t < TSIM_S(8 * 3600) && named < 0; t += TSIM_S(60)) {
+        tsim_sched_run_until(r.sched, t);
+        uint32_t linked = 0;
+        for (uint32_t i = 1; i < 13; i++) {
+            linked += tsim_distvec_neighbours(at(&r, i)) == 1;
+        }
+        named = linked == 12 ? t : -1;
+    }
+    CHECK(named >= 0);
+    uint32_t lost = 0;
+    for (; t < named + TSIM_S(6 * 3600); t += TSIM_S(60)) {
+        tsim_sched_run_until(r.sched, t);
+        for (uint32_t i = 1; i < 13; i++) {
+            lost += tsim_distvec_neighbours(at(&r, i)) != 1;
+        }
+    }
+    CHECK_EQ_U64(lost, 0);
+    rig_close(&r);
+}
+
+/* The acknowledgement of a message's first attempt comes while its retry still waits in the
+ * source's queue. Nothing of the message goes on the air once it is answered: the retry is taken
+ * back. */
+static void a_retry_still_queued_when_the_answer_comes_is_taken_back(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.ack_wait = TSIM_MS(100);
+    r.rc.ack_factor = 0;
+    r.rc.jitter = 0;
+    struct tsim_net_params p = tsim_net_defaults(18);
+    p.queue_limit = 0;
+    r.nodes = 3;
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 3, &tsim_distvec, &r.rc, &gate_mac, NULL);
+    link(&r, 0, 1, LOSS_LOUD);
+    link(&r, 1, 2, LOSS_LOUD);
+    gate_node = 0;
+    gate_shut = false;
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    uint32_t next;
+    CHECK(route(&r, 0, 2, &next));
+
+    uint64_t data = frames(&r, 0, TSIM_PURPOSE_DATA);
+    uint64_t m = tsim_net_originate(r.net, 0, 2, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(300) + TSIM_MS(100)); /* the first attempt has gone */
+    gate_shut = true; /* the retry, at 100 ms, waits; the answer comes at about 240 ms */
+    tsim_sched_run_until(r.sched, TSIM_S(302));
+    CHECK(tsim_net_message(r.net, m)->finished);
+    gate_shut = false;
+    tsim_node_transmit(tsim_net_node(r.net, 0));
+    tsim_sched_run_until(r.sched, TSIM_S(330));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA) - data, 1);
+    gate_node = 1;
     rig_close(&r);
 }
 
@@ -749,8 +833,8 @@ static void the_config_is_checked(void) {
     bad = c;
     bad.doublings = 16;
     CHECK(tsim_distvec_check(&bad) != NULL);
-    struct tsim_distvec_config slow = c; /* 8 s to 4.5 h, and promising about 14 h */
-    slow.doublings = 11;
+    struct tsim_distvec_config slow = c; /* 8 s to 2.3 h, and promising about 9 h */
+    slow.doublings = 10;
     CHECK(tsim_distvec_check(&slow) == NULL);
 }
 
@@ -770,6 +854,9 @@ int main(void) {
     RUN(a_full_ihu_list_leaves_room_for_a_route);
     RUN(a_node_announces_within_its_promise);
     RUN(a_retry_taken_back_still_ends_in_an_answer_or_giving_up);
+    RUN(a_node_held_back_by_its_cap_announces_within_its_promise);
+    RUN(an_ihu_round_longer_than_the_timeout_keeps_the_links);
+    RUN(a_retry_still_queued_when_the_answer_comes_is_taken_back);
     RUN(a_leaf_never_forwards);
     RUN(trickle_backs_off_and_resets_on_a_new_neighbour);
     RUN(announces_stay_under_the_cap);
