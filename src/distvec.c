@@ -1434,7 +1434,7 @@ static void hop_fire(void *ctx) {
             h->tries++;
             h->due = -1;
             if (r->config.power) {
-                double p = floor(h->tx.tx_dbm + r->config.step_db), hi = floor(r->config.tx_dbm);
+                double p = ceil(h->tx.tx_dbm + r->config.step_db), hi = floor(r->config.tx_dbm);
                 h->tx.tx_dbm = p > hi ? hi : p;
                 h->tx.bytes[18] = (uint8_t)(int8_t)lround(h->tx.tx_dbm);
             }

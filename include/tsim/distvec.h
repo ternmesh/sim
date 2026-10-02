@@ -191,9 +191,9 @@
  * a whole dB and kept between tx_min_dbm and tx_dbm; at tx_dbm while the floor is unknown. A frame
  * sent on in answer to one received - a relay, or the destination's acknowledgement - goes loud
  * enough, too, for the node it came from, at that frame's floor plus margin_db: that node listens
- * for it, its implicit acknowledgement. Each try a hop sends again goes step_db louder, and a hop
- * given up adds step_db to the neighbour's boost, which one heard passed on takes 1 dB from: a
- * link that loses frames at the power it was given gets more, and gives it back as they get
+ * for it, its implicit acknowledgement. Each try a hop sends again goes step_db louder, rounded up,
+ * and a hop given up adds step_db to the neighbour's boost, which one heard passed on takes 1 dB
+ * from: a link that loses frames at the power it was given gets more, and gives it back as they get
  * through.
  *
  * With power_k, frames for every neighbour - announces, requests and broadcasts - go only as loud

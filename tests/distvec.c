@@ -1178,10 +1178,18 @@ static void a_relay_goes_loud_enough_for_the_hop_before(void) {
 
 /* A link that has got worse since its floor was measured loses the first try, and the second goes
  * step_db louder. */
-static void a_hop_lost_at_its_power_is_tried_again_louder(void) {
+static void lost_and_tried_louder(double step) {
     struct rig r;
     double losses[] = {100, 120, 100};
-    power_rig(&r, 4, losses);
+    rig_init(&r);
+    r.rc.power = true;
+    r.rc.power_k = 0;
+    r.rc.step_db = step;
+    build(&r, 4, 1);
+    for (uint32_t i = 0; i < 3; i++) {
+        link(&r, i, i + 1, losses[i]);
+    }
+    tsim_net_start(r.net);
     tsim_sched_run_until(r.sched, TSIM_S(300));
     CHECK_EQ_I64((int64_t)tsim_distvec_power(at(&r, 1), 2), 6);
     link(&r, 1, 2, 131); /* at 6 dBm, -8 dB: under the floor; at 9 dBm, -5 */
@@ -1192,6 +1200,12 @@ static void a_hop_lost_at_its_power_is_tried_again_louder(void) {
     CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 1);
     CHECK_EQ_U64(frames(&r, 1, TSIM_PURPOSE_RELAY), 2);
     rig_close(&r);
+}
+
+/* A step under a dB still raises a retry by a whole one, which here is what it lacked. */
+static void a_hop_lost_at_its_power_is_tried_again_louder(void) {
+    lost_and_tried_louder(3);
+    lost_and_tried_louder(0.5);
 }
 
 /* With power_k, frames for every neighbour go loud enough for the k with the lowest floors. */
