@@ -46,7 +46,11 @@
  * the sender. A metric of 0xFFFF retracts a route. A table too big for one frame goes out in
  * slices: changed routes first, then the rest in turn, so every route is repeated every so many
  * announces. An announce the node's queue refuses is undone: it is neither numbered nor charged to
- * the cap, and its routes go back on the list of changes, so a retraction is never lost.
+ * the cap, and its routes go back on the list of changes, so a retraction is never lost to the
+ * queue. One lost on the air would leave a neighbour with the route, since routes do not expire,
+ * so a retraction goes in three announces, the first as a change and the others in turn with the
+ * routes; and a node asked to forward towards a destination it retracted, which means the hop
+ * before missed all three, retracts it again.
  *
  * Links. A neighbour is a node whose announces this node hears. Its receive rate d_f is the share
  * of its last 16 announces heard (Babel's hello history), with one more counted missed for every

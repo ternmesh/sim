@@ -12,6 +12,7 @@
 #define FRAME_MAX 255
 #define ROUTES 4 /* kept per destination */
 #define HISTORY 16
+#define RETRACTS 3 /* announces a retraction goes in, in turn with the routes: one may be lost */
 #define HOP_MISS 4 /* announces a frame lost on its way to a next hop counts as missed */
 #define SEEN 256
 #define REQUEST_TRIES 5 /* a starved node asks this many times, request_interval apart */
@@ -96,10 +97,11 @@ struct dest {
     struct entry e[ROUTES];
     uint16_t sel; /* the selected route's slot plus 1, or 0 */
     bool has_fd;
-    bool advertised; /* a finite route to it has been announced, and not retracted since */
-    bool urgent;     /* on the list of changed routes */
-    uint8_t tries;   /* seqno requests sent while starved: 0 when not starved */
-    uint16_t fd_seq; /* the feasibility distance */
+    bool advertised;  /* a finite route to it has been announced, and not retracted since */
+    bool urgent;      /* on the list of changed routes */
+    uint8_t retracts; /* times its retraction is still to go */
+    uint8_t tries;    /* seqno requests sent while starved: 0 when not starved */
+    uint16_t fd_seq;  /* the feasibility distance */
     uint16_t fd_metric;
     uint16_t adv_seq; /* what was last announced */
     uint16_t adv_metric;
@@ -198,12 +200,13 @@ struct router {
     uint32_t *urgent;
     size_t urgent_count;
     size_t urgent_cap;
-    uint32_t cursor;   /* the next destination a slice starts from */
-    uint32_t selected; /* destinations with a selected route */
-    uint16_t promised; /* in its last announce, in seconds */
-    uint16_t round;    /* in its last announce, in frames */
-    bool changed;      /* something this node announces changed: a Trickle inconsistency */
-    bool asked;        /* a seqno request for this node waits on its next announce */
+    uint32_t cursor;     /* the next destination a slice starts from */
+    uint32_t selected;   /* destinations with a selected route */
+    uint32_t retracting; /* destinations with retractions still to go */
+    uint16_t promised;   /* in its last announce, in seconds */
+    uint16_t round;      /* in its last announce, in frames */
+    bool changed;        /* something this node announces changed: a Trickle inconsistency */
+    bool asked;          /* a seqno request for this node waits on its next announce */
 
     tsim_time interval; /* Trickle */
     tsim_time interval_end;
@@ -870,9 +873,20 @@ static bool advertise(struct router *r, uint32_t d, uint8_t *out) {
         ds->advertised = true;
         ds->adv_seq = seq;
         ds->adv_metric = metric;
-    } else if (ds->advertised) {
+        r->retracting -= ds->retracts > 0;
+        ds->retracts = 0;
+    } else if (ds->advertised || ds->retracts) {
+        /* A retraction lost on the air would leave a neighbour with the route for ever - routes
+         * do not expire - so it goes RETRACTS times, the repeats in turn with the routes. */
         seq = ds->adv_seq;
         metric = INF;
+        uint8_t left = (uint8_t)(ds->advertised ? RETRACTS - 1 : ds->retracts - 1);
+        if (left > 0 && ds->retracts == 0) {
+            r->retracting++;
+        } else if (left == 0 && ds->retracts > 0) {
+            r->retracting--;
+        }
+        ds->retracts = left;
         ds->advertised = false;
     } else {
         return false;
@@ -981,7 +995,7 @@ static uint32_t build(struct router *r, uint8_t *b) {
         for (uint32_t k = 0; k < r->nodes && i + ROUTE_LEN <= FRAME_MAX; k++) {
             uint32_t d = r->cursor;
             r->cursor = (r->cursor + 1) % r->nodes;
-            if (d != r->self && r->dest[d].sel && advertise(r, d, b + i)) {
+            if (d != r->self && (r->dest[d].sel || r->dest[d].retracts) && advertise(r, d, b + i)) {
                 i += ROUTE_LEN;
                 routes++;
             }
@@ -999,7 +1013,7 @@ static uint32_t planned(const struct router *r) {
     }
     uint32_t len = ANNOUNCE_HEAD + (uint32_t)(named < ihu_room(r) ? named : ihu_room(r)) * IHU_LEN;
     if (r->infra) {
-        uint64_t routes = (uint64_t)r->urgent_count + r->selected;
+        uint64_t routes = (uint64_t)r->urgent_count + r->selected + r->retracting;
         uint64_t room = (FRAME_MAX - len) / ROUTE_LEN;
         len += (uint32_t)(routes < room ? routes : room) * ROUTE_LEN;
     }
@@ -1606,6 +1620,17 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len) {
     bool data = type == TYPE_DATA;
     if (!route_frame(r, type, src, dst, id, (uint8_t)(hops - 1), b + DATA_HEAD, len - DATA_HEAD,
                      data ? TSIM_PURPOSE_RELAY : TSIM_PURPOSE_CONTROL, data ? id : 0, NULL)) {
+        /* Sent here, so the hop before still has the route: if it had it from this node, its
+         * retraction never got there. Say it again. */
+        struct dest *ds = &r->dest[dst];
+        if (ds->has_fd && !ds->advertised && !ds->urgent) {
+            if (!ds->retracts) {
+                ds->retracts = 1;
+                r->retracting++;
+            }
+            push_urgent(r, dst);
+            trickle_reset(r);
+        }
         starved(r, dst);
     }
 }

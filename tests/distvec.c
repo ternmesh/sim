@@ -321,6 +321,63 @@ static void a_retraction_the_queue_refused_goes_later(void) {
     rig_close(&r);
 }
 
+/* A line of three, announcing quickly, whose far link breaks. Node 1 times node 2 out and retracts
+ * its route; node 0 hears none of node 1's next `lost` announces, the first of them the retraction.
+ */
+static void retract_unheard(struct rig *r, uint64_t seed, uint64_t lost) {
+    rig_init(r);
+    r->rc.imin = TSIM_S(2);
+    r->rc.doublings = 3;
+    r->rc.quiet_max = 0;
+    r->rc.cap = 0.05;
+    r->rc.neighbour_timeout = TSIM_S(120);
+    line(r, 3, seed);
+    tsim_sched_run_until(r->sched, TSIM_S(300));
+    uint32_t next;
+    CHECK(route(r, 0, 2, &next));
+    link(r, 1, 2, LOSS_NONE);
+    while (route(r, 1, 2, &next) && tsim_sched_now(r->sched) < TSIM_S(900)) {
+        tsim_sched_run_until(r->sched, tsim_sched_now(r->sched) + TSIM_MS(20));
+    }
+    CHECK(!route(r, 1, 2, &next));
+    struct tsim_phy *phy = tsim_net_phy(r->net);
+    tsim_phy_set_loss_from(phy, 1, 0, LOSS_NONE);
+    uint64_t until = frames(r, 1, TSIM_PURPOSE_ANNOUNCE) + lost;
+    struct tsim_node *one = tsim_net_node(r->net, 1);
+    while (frames(r, 1, TSIM_PURPOSE_ANNOUNCE) < until || tsim_node_sending(one)) {
+        tsim_sched_run_until(r->sched, tsim_sched_now(r->sched) + TSIM_MS(20));
+    }
+    tsim_phy_set_loss_from(phy, 1, 0, LOSS_LOUD);
+}
+
+/* The retraction is lost on the air. Routes do not expire, so node 0 would keep its route through
+ * node 1 for ever: the retraction has to be said again. */
+static void a_retraction_lost_on_the_air_is_repeated(void) {
+    struct rig r;
+    retract_unheard(&r, 23, 1);
+    tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + TSIM_S(300));
+    uint32_t next;
+    CHECK(!route(&r, 0, 2, &next));
+    CHECK(route(&r, 0, 1, &next));
+    rig_close(&r);
+}
+
+/* Every time node 1 retracts, node 0 misses it. Node 0 still has the route; the first message it
+ * sends along it finds the dead end, and node 1 retracts again. */
+static void a_message_into_a_dead_end_brings_the_retraction_again(void) {
+    struct rig r;
+    retract_unheard(&r, 24, 3);
+    tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + TSIM_S(300));
+    uint32_t next;
+    CHECK(route(&r, 0, 2, &next)); /* stale */
+    CHECK(route(&r, 0, 1, &next));
+    tsim_net_originate(r.net, 0, 2, 20);
+    tsim_sched_run_until(r.sched, tsim_sched_now(r.sched) + TSIM_S(60));
+    CHECK(!route(&r, 0, 2, &next));
+    CHECK(route(&r, 0, 1, &next));
+    rig_close(&r);
+}
+
 /* Node 1 sends an announce as if from `sender`, which it is not: a sender is only bytes in the
  * header, so one radio can stand in for any number of neighbours. The frame is infrastructure's,
  * promises another within ten minutes, names node 0 as heard in a round of one frame, and carries
@@ -924,6 +981,8 @@ int main(void) {
     RUN(an_ihu_lost_is_sent_again_in_turn);
     RUN(a_link_gone_one_way_is_dropped_by_the_side_still_hearing);
     RUN(a_retraction_the_queue_refused_goes_later);
+    RUN(a_retraction_lost_on_the_air_is_repeated);
+    RUN(a_message_into_a_dead_end_brings_the_retraction_again);
     RUN(a_newer_route_displaces_infeasible_cheaper_ones);
     RUN(announces_the_queue_refused_are_not_counted_missed);
     RUN(a_change_after_announcing_at_imin_waits_no_longer_than_imin);
