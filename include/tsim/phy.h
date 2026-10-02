@@ -163,6 +163,28 @@ bool tsim_phy_transmitting(const struct tsim_phy *phy, uint32_t node);
 /* Whether the node is part-way through receiving a frame. */
 bool tsim_phy_receiving(const struct tsim_phy *phy, uint32_t node);
 
+/* Whether the radio's carrier flags are up, which is how an SX126x driver tells that the channel is
+ * busy: preamble detected, from the start of a reception, then header valid, from when the frame's
+ * header is demodulated. A driver clears both on reading the packet, so this is
+ * tsim_phy_receiving() - unless the header flag is held, when asking is the driver looking, and
+ * may clear it. */
+bool tsim_phy_carrier(struct tsim_phy *phy, uint32_t node);
+
+/* Holds a node's header flag, as a radio that never clears it when the driver reads a packet would
+ * leave it. A reception that begins while the flag is clear sets it at the frame's header - its
+ * preamble raising the carrier until then - and it stays set whatever is heard after. Only the
+ * driver's stale-flag timeout clears it: a look that finds it set for longer than `hold` clears
+ * both flags and reads the channel clear, and so does every later look until a reception that
+ * begins after that one. 0 releases the hold; the flag starts clear either way.
+ *
+ * The flag goes up by timing alone, once the reception has lasted to the header, as MeshBench's
+ * virtual SX1262 raises it "after the LoRa header would have been demodulated": a header a
+ * collision spoils sets it too. A real radio would need the header to get through, but its driver
+ * clears the flag on reading, so only a hold - which exists to reproduce MeshBench - sees the
+ * difference. Checking the header against the interference over it puts rx outside the MeshBench
+ * check's limit, for both a sender and an arm. */
+void tsim_phy_hold_header(struct tsim_phy *phy, uint32_t node, tsim_time hold);
+
 /* Channel activity detection, as answered at this instant: whether a frame the node could decode
  * - its tuning, loud enough, give or take cad_margin_db - has been on the air for cad_delay.
  * Frames on other SFs are invisible to it, however loud. False while transmitting or retuning. */

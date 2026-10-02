@@ -426,6 +426,15 @@ static const char *meshcore_mac_set(void *config, const char *key, const char *v
                    ? NULL
                    : "expected a factor from 0 to 1000000";
     }
+    if (strcmp(key, "latched_header") == 0) {
+        if (strcmp(value, "no") == 0) {
+            c->latched_header = 0;
+            return NULL;
+        }
+        return parse_time(value, &c->latched_header) && c->latched_header > 0
+                   ? NULL
+                   : "expected a time above 0, or no";
+    }
     return "is not a setting of meshcore";
 }
 

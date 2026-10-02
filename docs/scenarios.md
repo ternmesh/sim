@@ -122,6 +122,7 @@ default.
 | `routing.cancel_heard` (`meshcore`) | `no` | not MeshCore's: MeshBench's idea of dropping a relay on hearing another node relay the packet first, while it waits out its receive delay (`waiting`) or until it is sent (`queued`) |
 | `routing.estimate_cr` (`meshcore`) | `radio` | the coding rate the firmware reckons its delays and timeouts from; MeshBench's firmware reckons at 4/5 (`1`) whatever the air runs at |
 | `mac.airtime_factor` (`meshcore`) | 1 | the duty cycle budget is 1/(1 + this) of an hour |
+| `mac.latched_header` (`meshcore`) | `no` | not MeshCore's: how long the radio's header flag stays set once a header sets it, as on MeshBench, whose radio never clears it on reading a packet; MeshCore's driver then times it out after `3934 ms` |
 
 The routing and the MAC each keep their own copy of the window: the routing sizes its
 acknowledgement wait by it. Settings that bound each other, such as `cw_min` and `cw_max`, are

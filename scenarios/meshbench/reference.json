@@ -1,11 +1,20 @@
 {
  "meshbench": "v0.1.0",
  "fixture": "fixture-fife-strict.json",
- "sender": 46,
- "message_bytes": 44,
  "send_at_s": 25,
+ "senders": [
+  {
+   "node": 46,
+   "message_bytes": 44
+  },
+  {
+   "node": 54,
+   "message_bytes": 42
+  }
+ ],
  "cases": [
   {
+   "sender": 46,
    "arm": "control",
    "seed": 1,
    "tx": 39,
@@ -13,6 +22,7 @@
    "rx": 85
   },
   {
+   "sender": 46,
    "arm": "control",
    "seed": 2,
    "tx": 43,
@@ -20,6 +30,7 @@
    "rx": 119
   },
   {
+   "sender": 46,
    "arm": "control",
    "seed": 3,
    "tx": 42,
@@ -27,6 +38,7 @@
    "rx": 68
   },
   {
+   "sender": 46,
    "arm": "control",
    "seed": 4,
    "tx": 43,
@@ -34,6 +46,7 @@
    "rx": 108
   },
   {
+   "sender": 46,
    "arm": "control",
    "seed": 5,
    "tx": 37,
@@ -41,6 +54,7 @@
    "rx": 75
   },
   {
+   "sender": 46,
    "arm": "control",
    "seed": 6,
    "tx": 37,
@@ -48,6 +62,7 @@
    "rx": 72
   },
   {
+   "sender": 46,
    "arm": "control",
    "seed": 7,
    "tx": 45,
@@ -55,6 +70,7 @@
    "rx": 121
   },
   {
+   "sender": 46,
    "arm": "control",
    "seed": 8,
    "tx": 42,
@@ -62,6 +78,7 @@
    "rx": 119
   },
   {
+   "sender": 46,
    "arm": "rx_delay",
    "seed": 1,
    "tx": 41,
@@ -69,6 +86,7 @@
    "rx": 115
   },
   {
+   "sender": 46,
    "arm": "rx_delay",
    "seed": 2,
    "tx": 43,
@@ -76,6 +94,7 @@
    "rx": 120
   },
   {
+   "sender": 46,
    "arm": "rx_delay",
    "seed": 3,
    "tx": 42,
@@ -83,6 +102,7 @@
    "rx": 119
   },
   {
+   "sender": 46,
    "arm": "rx_delay",
    "seed": 4,
    "tx": 41,
@@ -90,6 +110,7 @@
    "rx": 98
   },
   {
+   "sender": 46,
    "arm": "rx_delay",
    "seed": 5,
    "tx": 44,
@@ -97,6 +118,7 @@
    "rx": 115
   },
   {
+   "sender": 46,
    "arm": "rx_delay",
    "seed": 6,
    "tx": 45,
@@ -104,6 +126,7 @@
    "rx": 144
   },
   {
+   "sender": 46,
    "arm": "rx_delay",
    "seed": 7,
    "tx": 45,
@@ -111,11 +134,140 @@
    "rx": 154
   },
   {
+   "sender": 46,
    "arm": "rx_delay",
    "seed": 8,
    "tx": 36,
    "reached": 44,
    "rx": 69
+  },
+  {
+   "sender": 54,
+   "arm": "control",
+   "seed": 1,
+   "tx": 42,
+   "reached": 51,
+   "rx": 87
+  },
+  {
+   "sender": 54,
+   "arm": "control",
+   "seed": 2,
+   "tx": 39,
+   "reached": 45,
+   "rx": 62
+  },
+  {
+   "sender": 54,
+   "arm": "control",
+   "seed": 3,
+   "tx": 43,
+   "reached": 51,
+   "rx": 88
+  },
+  {
+   "sender": 54,
+   "arm": "control",
+   "seed": 4,
+   "tx": 45,
+   "reached": 54,
+   "rx": 117
+  },
+  {
+   "sender": 54,
+   "arm": "control",
+   "seed": 5,
+   "tx": 40,
+   "reached": 45,
+   "rx": 92
+  },
+  {
+   "sender": 54,
+   "arm": "control",
+   "seed": 6,
+   "tx": 45,
+   "reached": 54,
+   "rx": 122
+  },
+  {
+   "sender": 54,
+   "arm": "control",
+   "seed": 7,
+   "tx": 42,
+   "reached": 51,
+   "rx": 126
+  },
+  {
+   "sender": 54,
+   "arm": "control",
+   "seed": 8,
+   "tx": 43,
+   "reached": 52,
+   "rx": 117
+  },
+  {
+   "sender": 54,
+   "arm": "rx_delay",
+   "seed": 1,
+   "tx": 45,
+   "reached": 54,
+   "rx": 124
+  },
+  {
+   "sender": 54,
+   "arm": "rx_delay",
+   "seed": 2,
+   "tx": 45,
+   "reached": 54,
+   "rx": 148
+  },
+  {
+   "sender": 54,
+   "arm": "rx_delay",
+   "seed": 3,
+   "tx": 38,
+   "reached": 42,
+   "rx": 60
+  },
+  {
+   "sender": 54,
+   "arm": "rx_delay",
+   "seed": 4,
+   "tx": 45,
+   "reached": 54,
+   "rx": 114
+  },
+  {
+   "sender": 54,
+   "arm": "rx_delay",
+   "seed": 5,
+   "tx": 43,
+   "reached": 48,
+   "rx": 135
+  },
+  {
+   "sender": 54,
+   "arm": "rx_delay",
+   "seed": 6,
+   "tx": 39,
+   "reached": 46,
+   "rx": 81
+  },
+  {
+   "sender": 54,
+   "arm": "rx_delay",
+   "seed": 7,
+   "tx": 43,
+   "reached": 52,
+   "rx": 139
+  },
+  {
+   "sender": 54,
+   "arm": "rx_delay",
+   "seed": 8,
+   "tx": 45,
+   "reached": 54,
+   "rx": 144
   }
  ]
 }

@@ -541,6 +541,12 @@ bool tsim_node_receiving(const struct tsim_node *nd) {
     return tsim_phy_receiving(nd->net->phy, nd->index);
 }
 
+bool tsim_node_carrier(struct tsim_node *nd) { return tsim_phy_carrier(nd->net->phy, nd->index); }
+
+void tsim_node_hold_header(struct tsim_node *nd, tsim_time hold) {
+    tsim_phy_hold_header(nd->net->phy, nd->index, hold);
+}
+
 bool tsim_node_tune(struct tsim_node *nd, uint16_t channel, const struct tsim_lora *listen) {
     return tsim_phy_tune(nd->net->phy, nd->index, channel, listen);
 }

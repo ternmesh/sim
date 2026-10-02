@@ -214,6 +214,7 @@ static void problems_say_where_they_are(void) {
          "no, waiting or queued"},
         {"nodes = 2\nrouting = meshcore\nmac = meshcore\nmac.airtime_factor = -1\n", 4,
          "from 0 to 1000000"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nmac.latched_header = 0 s\n", 4, "or no"},
         {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.closed = sometimes\n", 4, "yes or no"},
         {"nodes = 2\n\n# a comment\njust some words\n", 4, "key = value"},
         {"nodes = 2\n = 3\n", 2, "no setting"},
@@ -391,6 +392,7 @@ static void meshcore_settings_read(void) {
     CHECK(r->cancel_heard == TSIM_MESHCORE_CANCEL_NO);
     CHECK(r->advert_interval == TSIM_S(120) && r->estimate_cr == 0);
     CHECK(((const struct tsim_meshcore_mac_config *)s.mac_config)->airtime_factor == 1.0);
+    CHECK(((const struct tsim_meshcore_mac_config *)s.mac_config)->latched_header == 0);
 
     CHECK(parse(&s, "nodes = 2\nrouting = meshcore\nmac = meshcore\nradio.sf = 8\n"
                     "routing.relays = 0-45,50\nrouting.hash_size = 2\nrouting.scoped = no\n"
@@ -398,7 +400,7 @@ static void meshcore_settings_read(void) {
                     "routing.tx_delay_factor = 1\nrouting.direct_tx_delay_factor = 0\n"
                     "routing.retries = 0\nrouting.advert_interval = none\n"
                     "routing.cancel_heard = waiting\nrouting.estimate_cr = 1\n"
-                    "mac.airtime_factor = 9\n"));
+                    "mac.airtime_factor = 9\nmac.latched_header = 3934 ms\n"));
     r = meshcore_of(&s);
     CHECK(strcmp(r->relays, "0-45,50") == 0 && r->hash_size == 2 && !r->scoped);
     CHECK(r->flood_max == 8 && r->rx_delay_base == 10 && r->tx_delay_factor == 1);
@@ -406,6 +408,10 @@ static void meshcore_settings_read(void) {
     CHECK(r->cancel_heard == TSIM_MESHCORE_CANCEL_WAITING);
     CHECK(r->advert_interval == 0 && r->estimate_cr == 1 && r->lora.sf == 8);
     CHECK(((const struct tsim_meshcore_mac_config *)s.mac_config)->airtime_factor == 9.0);
+    CHECK(((const struct tsim_meshcore_mac_config *)s.mac_config)->latched_header == TSIM_MS(3934));
+    CHECK(parse(&s, "nodes = 2\nrouting = meshcore\nmac = meshcore\n"
+                    "mac.latched_header = 1 s\nmac.latched_header = no\n"));
+    CHECK(((const struct tsim_meshcore_mac_config *)s.mac_config)->latched_header == 0);
     CHECK(parse(&s, "nodes = 2\nrouting = meshcore\nmac = meshcore\n"
                     "routing.estimate_cr = 2\nrouting.estimate_cr = radio\n"));
     CHECK(meshcore_of(&s)->estimate_cr == 0);

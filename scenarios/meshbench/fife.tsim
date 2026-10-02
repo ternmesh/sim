@@ -23,6 +23,9 @@ routing.scoped = no
 routing.advert_interval = none
 # MeshBench's firmware reckons every airtime at 4/5, whatever the air runs at.
 routing.estimate_cr = 1
+# And its radio never clears the header flag on reading a packet, so the channel reads busy until
+# MeshCore's driver times the flag out.
+mac.latched_header = 3934 ms
 # A repeater's packet pool.
 queue = 32
 

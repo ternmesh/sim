@@ -217,6 +217,11 @@ bool tsim_node_cad(const struct tsim_node *node);
 /* Whether the radio is part-way through receiving a frame. */
 bool tsim_node_receiving(const struct tsim_node *node);
 
+/* Whether the radio's carrier flags are up, and holding its header flag; see tsim_phy_carrier()
+ * and tsim_phy_hold_header(). */
+bool tsim_node_carrier(struct tsim_node *node);
+void tsim_node_hold_header(struct tsim_node *node, tsim_time hold);
+
 /* Time the radio has spent transmitting, and receiving, up to now: what a radio's own channel
  * utilisation counter sees. A frame part-way out or in counts for the part gone by; see
  * tsim_phy_rx_airtime() for which receptions count. */

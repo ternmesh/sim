@@ -33,6 +33,9 @@ struct node {
     uint32_t unsettled_cap;
     struct tsim_event wake; /* TRANSMIT: the frame's end; RETUNE: listening again */
     struct tsim_phy_stats stats;
+    tsim_time header_due;  /* RECEIVE: when that frame's header is demodulated */
+    tsim_time header_hold; /* see tsim_phy_hold_header(); 0 for none */
+    tsim_time header_set;  /* with a hold: when the header flag was set, or -1 */
 };
 
 /* A frame a radio counted as missed, taken from it or cut short, but whose preamble is not yet
@@ -114,9 +117,20 @@ static bool can_lock(const struct tsim_phy *phy, const struct tsim_frame *f, tsi
     return now <= lock_by(phy, f);
 }
 
-/* Charges the time a reception that is ending spent on its frame. */
+/* When a frame's explicit header has been demodulated: the preamble, the 4.25 symbols of sync
+ * word and start of frame, and the header's 8 symbols. */
+static tsim_time header_end(const struct tsim_frame *f) {
+    return f->start + tsim_lora_symbol(&f->lora) * (4 * (tsim_time)f->lora.preamble + 49) / 4;
+}
+
+/* Charges the time a reception that is ending spent on its frame. One that ends before its header
+ * takes back the held header flag it would have set. */
 static void count_reception(struct node *nd) {
-    nd->stats.rx_airtime += tsim_sched_now(nd->phy->sched) - nd->since;
+    tsim_time now = tsim_sched_now(nd->phy->sched);
+    nd->stats.rx_airtime += now - nd->since;
+    if (now < nd->header_due && nd->header_set == nd->header_due) {
+        nd->header_set = -1;
+    }
 }
 
 static void sync_to(struct node *nd, const struct tsim_frame *f, double dbm) {
@@ -126,6 +140,10 @@ static void sync_to(struct node *nd, const struct tsim_frame *f, double dbm) {
     nd->frame_dbm = dbm;
     nd->since = now;
     nd->lock_at = now + tsim_lora_symbol(&f->lora) * (tsim_time)nd->phy->params.lock_symbols;
+    nd->header_due = header_end(f);
+    if (nd->header_hold > 0 && nd->header_set < 0) {
+        nd->header_set = nd->header_due; /* once it gets there */
+    }
 }
 
 /* Forgets the outcomes of frames that can no longer be caught: they stand. */
@@ -431,6 +449,7 @@ struct tsim_phy *tsim_phy_create(struct tsim_sched *sched, const struct tsim_phy
             .state = LISTEN,
             .channel = channel,
             .tuned = *listen_on,
+            .header_set = -1,
         };
     }
     return phy;
@@ -587,6 +606,31 @@ bool tsim_phy_transmitting(const struct tsim_phy *phy, uint32_t node) {
 
 bool tsim_phy_receiving(const struct tsim_phy *phy, uint32_t node) {
     return phy->nodes[node].state == RECEIVE;
+}
+
+void tsim_phy_hold_header(struct tsim_phy *phy, uint32_t node, tsim_time hold) {
+    struct node *nd = &phy->nodes[node];
+    nd->header_hold = hold > 0 ? hold : 0;
+    nd->header_set = -1;
+}
+
+bool tsim_phy_carrier(struct tsim_phy *phy, uint32_t node) {
+    struct node *nd = &phy->nodes[node];
+    if (nd->header_hold == 0) {
+        return nd->state == RECEIVE;
+    }
+    tsim_time now = tsim_sched_now(phy->sched);
+    if (nd->header_set < 0) {
+        return false; /* anything it is on began before the flags were last cleared */
+    }
+    if (now < nd->header_set) {
+        return true; /* the preamble of the reception that will set it */
+    }
+    if (now - nd->header_set > nd->header_hold) {
+        nd->header_set = -1;
+        return false;
+    }
+    return true;
 }
 
 bool tsim_phy_cad(const struct tsim_phy *phy, uint32_t node) {

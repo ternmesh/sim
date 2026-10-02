@@ -180,6 +180,30 @@ static void a_flood_relay_waits_up_to_five_halves_of_its_airtime(void) {
     CHECK(longest > 4 * t); /* the window is used to its end */
 }
 
+/* With MeshBench's latched header flag, the relay finds the channel busy from the first frame's
+ * header, 12.25 symbols after its preamble, until the flag times out, and goes at the first look
+ * after that: 120 to 360 ms later at most. */
+static void a_latched_header_holds_the_relay_until_the_flag_times_out(void) {
+    struct tsim_lora l = lora();
+    tsim_time hold = TSIM_MS(3934);
+    tsim_time header = tsim_lora_symbol(&l) * (4 * (tsim_time)l.preamble + 49) / 4;
+    for (uint64_t seed = 1; seed <= 10; seed++) {
+        struct rig r;
+        rig_init(&r);
+        r.mc.latched_header = hold;
+        line(&r, 3, seed);
+        uint64_t b = tsim_net_originate(r.net, 0, TSIM_BROADCAST, 20);
+        tsim_sched_run_until(r.sched, TSIM_S(60));
+        const struct tsim_message_record *m = tsim_net_message(r.net, b);
+        CHECK_EQ_U64(m->delivered, 2);
+        tsim_time sent = m->first - tsim_lora_airtime(&l, broadcast_len(20, 0));
+        tsim_time relayed = m->last - tsim_lora_airtime(&l, broadcast_len(20, 1));
+        CHECK(relayed > sent + header + hold);
+        CHECK(relayed <= sent + header + hold + TSIM_MS(360));
+        rig_close(&r);
+    }
+}
+
 /* Heard at about -7 dB on SF7, a flood scores about 0.045, and with a base of 10 waits
  * (10^(0.85 - score) - 1) airtimes before it is even looked at - delivered to its application
  * then, too. */
@@ -550,6 +574,9 @@ static void bad_configs_are_refused(void) {
     }
     mc.airtime_factor = -1;
     CHECK(tsim_net_create(sched, &p, 2, &tsim_meshcore, &ok, &tsim_meshcore_mac, &mc) == NULL);
+    mc = tsim_meshcore_mac_default();
+    mc.latched_header = -1;
+    CHECK(tsim_net_create(sched, &p, 2, &tsim_meshcore, &ok, &tsim_meshcore_mac, &mc) == NULL);
     tsim_sched_destroy(sched);
 
     CHECK(tsim_meshcore_relays_valid("all"));
@@ -581,6 +608,7 @@ int main(void) {
     RUN(a_flood_goes_no_further_than_flood_max);
     RUN(a_flood_stops_at_the_most_hops_its_count_holds);
     RUN(a_flood_relay_waits_up_to_five_halves_of_its_airtime);
+    RUN(a_latched_header_holds_the_relay_until_the_flag_times_out);
     RUN(a_faint_flood_waits_out_its_receive_delay);
     RUN(hearing_a_relay_cancels_a_queued_one_only_when_queued);
     RUN(a_flood_heard_again_while_it_waits_is_not_relayed);

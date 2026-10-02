@@ -750,6 +750,107 @@ static void tune_now(struct tsim_sched *s, void *ctx) {
 }
 
 /* The time a radio spends on frames it is receiving, however each reception ends. */
+/* Without a hold, the carrier flags are up exactly while the radio is receiving: the driver clears
+ * them on reading the packet. */
+static void the_carrier_is_the_reception_without_a_hold(void) {
+    struct world *w = world_new(2, NULL);
+    arrive(w, 1, 0, -86.0);
+    CHECK(!tsim_phy_carrier(w->phy, 0));
+    tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    for (tsim_time t = TSIM_MS(1); t < TSIM_MS(60); t += TSIM_MS(1)) {
+        tsim_sched_run_until(w->sched, t);
+        CHECK(tsim_phy_carrier(w->phy, 0) == tsim_phy_receiving(w->phy, 0));
+    }
+    CHECK(!tsim_phy_carrier(w->phy, 0));
+    CHECK(!tsim_phy_carrier(w->phy, 1)); /* sending is not receiving */
+    world_free(w);
+}
+
+/* A held header flag. The header of a 16-byte SF7 frame is demodulated 20.25 symbols in, at
+ * 20.736 ms; with a hold of 100 ms the flag stays up until 120.736 ms, long after the frame. A
+ * second frame, begun while it is up, does not extend it: the look that times the flag out reads
+ * the channel clear, and so do the looks after it, though the radio is still on that frame. A
+ * third, begun after, sets it again. */
+static void a_held_header_flag_stays_up_for_the_hold_from_the_first_header(void) {
+    struct world *w = world_new(2, NULL);
+    arrive(w, 1, 0, -86.0);
+    tsim_phy_hold_header(w->phy, 0, TSIM_MS(100));
+    struct send a, b, c;
+    send_at(w, &a, 0, 1, &w->sf7);
+    send_at(w, &b, TSIM_MS(90), 1, &w->sf7);
+    b.len = 200;
+    send_at(w, &c, TSIM_MS(500), 1, &w->sf7);
+
+    tsim_sched_run_until(w->sched, TSIM_MS(10));
+    CHECK(tsim_phy_carrier(w->phy, 0)); /* the preamble */
+    tsim_sched_run_until(w->sched, TSIM_MS(60));
+    CHECK(!tsim_phy_receiving(w->phy, 0));
+    CHECK(tsim_phy_carrier(w->phy, 0)); /* the frame has gone, the flag has not */
+    tsim_sched_run_until(w->sched, TSIM_NS(120736000));
+    CHECK(tsim_phy_carrier(w->phy, 0));
+    tsim_sched_run_until(w->sched, TSIM_NS(120736001));
+    CHECK(tsim_phy_receiving(w->phy, 0)); /* b */
+    CHECK(!tsim_phy_carrier(w->phy, 0));
+    tsim_sched_run_until(w->sched, TSIM_MS(130));
+    CHECK(tsim_phy_receiving(w->phy, 0));
+    CHECK(!tsim_phy_carrier(w->phy, 0));
+
+    tsim_sched_run_until(w->sched, TSIM_MS(510));
+    CHECK(tsim_phy_carrier(w->phy, 0)); /* c's preamble */
+    tsim_sched_run_until(w->sched, TSIM_NS(620736000));
+    CHECK(tsim_phy_carrier(w->phy, 0));
+    tsim_sched_run_until(w->sched, TSIM_NS(620736001));
+    CHECK(!tsim_phy_carrier(w->phy, 0));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_ok, 3);
+    world_free(w);
+}
+
+/* The flag is timed out only when looked at. Looked at first in the preamble of a frame that began
+ * long after the flag was set, it is found stale and cleared, and that frame does not set it. */
+static void a_stale_header_flag_clears_when_first_looked_at(void) {
+    struct world *w = world_new(2, NULL);
+    arrive(w, 1, 0, -86.0);
+    tsim_phy_hold_header(w->phy, 0, TSIM_MS(100));
+    struct send a, c;
+    send_at(w, &a, 0, 1, &w->sf7);
+    send_at(w, &c, TSIM_MS(500), 1, &w->sf7);
+    tsim_sched_run_until(w->sched, TSIM_MS(510));
+    CHECK(tsim_phy_receiving(w->phy, 0));
+    CHECK(!tsim_phy_carrier(w->phy, 0));
+    tsim_sched_run_until(w->sched, TSIM_MS(530));
+    CHECK(!tsim_phy_carrier(w->phy, 0));
+    world_free(w);
+}
+
+/* The held flag goes up by timing, as MeshBench's radio raises it: two frames 2 dB apart from the
+ * same instant spoil each other, header and all, and the one the receiver is on still sets it. */
+static void a_held_header_flag_is_set_by_timing_even_through_a_collision(void) {
+    struct world *w = world_new(3, NULL);
+    arrive(w, 1, 0, -80.0);
+    arrive(w, 2, 0, -82.0);
+    tsim_phy_hold_header(w->phy, 0, TSIM_MS(100));
+    tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_phy_transmit(w->phy, 2, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_sched_run_until(w->sched, TSIM_MS(60));
+    CHECK_EQ_I64(tsim_phy_stats(w->phy, 0)->rx_lost, 1);
+    CHECK(tsim_phy_carrier(w->phy, 0));
+    world_free(w);
+}
+
+/* A reception cut short before its header sets nothing. */
+static void a_reception_cut_short_before_its_header_sets_no_flag(void) {
+    struct world *w = world_new(2, NULL);
+    arrive(w, 1, 0, -86.0);
+    tsim_phy_hold_header(w->phy, 0, TSIM_MS(100));
+    tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_sched_run_until(w->sched, TSIM_MS(10));
+    tsim_phy_transmit(w->phy, 0, 0, &w->sf7, 16, TX_DBM, NULL); /* aborts it */
+    tsim_sched_run_until(w->sched, TSIM_MS(70));
+    CHECK(!tsim_phy_transmitting(w->phy, 0));
+    CHECK(!tsim_phy_carrier(w->phy, 0));
+    world_free(w);
+}
+
 static void rx_airtime_counts_every_reception_however_it_ends(void) {
     /* Decoded, and part-way through. */
     struct world *w = world_new(2, NULL);
@@ -1041,6 +1142,11 @@ int main(void) {
     RUN(refuses_a_frame_past_the_end_of_the_clock);
     RUN(destroy_cancels_pending_radio_events);
     RUN(rx_airtime_counts_every_reception_however_it_ends);
+    RUN(the_carrier_is_the_reception_without_a_hold);
+    RUN(a_held_header_flag_stays_up_for_the_hold_from_the_first_header);
+    RUN(a_stale_header_flag_clears_when_first_looked_at);
+    RUN(a_held_header_flag_is_set_by_timing_even_through_a_collision);
+    RUN(a_reception_cut_short_before_its_header_sets_no_flag);
     RUN(pairwise_takes_interferers_one_at_a_time);
     RUN(pairwise_does_not_weigh_by_overlap);
     RUN(pairwise_ignores_what_the_receiver_could_not_hear);
