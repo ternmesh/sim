@@ -616,6 +616,7 @@ static void defaults(struct tsim_scenario *s) {
         .len_min = 32,
         .len_max = 32,
         .broadcast = 1.0,
+        .reply_delay = TSIM_S(2 * 60),
         .warmup = 0,
         .duration = TSIM_S(3600),
         .deadline = TSIM_S(60),
@@ -884,6 +885,20 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     if (strcmp(key, "traffic.closed") == 0) {
         return parse_yes_no(v, &s->closed) ? NULL : "expected yes or no";
     }
+    if (strcmp(key, "traffic.peers") == 0) {
+        uint64_t peers;
+        if (!parse_u64(v, UINT32_MAX - 1, &peers)) {
+            return "expected a count of nodes, 0 for anyone";
+        }
+        s->peers = (uint32_t)peers;
+        return NULL;
+    }
+    if (strcmp(key, "traffic.reply") == 0) {
+        return parse_fraction(v, &s->reply) ? NULL : "expected a fraction from 0 to 1";
+    }
+    if (strcmp(key, "traffic.reply_delay") == 0) {
+        return parse_time(v, &s->reply_delay) ? NULL : "expected a time, such as 2 min";
+    }
     return "is not a setting";
 }
 
@@ -1036,6 +1051,15 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
         } else if (send->src == send->dst) {
             ok = fail(err, 0, "traffic.send %" PRIu32 " is from a node to itself", i + 1);
         }
+    }
+    if (ok && s->peers > s->nodes - 1) {
+        ok = fail(err, 0, "traffic.peers is %" PRIu32 ", more than the %" PRIu32 " other nodes",
+                  s->peers, s->nodes - 1);
+    }
+    if (ok && s->reply > 0 && s->closed) {
+        ok = fail(err, 0,
+                  "traffic.reply needs traffic.closed = no: an answer would start no gap, and "
+                  "the closed loop has no gap for it to wait on");
     }
     if (ok && !(extent(s) / s->channel.decorrelation_m <= 1e9)) {
         ok = fail(err, 0,
@@ -1328,6 +1352,9 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         .stop = s->warmup + s->duration,
         .seed = s->seed,
         .closed = s->closed,
+        .peers = s->peers,
+        .reply = s->reply,
+        .reply_delay = s->reply_delay,
         .sends = s->sends,
         .send_count = s->send_count,
     };

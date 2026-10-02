@@ -216,6 +216,14 @@ static void problems_say_where_they_are(void) {
          "from 0 to 1000000"},
         {"nodes = 2\nrouting = meshcore\nmac = meshcore\nmac.latched_header = 0 s\n", 4, "or no"},
         {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.closed = sometimes\n", 4, "yes or no"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.peers = -1\n", 4, "count of nodes"},
+        {"nodes = 3\nrouting = flood\nmac = aloha\ntraffic.peers = 3\n", 0,
+         "traffic.peers is 3, more than the 2 other nodes"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.reply = 2\n", 4, "fraction"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.reply_delay = soon\n", 4,
+         "expected a time"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.reply = 0.5\ntraffic.closed = yes\n", 0,
+         "traffic.reply needs traffic.closed = no"},
         {"nodes = 2\n\n# a comment\njust some words\n", 4, "key = value"},
         {"nodes = 2\n = 3\n", 2, "no setting"},
         {"nodes = 2\nseed =   # nothing\n", 2, "seed has no value"},
@@ -335,6 +343,21 @@ static void a_run_relays_across_its_map(void) {
     CHECK(rep.frames[TSIM_PURPOSE_RELAY] > 0);
     CHECK(rep.broadcast.delivered > rep.broadcast.wanted / 2);
     CHECK(rep.on_time_per_airtime_s > 0);
+}
+
+/* Peers and answers reach the traffic: four nodes with one peer each, every unicast answered. */
+static void a_run_talks_to_its_peers_and_answers(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 4\nrouting = flood\nmac = aloha\ntraffic.broadcast = 0\n"
+                    "traffic.peers = 1\ntraffic.reply = 1\ntraffic.reply_delay = 5 s\n"
+                    "traffic.interval = 10 min\nduration = 2 h\n"));
+    CHECK(s.peers == 1 && s.reply == 1.0 && s.reply_delay == TSIM_S(5));
+    struct tsim_report rep;
+    CHECK(tsim_scenario_run(&s, &rep));
+    /* 48 expected, and as many answers, less those past the end. */
+    CHECK(rep.unicast.messages > 60 && rep.unicast.messages < 140);
+    CHECK(parse(&s, "nodes = 4\nrouting = flood\nmac = aloha\n"));
+    CHECK(s.peers == 0 && s.reply == 0.0 && s.reply_delay == TSIM_S(120));
 }
 
 /* A line 2 km apart at 20 dBm: each node decodes those two hops away, not three, so the ends
@@ -618,6 +641,7 @@ int main(void) {
     RUN(meshtastic_settings_read_in_any_order);
     RUN(a_run_relays_across_its_map);
     RUN(a_run_reports_its_links);
+    RUN(a_run_talks_to_its_peers_and_answers);
     RUN(a_meshtastic_run_floods_a_line);
     RUN(a_run_repeats_with_its_seed);
     RUN(compatibility_settings_read);

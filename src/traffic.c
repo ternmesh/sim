@@ -11,6 +11,16 @@ struct source {
     uint32_t node;
     struct tsim_rng rng;
     struct tsim_event next;
+    uint32_t *peers; /* into tsim_traffic.peer_list */
+    uint32_t peer_count;
+};
+
+/* An answer waiting to be sent. */
+struct reply {
+    struct tsim_traffic *traffic;
+    struct reply *prev, *next;
+    struct tsim_event event;
+    uint32_t src, dst, len;
 };
 
 /* A set send, and the id of the message it made, which the closed loop leaves alone. */
@@ -30,24 +40,81 @@ struct tsim_traffic {
     struct scripted *scripted;
     bool scripting; /* a set send is being originated, and may finish before its id is known */
     uint64_t made;
+    uint32_t *peer_list;
+    struct reply *replies; /* waiting, newest first */
 };
 
-/* An exponential gap with the configured mean, rounded to the nanosecond. 1 - u is in (0, 1], so
- * the log is finite. Never under one nanosecond: a gap that rounded to zero would put two of a
- * node's messages at one instant, and its first at the start itself. That lengthens the mean only
- * for intervals near a nanosecond, which no radio could carry anyway. */
+/* An exponential gap with the configured mean, never under one nanosecond: a gap that rounded to
+ * zero would put two of a node's messages at one instant, and its first at the start itself. That
+ * lengthens the mean only for intervals near a nanosecond, which no radio could carry anyway. */
+static tsim_time exponential(struct tsim_rng *rng, tsim_time mean);
+
 static tsim_time gap(struct source *s) {
-    double g = -log(1.0 - tsim_rng_unit(&s->rng)) * (double)s->traffic->params.interval;
-    /* Only what no time can hold is capped: plan() checks a gap against the window before adding
-     * it, so a gap past the window, however long, falls outside it as it should. */
-    if (!(g < (double)INT64_MAX)) {
-        return INT64_MAX;
-    }
-    tsim_time t = (tsim_time)(g + 0.5);
+    tsim_time t = exponential(&s->rng, s->traffic->params.interval);
     return t > 0 ? t : 1;
 }
 
 static void send_next(struct tsim_sched *sched, void *ctx);
+
+/* An exponential draw of the given mean, rounded to the nanosecond. 1 - u is in (0, 1], so the log
+ * is finite. Only what no time can hold is capped: a caller checks the draw against its window
+ * before adding it, so one past the window, however long, falls outside it as it should. */
+static tsim_time exponential(struct tsim_rng *rng, tsim_time mean) {
+    double g = -log(1.0 - tsim_rng_unit(rng)) * (double)mean;
+    if (!(g < (double)INT64_MAX)) {
+        return INT64_MAX;
+    }
+    return (tsim_time)(g + 0.5);
+}
+
+static void unlink_reply(struct reply *r) {
+    if (r->prev) {
+        r->prev->next = r->next;
+    } else {
+        r->traffic->replies = r->next;
+    }
+    if (r->next) {
+        r->next->prev = r->prev;
+    }
+}
+
+static void send_reply(struct tsim_sched *sched, void *ctx) {
+    (void)sched;
+    struct reply *r = ctx;
+    struct tsim_traffic *t = r->traffic;
+    unlink_reply(r);
+    if (tsim_net_originate(t->net, r->src, r->dst, r->len)) {
+        t->made++;
+    }
+    free(r);
+}
+
+/* Draws whether the unicast just drawn is answered, and when and how long the answer is; and if
+ * it is, and falls before stop, schedules it. */
+static void plan_reply(struct source *s, uint32_t dst, tsim_time now) {
+    struct tsim_traffic *t = s->traffic;
+    const struct tsim_traffic_params *p = &t->params;
+    bool answered = tsim_rng_unit(&s->rng) < p->reply;
+    tsim_time delay = exponential(&s->rng, p->reply_delay);
+    uint32_t len = p->len_min + (uint32_t)tsim_rng_below(&s->rng, p->len_max - p->len_min + 1);
+    if (!answered || delay >= p->stop - now) {
+        return;
+    }
+    struct reply *r = malloc(sizeof *r);
+    if (!r) {
+        return; /* out of memory: the answer is not sent */
+    }
+    *r = (struct reply){.traffic = t, .next = t->replies, .src = dst, .dst = s->node, .len = len};
+    r->event = tsim_sched_at(t->sched, now + delay, send_reply, r);
+    if (!tsim_sched_pending(t->sched, r->event)) {
+        free(r);
+        return;
+    }
+    if (t->replies) {
+        t->replies->prev = r;
+    }
+    t->replies = r;
+}
 
 /* Schedules the node's next message `after` from `from`, unless it would fall at or past stop. */
 static void plan(struct source *s, tsim_time from) {
@@ -66,13 +133,20 @@ static void send_next(struct tsim_sched *sched, void *ctx) {
     /* Every draw for this message, then the next gap, whatever the routing does with it. */
     uint32_t dst = TSIM_BROADCAST;
     if (t->n > 1 && tsim_rng_unit(&s->rng) >= p->broadcast) {
-        dst = (uint32_t)tsim_rng_below(&s->rng, t->n - 1);
-        if (dst >= s->node) {
-            dst++;
+        if (p->peers) {
+            dst = s->peers[tsim_rng_below(&s->rng, s->peer_count)];
+        } else {
+            dst = (uint32_t)tsim_rng_below(&s->rng, t->n - 1);
+            if (dst >= s->node) {
+                dst++;
+            }
         }
     }
     uint32_t len = p->len_min + (uint32_t)tsim_rng_below(&s->rng, p->len_max - p->len_min + 1);
     tsim_time now = tsim_sched_now(sched);
+    if (p->reply > 0 && dst != TSIM_BROADCAST) {
+        plan_reply(s, dst, now);
+    }
     if (!p->closed) {
         plan(s, now);
     }
@@ -112,13 +186,89 @@ static void on_finished(void *ctx, const struct tsim_message_record *record) {
     plan(&t->sources[record->msg.src], tsim_sched_now(t->sched));
 }
 
+/* Each node picks `peers` others uniformly, from a stream of its own, and every pick is made
+ * mutual: a node's peers are those it picked and those that picked it, each once, its own picks
+ * first. */
+static bool pick_peers(struct tsim_traffic *t) {
+    uint32_t n = t->n, k = t->params.peers;
+    uint32_t *picks = malloc((size_t)n * k * sizeof *picks);
+    uint32_t *count = calloc(n, sizeof *count);
+    uint8_t *mark = calloc(n, 1);
+    t->peer_list = malloc((size_t)n * k * 2 * sizeof *t->peer_list);
+    if (!picks || !count || !mark || !t->peer_list) {
+        free(picks);
+        free(count);
+        free(mark);
+        return false;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        struct tsim_rng rng;
+        tsim_rng_init(&rng, t->params.seed, UINT64_C(0xC2) << 56 | i);
+        mark[i] = 1;
+        for (uint32_t m = 0; m < k; m++) {
+            uint32_t j;
+            do {
+                j = (uint32_t)tsim_rng_below(&rng, n);
+            } while (mark[j]);
+            mark[j] = 1;
+            picks[(size_t)i * k + m] = j;
+        }
+        mark[i] = 0;
+        for (uint32_t m = 0; m < k; m++) {
+            mark[picks[(size_t)i * k + m]] = 0;
+        }
+        count[i] += k;
+        for (uint32_t m = 0; m < k; m++) {
+            count[picks[(size_t)i * k + m]]++;
+        }
+    }
+    /* Room for every pick and every pick of it, then the duplicates taken out. */
+    size_t at = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        t->sources[i].peers = t->peer_list + at;
+        at += count[i];
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        struct source *s = &t->sources[i];
+        for (uint32_t m = 0; m < k; m++) {
+            s->peers[s->peer_count++] = picks[(size_t)i * k + m];
+        }
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        for (uint32_t m = 0; m < k; m++) {
+            struct source *s = &t->sources[picks[(size_t)i * k + m]];
+            s->peers[s->peer_count++] = i;
+        }
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        struct source *s = &t->sources[i];
+        uint32_t kept = 0;
+        for (uint32_t m = 0; m < s->peer_count; m++) {
+            if (!mark[s->peers[m]]) {
+                mark[s->peers[m]] = 1;
+                s->peers[kept++] = s->peers[m];
+            }
+        }
+        for (uint32_t m = 0; m < kept; m++) {
+            mark[s->peers[m]] = 0;
+        }
+        s->peer_count = kept;
+    }
+    free(picks);
+    free(count);
+    free(mark);
+    return true;
+}
+
 struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
                                          const struct tsim_traffic_params *params) {
     const struct tsim_traffic_params *p = params;
     uint32_t n = tsim_net_nodes(net);
     if (p->interval < 0 || p->len_min > p->len_max || p->len_max > TSIM_FRAME_MAX ||
         !(p->broadcast >= 0.0 && p->broadcast <= 1.0) || p->stop < p->start ||
-        (p->send_count > 0 && !p->sends)) {
+        (p->send_count > 0 && !p->sends) || p->peers > (n ? n - 1 : 0) ||
+        !(p->reply >= 0.0 && p->reply <= 1.0) || (p->reply > 0 && p->closed) ||
+        p->reply_delay < 0) {
         return NULL;
     }
     for (uint32_t i = 0; i < p->send_count; i++) {
@@ -143,6 +293,10 @@ struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
         free(t->sources);
         free(t->scripted);
         free(t);
+        return NULL;
+    }
+    if (p->peers && !pick_peers(t)) {
+        tsim_traffic_destroy(t);
         return NULL;
     }
     /* The first message comes a gap after the start, not at it, so the nodes do not all send at
@@ -189,8 +343,15 @@ void tsim_traffic_destroy(struct tsim_traffic *t) {
     for (uint32_t i = 0; i < t->params.send_count; i++) {
         tsim_sched_cancel(t->sched, t->scripted[i].event);
     }
+    while (t->replies) {
+        struct reply *r = t->replies;
+        tsim_sched_cancel(t->sched, r->event);
+        t->replies = r->next;
+        free(r);
+    }
     free(t->sources);
     free(t->scripted);
+    free(t->peer_list);
     free(t);
 }
 
