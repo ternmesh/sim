@@ -1,0 +1,31 @@
+# Candidate 2 on MeshBench's Fife network: 56 nodes, their links as MeshBench budgets them over the
+# terrain (fife.links), and one channel message. tools/meshbench.py check adds the message - which
+# node, how long, when - from reference.json, and runs it once per seed and arm.
+nodes = 56
+links = fife.links
+seed = 1
+
+# The UK narrow preset the fixture runs: 869.618 MHz, SF8 at 62.5 kHz, coding rate 4/8, at 22 dBm.
+# MeshCore 1.17 programs a 32-symbol preamble at SF8 and below.
+radio.sf = 8
+radio.bw = 62500
+radio.cr = 4
+radio.preamble = 32
+radio.tx_dbm = 22
+
+routing = meshcore
+mac = meshcore
+# 0 to 45 are the repeaters, every one of which carries the region the message is sent in.
+routing.relays = 0-45
+# The companion sends from its console, which floods without a region code.
+routing.scoped = no
+# Only the message's frames are compared; MeshBench's boot adverts are over before it is sent.
+routing.advert_interval = none
+# MeshBench's firmware reckons every airtime at 4/5, whatever the air runs at.
+routing.estimate_cr = 1
+# A repeater's packet pool.
+queue = 32
+
+traffic.interval = none
+duration = 30 s
+deadline = 60 s

@@ -136,6 +136,9 @@ void tsim_phy_destroy(struct tsim_phy *phy);
 
 /* Sets the loss of the link between a and b, in both directions. */
 void tsim_phy_set_loss(struct tsim_phy *phy, uint32_t a, uint32_t b, double loss_db);
+/* Sets the loss from a to b only: for a link whose two ends differ - in transmit power, say, which
+ * a frame's tx_dbm cannot carry when every node sends at the radio's. */
+void tsim_phy_set_loss_from(struct tsim_phy *phy, uint32_t from, uint32_t to, double loss_db);
 double tsim_phy_loss(const struct tsim_phy *phy, uint32_t a, uint32_t b);
 
 /* Sets every link's loss from the channel model, for nodes standing at pos[0..nodes). */

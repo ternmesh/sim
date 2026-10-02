@@ -29,6 +29,7 @@ add_library(ternsim
     src/baseline.c
     src/channel.c
     src/lora.c
+    src/meshcore.c
     src/meshtastic.c
     src/metrics.c
     src/net.c
@@ -49,7 +50,7 @@ target_compile_options(tsim PRIVATE ${TSIM_WARNINGS})
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(t baseline channel lora meshtastic metrics net phy place rng scenario sched traffic)
+    foreach(t baseline channel lora meshcore meshtastic metrics net phy place rng scenario sched traffic)
         add_executable(test_${t} tests/${t}.c)
         target_link_libraries(test_${t} PRIVATE ternsim)
         # The test files define their cases as static functions, so the prototype warning is
@@ -74,12 +75,16 @@ if(BUILD_TESTING)
     endforeach()
 
     # Candidate 1's compatibility mode against Meshtasticator's results on the same maps, which
-    # tools/meshtasticator.py recorded in scenarios/meshtasticator/. Only the comparison runs here;
-    # Meshtasticator itself is run by hand.
+    # tools/meshtasticator.py recorded in scenarios/meshtasticator/, and candidate 2 against
+    # MeshBench's on its Fife network, which tools/meshbench.py recorded in scenarios/meshbench/.
+    # Only the comparisons run here; Meshtasticator and MeshBench themselves are run by hand.
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         add_test(NAME meshtasticator
             COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/tools/meshtasticator.py check
+                --tsim $<TARGET_FILE:tsim>)
+        add_test(NAME meshbench
+            COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/tools/meshbench.py check
                 --tsim $<TARGET_FILE:tsim>)
     endif()
 endif()

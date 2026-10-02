@@ -13,12 +13,22 @@ struct source {
     struct tsim_event next;
 };
 
+/* A set send, and the id of the message it made, which the closed loop leaves alone. */
+struct scripted {
+    struct tsim_traffic *traffic;
+    struct tsim_send send;
+    struct tsim_event event;
+    uint64_t id;
+};
+
 struct tsim_traffic {
     struct tsim_net *net;
     struct tsim_sched *sched;
     struct tsim_traffic_params params;
     uint32_t n;
     struct source *sources;
+    struct scripted *scripted;
+    bool scripting; /* a set send is being originated, and may finish before its id is known */
     uint64_t made;
 };
 
@@ -75,18 +85,48 @@ static void send_next(struct tsim_sched *sched, void *ctx) {
     }
 }
 
-/* Closed loop: the node's next gap starts when its routing is done with this message. */
+static void send_scripted(struct tsim_sched *sched, void *ctx) {
+    (void)sched;
+    struct scripted *sc = ctx;
+    sc->event = (struct tsim_event){0};
+    sc->traffic->scripting = true;
+    sc->id = tsim_net_originate(sc->traffic->net, sc->send.src, sc->send.dst, sc->send.len);
+    sc->traffic->scripting = false;
+    if (sc->id) {
+        sc->traffic->made++;
+    }
+}
+
+/* Closed loop: the node's next gap starts when its routing is done with this message - unless it
+ * was a set send, which no gap was waiting on. */
 static void on_finished(void *ctx, const struct tsim_message_record *record) {
     struct tsim_traffic *t = ctx;
+    if (t->scripting) {
+        return; /* a set send, finished as it was made */
+    }
+    for (uint32_t i = 0; i < t->params.send_count; i++) {
+        if (t->scripted[i].id == record->msg.id) {
+            return;
+        }
+    }
     plan(&t->sources[record->msg.src], tsim_sched_now(t->sched));
 }
 
 struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
                                          const struct tsim_traffic_params *params) {
     const struct tsim_traffic_params *p = params;
-    if (p->interval <= 0 || p->len_min > p->len_max || p->len_max > TSIM_FRAME_MAX ||
-        !(p->broadcast >= 0.0 && p->broadcast <= 1.0) || p->stop < p->start) {
+    uint32_t n = tsim_net_nodes(net);
+    if (p->interval < 0 || p->len_min > p->len_max || p->len_max > TSIM_FRAME_MAX ||
+        !(p->broadcast >= 0.0 && p->broadcast <= 1.0) || p->stop < p->start ||
+        (p->send_count > 0 && !p->sends)) {
         return NULL;
+    }
+    for (uint32_t i = 0; i < p->send_count; i++) {
+        const struct tsim_send *send = &p->sends[i];
+        if (send->src >= n || send->dst == send->src ||
+            (send->dst != TSIM_BROADCAST && send->dst >= n) || send->len > TSIM_FRAME_MAX) {
+            return NULL;
+        }
     }
     struct tsim_traffic *t = calloc(1, sizeof *t);
     if (!t) {
@@ -95,9 +135,13 @@ struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
     t->net = net;
     t->sched = tsim_net_sched(net);
     t->params = *p;
-    t->n = tsim_net_nodes(net);
+    t->params.sends = NULL;
+    t->n = n;
     t->sources = calloc(t->n, sizeof *t->sources);
-    if (!t->sources) {
+    t->scripted = calloc(p->send_count ? p->send_count : 1, sizeof *t->scripted);
+    if (!t->sources || !t->scripted) {
+        free(t->sources);
+        free(t->scripted);
         free(t);
         return NULL;
     }
@@ -111,7 +155,20 @@ struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
         s->node = i;
         /* Apart from every node's own streams, and from the network's message content. */
         tsim_rng_init(&s->rng, p->seed, UINT64_C(0xC1) << 56 | i);
-        plan(s, from);
+        if (p->interval > 0) {
+            plan(s, from);
+        }
+    }
+    for (uint32_t i = 0; i < p->send_count; i++) {
+        struct scripted *sc = &t->scripted[i];
+        sc->traffic = t;
+        sc->send = p->sends[i];
+        sc->event =
+            tsim_sched_at(t->sched, sc->send.at > now ? sc->send.at : now, send_scripted, sc);
+        if (!tsim_sched_pending(t->sched, sc->event)) {
+            tsim_traffic_destroy(t); /* out of memory */
+            return NULL;
+        }
     }
     if (p->closed) {
         tsim_net_observe_finished(net, on_finished, t);
@@ -129,7 +186,11 @@ void tsim_traffic_destroy(struct tsim_traffic *t) {
     for (uint32_t i = 0; i < t->n; i++) {
         tsim_sched_cancel(t->sched, t->sources[i].next);
     }
+    for (uint32_t i = 0; i < t->params.send_count; i++) {
+        tsim_sched_cancel(t->sched, t->scripted[i].event);
+    }
     free(t->sources);
+    free(t->scripted);
     free(t);
 }
 

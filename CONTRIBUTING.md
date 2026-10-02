@@ -37,6 +37,14 @@ vectors, and is implemented here afterwards.
 ## Clean-room rule
 
 Do not copy source code from other mesh implementations (Meshtastic,
-MeshCore, Reticulum or their ports) into this repository, even where the
-licence would appear to allow it. Work from published documentation and
-observed packets.
+MeshCore, Reticulum or their ports) into anything that implements Tern,
+even where the licence would appear to allow it. Work from published
+documentation and observed packets.
+
+The one exception is a candidate: a model of another protocol that the
+simulator compares Tern's design against. A candidate has to behave like
+the protocol it models, so it may be ported from that protocol's code or
+from a simulator of it, where the licence allows - never from GPL code -
+with the source, its licence and the commit or release it follows named
+in NOTICE, and every difference listed in the candidate's header. Nothing
+in a candidate may be carried into Tern's own design or code.
