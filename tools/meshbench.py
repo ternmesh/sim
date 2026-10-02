@@ -98,6 +98,8 @@ def one_run(Workbench, fixture, seed, arm, sender, numbering):
 
     with Workbench.headless(fixture=fixture, seed=seed) as wb:
         wb.wait_idle()
+        wb.call("terrain.allow", {"on": True})
+        wb.wait_idle()
         wb.call("schedule.clear")
         wb.sim.start()
         for node in numbering:
@@ -123,9 +125,6 @@ def one_run(Workbench, fixture, seed, arm, sender, numbering):
 def write_links(wb, numbering, version):
     import time
 
-    wb.call("terrain.allow", {"on": True})
-    wb.call("terrain.prefetch", {})
-    wb.wait_idle()
     links = []
     for i in range(len(numbering)):
         for j in range(i + 1, len(numbering)):
@@ -177,9 +176,14 @@ def reference(args):
                            text=True).stdout
     version = usage.split()[1] if usage.startswith("meshbench ") else "unknown"
 
+    # Every run propagates over the terrain, whether or not the links are written: allowing it and
+    # fetching it here is what puts it in MeshBench's cache for the runs to find.
     with Workbench.headless(fixture=fixture, seed=1) as wb:
         wb.wait_idle()
-        nodes = [n for n in wb.call("nodes.list")["nodes"] if n.get("firmware")]
+        wb.call("terrain.allow", {"on": True})
+        wb.call("terrain.prefetch", {})
+        wb.wait_idle()
+        nodes =[n for n in wb.call("nodes.list")["nodes"] if n.get("firmware")]
         numbering = sorted(nodes, key=kind_order)
         if args.links or not os.path.exists(os.path.join(DIR, "fife.links")):
             write_links(wb, numbering, version)
