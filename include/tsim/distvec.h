@@ -64,12 +64,17 @@
  * this node. The link's ETX is 1 / (d_f d_r), and a neighbour without an IHU for this node - one
  * that has not heard it - is not used at all: LoRa links are often one-way, and Babel assumes they
  * are not. Nor is one with an ETX over etx_max. A neighbour that has sent more announces without
- * naming this node than its round allows - one, when its round is a single frame; otherwise twice
- * the round and one more, for the frames that name new neighbours first - does not hear it, and its
- * IHU is taken away. That is counted in announces, not time, so however slowly a node with many
- * neighbours announces, its IHUs stand until their turn comes round again. A neighbour not heard
- * for neighbour_timeout, and for two of its promises, is forgotten; one that frames sent to it keep
- * failing to reach soon goes unused (below).
+ * naming this node than ihu_rounds of its rounds allow - ihu_rounds times the round, and one more
+ * for the frames that name new neighbours first, never more than 32767 - does not hear it, and its
+ * IHU is taken away. Two rounds cut thousands of good links an hour in the region, under load and
+ * even on a quiet channel: most frames are lost there, and two IHUs in a row often enough. Each cut
+ * starves the routes through it until a new seqno comes, which the saturated queue of urgent
+ * updates takes hours to carry. Eight rounds made the region's unicast 18.8% to 25.0% at 0 dBm
+ * and 9.8% to 13.9% at 20 dBm, for 3-5% of its deliveries per second of airtime, and the
+ * town's 81.6% to 98.5% (MSH-52). The count is in announces, not time, so however slowly a node
+ * with many neighbours announces, its IHUs stand until their turn comes round again. A neighbour
+ * not heard for neighbour_timeout, and for two of its promises, is forgotten; one that frames sent
+ * to it keep failing to reach soon goes unused (below).
  *
  * The metric is time on air: a link's cost is the airtime of a reference frame, ref_len bytes at
  * the link's modulation, in milliseconds, at least 1, and with `etx` that times the link's ETX.
@@ -234,7 +239,8 @@ struct tsim_distvec_config {
     double request_share; /* of the cap, for seqno requests: above 0 and below 1 */
     tsim_time cap_window; /* how much of its share each bucket holds */
     uint8_t burst;        /* frames an announce event may send, 1..16 */
-    uint8_t ihu_max; /* IHU entries per announce frame, 0..48, less what leaves no route room */
+    uint8_t ihu_max;    /* IHU entries per announce frame, 0..48, less what leaves no route room */
+    uint8_t ihu_rounds; /* of a neighbour's IHU rounds without naming this node it may go, 2..64 */
 
     uint32_t ref_len;  /* bytes of the reference frame the metric is reckoned in */
     bool etx;          /* links cost their ETX times the reference frame; off, every one the same */
@@ -304,7 +310,8 @@ void tsim_distvec_oracle_free(struct tsim_distvec_oracle *oracle);
 
 /* Every node infrastructure; Trickle from 8 s to 8 min (six doublings), redundancy 3, announcing
  * at least every third interval and forgetting a neighbour after an hour; a 0.5% cap, a quarter
- * of it for requests, with 1-minute buckets; up to 4 frames an event and 8 IHUs a frame; a
+ * of it for requests, with 1-minute buckets; up to 4 frames an event and 8 IHUs a frame, a link
+ * kept through 8 rounds without one; a
  * 32-byte reference frame, every link costing the same (ETX off) and none used over ETX 32, 10%
  * hysteresis and a 25% change threshold, a request every 10 s while starved; a jitter of up to 2
  * airtimes; 32 hops, 2 hop retries after 4 s, 3 retries waiting 5 s plus 4 times the metric;

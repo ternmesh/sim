@@ -507,6 +507,9 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "ihu_max") == 0) {
         return distvec_count(value, 0, 48, &c->ihu_max);
     }
+    if (strcmp(key, "ihu_rounds") == 0) {
+        return distvec_count(value, 2, 64, &c->ihu_rounds);
+    }
     if (strcmp(key, "ref_len") == 0) {
         if (!parse_u64(value, 255, &v)) {
             return "expected a length from 0 to 255 bytes";

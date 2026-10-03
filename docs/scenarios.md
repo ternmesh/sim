@@ -144,6 +144,7 @@ default.
 | `routing.cap_window` (`distvec`) | `1 min` | how much of its share each of the two buckets holds, at least one full-length frame |
 | `routing.burst` (`distvec`) | 4 | announce frames one announce event may send while changed routes are waiting, 1 to 16 |
 | `routing.ihu_max` (`distvec`) | 8 | neighbours an announce frame reports hearing, 0 to 48; the rest take their turn in later frames |
+| `routing.ihu_rounds` (`distvec`) | 8 | rounds of a neighbour's IHUs that may go by without naming this node before the link is taken to be one-way, 2 to 64; 2 cut thousands of good links an hour under the region's losses; 8 took the town's unicast from 82% to 98% (MSH-52) |
 | `routing.ref_len` (`distvec`) | 32 | bytes of the frame whose airtime, times the link's ETX with `routing.etx`, is the link's cost |
 | `routing.etx` (`distvec`) | `no` | `yes` costs each link its ETX, measured from the announces heard, times the reference frame's airtime; `no` costs every link heard both ways the same, so the metric counts hops. ETX measures the channel's load more than the link, and under traffic its routes starve (MSH-48) |
 | `routing.etx_max` (`distvec`) | 32 | links with a higher ETX are not used, whether or not `routing.etx` costs them by it |

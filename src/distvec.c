@@ -33,10 +33,13 @@
 #define DATA_HEAD 18
 #define ACK_LEN 18
 #define BCAST_HEAD 10
-/* The longest IHU round an announce can tell: twice it and one more must still fit the 16-bit
- * count of announces a receiver keeps between IHUs. Only a node naming one neighbour to a frame
- * among more than 32767 would need more. */
+/* The longest IHU round an announce can tell, in its two bytes. */
 #define ROUND_MAX 32767
+/* The most announces a neighbour may go without an IHU, whatever its round: half the 16-bit count,
+ * so that any announce over the next 32768 finds it expired. Capped at the count's top, only the
+ * one announce reaching it exactly could, and with that one lost the count would wrap and keep the
+ * link for 65536 more. */
+#define IHU_AGE_MAX 0x7FFFu
 
 #define FLAG_INFRA 0x01
 
@@ -281,6 +284,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .cap_window = TSIM_S(60),
         .burst = 4,
         .ihu_max = 8,
+        .ihu_rounds = 8,
         .ref_len = 32,
         .etx_max = 32,
         .hysteresis = 0.1,
@@ -325,8 +329,9 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     if (!(c->cap > 0 && c->cap <= 1) || !(c->request_share > 0 && c->request_share < 1)) {
         return "cap is not above 0 and at most 1, or request_share is not between 0 and 1";
     }
-    if (c->burst < 1 || c->burst > 16 || c->ihu_max > 48) {
-        return "burst is not 1 to 16, or ihu_max is over 48";
+    if (c->burst < 1 || c->burst > 16 || c->ihu_max > 48 || c->ihu_rounds < 2 ||
+        c->ihu_rounds > 64) {
+        return "burst is not 1 to 16, ihu_max is over 48, or ihu_rounds is not 2 to 64";
     }
     if (!(c->etx_max >= 1 && c->etx_max <= 1e6) || !(c->hysteresis >= 0 && c->hysteresis <= 1) ||
         !(c->change >= 0 && c->change <= 1) || !(c->ack_factor >= 0 && c->ack_factor <= 1e3) ||
@@ -1283,7 +1288,11 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
             named = true;
         }
     }
-    uint32_t allowed = rotation <= 1 ? 1u : 2u * rotation + 1u;
+    uint32_t rounds = r->config.ihu_rounds;
+    uint32_t allowed = rounds * (rotation > 1 ? rotation : 1u) + 1u;
+    if (allowed > IHU_AGE_MAX) {
+        allowed = IHU_AGE_MAX;
+    }
     if (!named && (uint16_t)(seq - n->ihu_seq) >= allowed) {
         n->dr = 0;
     }
