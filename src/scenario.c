@@ -1210,10 +1210,14 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     if (ok && s->mac->check && (why = s->mac->check(s->mac_config))) {
         ok = fail(err, 0, "mac %s: %s", s->mac->name, why);
     }
-    if (ok && s->routing->routing == &tsim_distvec && s->links_file[0] &&
-        ((const struct tsim_distvec_config *)s->routing_config)->relay_pick ==
-            TSIM_DISTVEC_PICK_SPACED) {
+    const struct tsim_distvec_config *dv =
+        ok && s->routing->routing == &tsim_distvec ? (const void *)s->routing_config : NULL;
+    if (ok && dv && s->links_file[0] && dv->relay_pick == TSIM_DISTVEC_PICK_SPACED) {
         ok = fail(err, 0, "routing.relay_pick = spaced needs positions, which links replaces");
+    }
+    if (ok && dv && dv->relay_pick != TSIM_DISTVEC_PICK_LIST && dv->relay_count > s->nodes) {
+        ok = fail(err, 0, "routing.relay_count is %" PRIu32 ", more than the %" PRIu32 " nodes",
+                  dv->relay_count, s->nodes);
     }
     free(entries);
     free(copy);

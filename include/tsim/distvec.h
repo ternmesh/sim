@@ -329,7 +329,16 @@ enum tsim_distvec_links {
  *    without a relay next to them, so every node either is one or has one as a neighbour and the
  *    relays of each part of the network join up. With a relay_count it stops there, and tops up
  *    with the most linked nodes if it finished short; 0 takes as many as it needs.
- * Which nodes are relays is the deployment's to say. These bound what siting could be worth. */
+ * Which nodes are relays is the deployment's to say. These bound what siting could be worth.
+ *
+ * What it was worth on the region under the oracle (parent_oracle, 3 seeds): at 0 dBm, nodes
+ * 0-199 left the oracle without a route at the source for 29.8% of unicasts and delivered 57.5% on
+ * time; a cds of 200 left 0.8%, what the network's own gaps leave, and delivered 80.5%, and the
+ * 108 it needs uncapped 75.9%. By degree, 200 made 77.1%; spaced, 50.0%, worse than the list,
+ * relays far apart being what low power cannot join. At 10 dBm a cds of 100 made 92.1% against
+ * 84.0% for nodes 0-99; at 20 dBm every rule joins up and makes 96-99%. Siting did not make hops
+ * fail less: about half of data hops were decoded whatever the rule, a little fewer with more
+ * messages routed. That is the MAC's to fix. */
 enum tsim_distvec_pick {
     TSIM_DISTVEC_PICK_LIST,
     TSIM_DISTVEC_PICK_DEGREE,

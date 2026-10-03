@@ -209,6 +209,9 @@ static void problems_say_where_they_are(void) {
          "list, degree, spaced or cds"},
         {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.relay_pick = degree\n", 0,
          "relay_count is 0"},
+        {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.relay_pick = cds\n"
+         "routing.relay_count = 3\n",
+         0, "relay_count is 3, more than the 2 nodes"},
         {"nodes = 2\nlinks = a.links\nrouting = distvec\nmac = meshcore\n"
          "routing.relay_pick = spaced\nrouting.relay_count = 1\n",
          0, "spaced needs positions"},
