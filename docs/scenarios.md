@@ -135,6 +135,7 @@ default.
 | `mac.airtime_factor` (`meshcore`) | 1 | the duty cycle budget is 1/(1 + this) of an hour |
 | `mac.latched_header` (`meshcore`) | `no` | not MeshCore's: how long the radio's header flag stays set once a header sets it, as on MeshBench, whose radio never clears it on reading a packet; MeshCore's driver then times it out after `3934 ms` |
 | `routing.relays` (`distvec`) | `all` | which nodes are infrastructure, which forward and announce routes, as `all` or numbers and ranges such as `0-45,50`; the rest are leaves |
+| `routing.leaves` (`distvec`) | `routed` | how a leaf is reached: `routed`, by the routes to it infrastructure announces; or `parent_oracle`, through its parent - infrastructure routing among itself only, each leaf taking its best infrastructure neighbour as parent, and the node routing to a leaf learning its parent from an oracle, as a lookup never wrong or late would tell it (MSH-53). With power control and `power_k`, frames for every neighbour then reach the `power_k` nearest infrastructure neighbours |
 | `routing.imin`, `routing.doublings` (`distvec`) | `8 s`, 6 | Trickle's shortest announce interval, and how many times it doubles to the longest (0 to 16) |
 | `routing.redundancy` (`distvec`) | 3 | consistent announces heard in an interval that suppress this node's; 0 never suppresses |
 | `routing.quiet_max` (`distvec`) | 2 | intervals running a node may keep quiet before it announces anyway |

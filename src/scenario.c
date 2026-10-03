@@ -472,6 +472,16 @@ static const char *distvec_set(void *config, const char *key, const char *value)
         strcpy(c->relays, value);
         return NULL;
     }
+    if (strcmp(key, "leaves") == 0) {
+        if (strcmp(value, "routed") == 0) {
+            c->leaves = TSIM_DISTVEC_LEAVES_ROUTED;
+        } else if (strcmp(value, "parent_oracle") == 0) {
+            c->leaves = TSIM_DISTVEC_LEAVES_PARENT_ORACLE;
+        } else {
+            return "expected routed or parent_oracle";
+        }
+        return NULL;
+    }
     if (strcmp(key, "imin") == 0) {
         return distvec_time(value, false, &c->imin);
     }
@@ -1339,15 +1349,23 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     struct tsim_metrics *metrics = NULL;
     struct tsim_traffic *traffic = NULL;
     struct tsim_distvec_oracle oracle = {0};
+    uint32_t *parents = NULL;
     bool ok = false;
     /* The oracle's routes are the driver's to hand down: the plugin is given where they will be,
-     * and they are built once the links are laid. */
+     * and they are built once the links are laid. So is the table leaves' parents are kept in. */
     _Alignas(max_align_t) unsigned char routing_config[TSIM_PLUGIN_CONFIG_MAX];
     memcpy(routing_config, s->routing_config, sizeof routing_config);
     struct tsim_distvec_config *dv = NULL;
     if (s->routing->routing == &tsim_distvec) {
         dv = (struct tsim_distvec_config *)routing_config;
         dv->oracle_routes = dv->oracle ? &oracle : NULL;
+        if (dv->leaves == TSIM_DISTVEC_LEAVES_PARENT_ORACLE) {
+            parents = malloc(s->nodes * sizeof *parents);
+            dv->parents = parents;
+            if (!parents) {
+                goto done;
+            }
+        }
     }
     if (!pos || !sched) {
         goto done;
@@ -1434,6 +1452,7 @@ done:
     tsim_metrics_destroy(metrics);
     tsim_net_destroy(net);
     tsim_distvec_oracle_free(&oracle);
+    free(parents);
     tsim_sched_destroy(sched);
     free(pos);
     return ok;

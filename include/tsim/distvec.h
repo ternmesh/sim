@@ -25,6 +25,33 @@
  * leaf is reached through the infrastructure node that hears it. "all" makes every node
  * infrastructure: an untiered mesh, for measuring what tiering is worth.
  *
+ * Leaves and their parents (MSH-53), when `leaves` is parent_oracle. Above, infrastructure still
+ * keeps and repairs a route to every leaf, so a tier of 200 relays in 1000 nodes repairs 1000
+ * destinations with fewer paths around each break. Here it routes among itself only: no node
+ * announces a route to a leaf, and a relay keeps its routes to the leaves it hears only for the
+ * last hop. Each leaf takes a parent: of the infrastructure neighbours it can use, the one with
+ * the best ETX, kept unless another beats it by `hysteresis`. A frame for a leaf this node has no
+ * route to goes along its route to that leaf's parent, which hands it over; one for a leaf with no
+ * parent, or a parent this node is but cannot reach the leaf from, goes nowhere, and nothing is
+ * asked about a leaf. With power_k, frames for every neighbour reach the power_k nearest
+ * infrastructure neighbours rather than the power_k nearest of any kind: a leaf must be heard by
+ * relays, and a relay by its leaves and by the relays it routes over.
+ *
+ * Where a leaf's parent is, the node routing to it learns, for now, from an oracle: every leaf
+ * writes its parent into `parents`, which every node reads, and a relay is its own parent - what a
+ * lookup never wrong and never late would tell. It measures what routing over relays could gain
+ * before the binding a real network would need, the leaf naming its parent and a source finding
+ * that out, is designed.
+ *
+ * What it gained on the region (3 seeds, 100 to 400 relays, 0 and 20 dBm): unicast within 4
+ * points of routed leaves either way - 22.7% against 20.5% with 200 relays at 0 dBm, 7.9% against
+ * 8.6% at 20 dBm - where the oracle's routes deliver 58% and 97%; broadcast and deliveries per
+ * second of airtime up, 13.4% to 25.4% and 3.5 to 5.2 with 200 relays at 20 dBm, mostly from
+ * power_k counting relays only. The smaller table is not what was missing. After a quiet warmup,
+ * relays' routes to each other reach 71% of pairs at 0 dBm, near the 69% the oracle finds
+ * connected, and 75% at 20 dBm; after three hours of traffic, 21% and 8%. Load takes links down
+ * faster than repair under the cap brings routes back, however few destinations there are.
+ *
  * Announces. A node's one periodic frame, charged as announce:
  *
  *     type 0x01 | sender 4 | announce seq 2 | source seq 2 | flags 1 | promise 2 | round 2
@@ -220,6 +247,13 @@
  * MAC. */
 
 #define TSIM_DISTVEC_METRIC_INF 0xFFFF
+#define TSIM_DISTVEC_NO_PARENT 0xFFFFFFFFu
+
+/* How a leaf is reached: by routes to it that infrastructure announces, or through its parent. */
+enum tsim_distvec_leaves {
+    TSIM_DISTVEC_LEAVES_ROUTED,
+    TSIM_DISTVEC_LEAVES_PARENT_ORACLE,
+};
 
 struct tsim_distvec_oracle;
 
@@ -227,7 +261,9 @@ struct tsim_distvec_config {
     uint16_t channel;
     struct tsim_lora lora;
     double tx_dbm;
-    char relays[96]; /* infrastructure, as tsim_meshcore_config.relays: "all" or "0-45,50" */
+    char relays[96];   /* infrastructure, as tsim_meshcore_config.relays: "all" or "0-45,50" */
+    uint8_t leaves;    /* enum tsim_distvec_leaves */
+    uint32_t *parents; /* with parent_oracle: [node], shared by every node; set by the driver */
 
     tsim_time imin;    /* Trickle */
     uint8_t doublings; /* imax is imin times 2^doublings, 0..16 */
@@ -308,18 +344,17 @@ bool tsim_distvec_oracle_build(struct tsim_distvec_oracle *oracle, const struct 
 
 void tsim_distvec_oracle_free(struct tsim_distvec_oracle *oracle);
 
-/* Every node infrastructure; Trickle from 8 s to 8 min (six doublings), redundancy 3, announcing
- * at least every third interval and forgetting a neighbour after an hour; a 0.5% cap, a quarter
- * of it for requests, with 1-minute buckets; up to 4 frames an event and 8 IHUs a frame, a link
- * kept through 8 rounds without one; a
- * 32-byte reference frame, every link costing the same (ETX off) and none used over ETX 32, 10%
- * hysteresis and a 25% change threshold, a request every 10 s while starved; a jitter of up to 2
- * airtimes; 32 hops, 2 hop retries after 4 s, 3 retries waiting 5 s plus 4 times the metric;
- * broadcasts over 4 hops, waiting up to 3 airtimes and dropped on the second copy heard. Power
- * control on, with power_k 8 - without it, the region's unicast fell from 22% to 2% as density rose
- * (MSH-45) - frames going no quieter than -9 dBm, the SX1262's least, with a 10 dB margin and 3 dB
- * more for each try lost, and the SNR floor Semtech's for the SF: -7.5 dB at SF7, 2.5 dB lower for
- * each SF above. The oracle off, with a 3 dB margin when on.
+/* Every node infrastructure, leaves routed; Trickle from 8 s to 8 min (six doublings), redundancy
+ * 3, announcing at least every third interval and forgetting a neighbour after an hour; a 0.5% cap,
+ * a quarter of it for requests, with 1-minute buckets; up to 4 frames an event and 8 IHUs a frame,
+ * a link kept through 8 rounds without one; a 32-byte reference frame, every link costing the same
+ * (ETX off) and none used over ETX 32, 10% hysteresis and a 25% change threshold, a request every
+ * 10 s while starved; a jitter of up to 2 airtimes; 32 hops, 2 hop retries after 4 s, 3 retries
+ * waiting 5 s plus 4 times the metric; broadcasts over 4 hops, waiting up to 3 airtimes and dropped
+ * on the second copy heard. Power control on, with power_k 8 - without it, the region's unicast
+ * fell from 22% to 2% as density rose (MSH-45) - frames going no quieter than -9 dBm, the SX1262's
+ * least, with a 10 dB margin and 3 dB more for each try lost, and the SNR floor Semtech's for the
+ * SF: -7.5 dB at SF7, 2.5 dB lower for each SF above. The oracle off, with a 3 dB margin when on.
  *
  * The cap is per node, so in a neighbourhood of n nodes routing may take n times it of the
  * channel: 2% - Reticulum's announce cap - saturated a 200-node town at SF9, which 0.5% did not.
@@ -337,6 +372,10 @@ extern const struct tsim_routing tsim_distvec;
 /* A node's selected route to `dst`, from its routing instance (tsim_net_routing()): the next hop
  * and the metric, or false if it has none. A node's route to itself is not a route. */
 bool tsim_distvec_route(const void *self, uint32_t dst, uint32_t *next, uint16_t *metric);
+
+/* Where the node would send a frame for `dst` next, as its frames go: its route to `dst`, or with
+ * parent_oracle, its route to the leaf's parent. False if nowhere. */
+bool tsim_distvec_next(const void *self, uint32_t dst, uint32_t *next);
 
 /* How many neighbours the node can use: heard both ways, within etx_max. */
 uint32_t tsim_distvec_neighbours(const void *self);
