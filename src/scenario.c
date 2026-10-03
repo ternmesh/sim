@@ -13,6 +13,7 @@
 #include "tsim/distvec.h"
 #include "tsim/meshcore.h"
 #include "tsim/meshtastic.h"
+#include "tsim/nodeset.h"
 #include "tsim/place.h"
 #include "tsim/sched.h"
 
@@ -541,6 +542,9 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     }
     if (strcmp(key, "request_interval") == 0) {
         return distvec_time(value, true, &c->request_interval);
+    }
+    if (strcmp(key, "seq_period") == 0) {
+        return distvec_time(value, true, &c->seq_period);
     }
     if (strcmp(key, "hop_max") == 0) {
         return distvec_count(value, 1, UINT8_MAX, &c->hop_max);
@@ -1337,9 +1341,109 @@ bool tsim_scenario_read_links(const struct tsim_scenario *s, const char *text,
 
 /* --- Running --- */
 
+/* What the window's start leaves for its end to be measured against. */
+struct window {
+    struct tsim_metrics *metrics;
+    struct tsim_net *net;
+    const struct tsim_distvec_config *dv; /* NULL for other routing */
+    bool *relay;                          /* [node], with dv */
+    tsim_time begun;
+    struct tsim_distvec_stats stats;
+    double relay_reach;
+};
+
+/* Every distvec node's books, summed. */
+static void distvec_sum(struct tsim_net *net, struct tsim_distvec_stats *sum) {
+    *sum = (struct tsim_distvec_stats){0};
+    for (uint32_t i = 0; i < tsim_net_nodes(net); i++) {
+        struct tsim_distvec_stats s;
+        tsim_distvec_stats(tsim_net_routing(net, i), &s);
+        for (int c = 0; c < TSIM_DISTVEC_DOWN_COUNT; c++) {
+            sum->down[c] += s.down[c];
+            sum->down_strong[c] += s.down_strong[c];
+        }
+        sum->outages += s.outages;
+        sum->unrouted_s += s.unrouted_s;
+        sum->urgent_s += s.urgent_s;
+        sum->seqno_requests += s.seqno_requests;
+        sum->route_requests += s.route_requests;
+        sum->gave_up += s.gave_up;
+        sum->seq_raised += s.seq_raised;
+        sum->unrouted_infeasible += s.unrouted_infeasible;
+        sum->unrouted_empty += s.unrouted_empty;
+    }
+}
+
+/* The share of ordered pairs of relays whose routes, followed node to node as frames go, get from
+ * one to the other: a loop, or more hops than nodes, does not. */
+static double relay_reach(struct tsim_net *net, const bool *relay) {
+    uint32_t n = tsim_net_nodes(net);
+    uint64_t pairs = 0, reach = 0;
+    for (uint32_t src = 0; src < n; src++) {
+        for (uint32_t dst = 0; dst < n; dst++) {
+            if (src == dst || !relay[src] || !relay[dst]) {
+                continue;
+            }
+            pairs++;
+            uint32_t at = src, next, hops = 0;
+            while (at != dst && hops++ < n &&
+                   tsim_distvec_next(tsim_net_routing(net, at), dst, &next)) {
+                at = next;
+            }
+            reach += at == dst;
+        }
+    }
+    return pairs ? (double)reach / (double)pairs : 0;
+}
+
 static void begin_window(struct tsim_sched *sched, void *ctx) {
     (void)sched;
-    tsim_metrics_begin(ctx);
+    struct window *w = ctx;
+    tsim_metrics_begin(w->metrics);
+    w->begun = tsim_sched_now(sched);
+    if (w->dv) {
+        distvec_sum(w->net, &w->stats);
+        w->relay_reach = relay_reach(w->net, w->relay);
+    }
+}
+
+/* Candidate 3's health over the window, from its books now against the window's start. */
+static void health(const struct window *w, tsim_time end, struct tsim_route_health *h) {
+    struct tsim_distvec_stats now;
+    distvec_sum(w->net, &now);
+    double hours = (double)(end - w->begun) / (double)TSIM_S(3600);
+    double seconds = hours * 3600;
+    uint32_t relays = 0;
+    for (uint32_t i = 0; i < tsim_net_nodes(w->net); i++) {
+        relays += w->relay[i];
+    }
+    *h = (struct tsim_route_health){.present = true};
+    _Static_assert(TSIM_HEALTH_CAUSES == TSIM_DISTVEC_DOWN_COUNT, "link-down causes");
+    for (int c = 0; c < TSIM_DISTVEC_DOWN_COUNT; c++) {
+        h->down_per_h[c] = hours > 0 ? (double)(now.down[c] - w->stats.down[c]) / hours : 0;
+        h->strong_per_h[c] =
+            hours > 0 ? (double)(now.down_strong[c] - w->stats.down_strong[c]) / hours : 0;
+    }
+    uint64_t outages = now.outages - w->stats.outages;
+    double unrouted = now.unrouted_s - w->stats.unrouted_s;
+    h->outages_per_h = hours > 0 ? (double)outages / hours : 0;
+    h->outage_mean_s = outages ? unrouted / (double)outages : 0;
+    if (relays && seconds > 0) {
+        h->unrouted_mean = unrouted / seconds / relays;
+        h->urgent_mean = (now.urgent_s - w->stats.urgent_s) / seconds / relays;
+    }
+    if (hours > 0) {
+        h->seqno_requests_per_h = (double)(now.seqno_requests - w->stats.seqno_requests) / hours;
+        h->route_requests_per_h = (double)(now.route_requests - w->stats.route_requests) / hours;
+        h->gave_up_per_h = (double)(now.gave_up - w->stats.gave_up) / hours;
+        h->seq_raised_per_h = (double)(now.seq_raised - w->stats.seq_raised) / hours;
+    }
+    if (relays) {
+        h->unrouted_infeasible = (double)now.unrouted_infeasible / relays;
+        h->unrouted_empty = (double)now.unrouted_empty / relays;
+    }
+    h->relay_reach_begin = w->relay_reach;
+    h->relay_reach_end = relay_reach(w->net, w->relay);
 }
 
 bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report) {
@@ -1350,6 +1454,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     struct tsim_traffic *traffic = NULL;
     struct tsim_distvec_oracle oracle = {0};
     uint32_t *parents = NULL;
+    struct window window = {0};
     bool ok = false;
     /* The oracle's routes are the driver's to hand down: the plugin is given where they will be,
      * and they are built once the links are laid. So is the table leaves' parents are kept in. */
@@ -1418,9 +1523,21 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     }
 
     metrics = tsim_metrics_create(net, s->deadline);
+    window.metrics = metrics;
+    window.net = net;
+    if (dv && !dv->oracle) {
+        window.relay = malloc(s->nodes * sizeof *window.relay);
+        if (!window.relay) {
+            goto done;
+        }
+        for (uint32_t i = 0; i < s->nodes; i++) {
+            window.relay[i] = tsim_nodeset_contains(dv->relays, i) == 1;
+        }
+        window.dv = dv;
+    }
     /* Scheduled before the traffic, so it runs first of what happens as the warmup ends: a
      * message sent at that instant is all in the window. */
-    if (metrics && tsim_sched_at(sched, s->warmup, begin_window, metrics).slot == 0) {
+    if (metrics && tsim_sched_at(sched, s->warmup, begin_window, &window).slot == 0) {
         goto done;
     }
     struct tsim_traffic_params tp = {
@@ -1445,6 +1562,9 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     tsim_net_start(net);
     tsim_sched_run_until(sched, s->warmup + s->duration + s->deadline);
     tsim_metrics_report(metrics, report);
+    if (window.dv) {
+        health(&window, tsim_sched_now(sched), &report->health);
+    }
     ok = tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);
 
 done:
@@ -1453,6 +1573,7 @@ done:
     tsim_net_destroy(net);
     tsim_distvec_oracle_free(&oracle);
     free(parents);
+    free(window.relay);
     tsim_sched_destroy(sched);
     free(pos);
     return ok;

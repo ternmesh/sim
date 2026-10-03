@@ -112,6 +112,7 @@ struct dest {
     bool urgent;      /* on the list of changed routes */
     bool listed;      /* in the frame being built */
     bool leaf;        /* heard announcing itself as a leaf */
+    bool had;         /* has had a selected route, so losing one is an outage */
     uint8_t retracts; /* times its retraction is still to go */
     uint8_t tries;    /* seqno requests sent while starved: 0 when not starved */
     uint16_t fd_seq;  /* the feasibility distance */
@@ -202,6 +203,9 @@ struct router {
     uint32_t nodes;
     bool infra;
     uint32_t parent; /* a leaf's, with parent_oracle: a neighbour's id, or TSIM_DISTVEC_NO_PARENT */
+    struct tsim_distvec_stats stats;
+    uint32_t unrouted; /* destinations it announces, has had a route to and has none to now */
+    tsim_time acc_at;  /* when unrouted and the urgent list were last counted into stats */
     uint32_t ann_head; /* an announce's head, and a data frame's: longer with power control */
     uint32_t data_head;
     double node_dbm;                          /* what frames for every neighbour go at */
@@ -267,6 +271,7 @@ struct router {
     size_t ask_count;
     size_t ask_cap;
     struct tsim_timer *ask_timer;
+    struct tsim_timer *seq_timer;
 };
 
 struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct tsim_lora *lora,
@@ -329,7 +334,7 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
         return "imin is not above 0, or doublings is over 16";
     }
     if (c->neighbour_timeout <= 0 || c->cap_window <= 0 || c->request_interval < 0 ||
-        c->hop_wait < 0 || c->ack_wait <= 0) {
+        c->seq_period < 0 || c->hop_wait < 0 || c->ack_wait <= 0) {
         return "a time is out of range";
     }
     if (!(c->cap > 0 && c->cap <= 1) || !(c->request_share > 0 && c->request_share < 1)) {
@@ -551,6 +556,18 @@ static void choose_parent(struct router *r) {
     r->config.parents[r->self] = best;
 }
 
+/* A usable link that `cause` has just taken out of use, if `was` was its cost before: counted. */
+static void link_down(struct router *r, const struct neighbour *n, uint16_t was,
+                      enum tsim_distvec_down cause) {
+    if (was == INF || n->cost != INF) {
+        return;
+    }
+    r->stats.down[cause]++;
+    if (!isnan(n->floor) && n->floor + r->config.oracle_margin_db <= r->config.tx_dbm) {
+        r->stats.down_strong[cause]++;
+    }
+}
+
 static uint16_t total(uint16_t metric, uint16_t cost) {
     if (metric == INF || cost == INF) {
         return INF;
@@ -602,6 +619,16 @@ static bool feasible(const struct dest *d, const struct entry *e) {
            (e->seq == d->fd_seq && e->metric < d->fd_metric);
 }
 
+/* Counts the time since last called into the books' destination-seconds: call before either
+ * count changes. */
+static void account(struct router *r) {
+    tsim_time t = now(r);
+    double dt = (double)(t - r->acc_at) / (double)TSIM_S(1);
+    r->stats.unrouted_s += (double)r->unrouted * dt;
+    r->stats.urgent_s += (double)r->urgent_count * dt;
+    r->acc_at = t;
+}
+
 static void push_urgent(struct router *r, uint32_t d) {
     if (r->dest[d].urgent || !announces(r, d)) {
         return;
@@ -615,6 +642,7 @@ static void push_urgent(struct router *r, uint32_t d) {
         r->urgent = grown;
         r->urgent_cap = cap;
     }
+    account(r);
     r->urgent[r->urgent_count++] = d;
     r->dest[d].urgent = true;
 }
@@ -726,6 +754,7 @@ static void ask(struct router *r, uint32_t d) {
     ds->asked = now(r);
     if (!ds->has_fd) {
         ds->asked_seq = 0;
+        r->stats.route_requests++;
         request(r, d, 0, BROADCAST_HOP, 0);
         return;
     }
@@ -749,6 +778,7 @@ static void ask(struct router *r, uint32_t d) {
         }
     }
     ds->asked_seq = seq;
+    r->stats.seqno_requests++;
     request(r, d, seq, next, r->config.hop_max);
 }
 
@@ -783,12 +813,28 @@ static void starved(struct router *r, uint32_t d) {
     ask(r, d);
 }
 
+/* A new seq of this node's own, announced at once as an answered request would be: every route to
+ * it that feasibility had starved is feasible again once the new seq reaches it, with no request
+ * having to get through. DSDV's periodic sequence numbers, under Babel's feasibility condition. */
+static void trickle_begin(struct router *r);
+
+static void seq_fire(void *ctx) {
+    struct router *r = ctx;
+    r->seq++;
+    r->asked = true;
+    r->interval = r->config.imin;
+    trickle_begin(r);
+    double period = (double)r->config.seq_period * (0.9 + 0.2 * tsim_rng_unit(&r->rng));
+    tsim_timer_start(r->seq_timer, (tsim_time)period);
+}
+
 static void request_fire(void *ctx) {
     struct router *r = ctx;
     for (size_t i = 0; i < r->starving_count;) {
         uint32_t d = r->starving[i];
         struct dest *ds = &r->dest[d];
         if (ds->sel || ds->tries >= REQUEST_TRIES) {
+            r->stats.gave_up += !ds->sel;
             ds->tries = 0;
             r->starving[i] = r->starving[--r->starving_count];
             continue;
@@ -839,6 +885,16 @@ static void reselect(struct router *r, uint32_t d) {
     }
     if (!announces(r, d)) {
         return; /* a leaf announces no routes, and with parents nobody announces one to a leaf */
+    }
+    if (was != (chosen != NULL) && (ds->had || chosen)) {
+        account(r);
+        if (!chosen) {
+            r->unrouted++;
+            r->stats.outages++;
+        } else if (ds->had) {
+            r->unrouted--;
+        }
+        ds->had = true;
     }
     r->selected = r->selected - was + (chosen != NULL);
     if (!chosen) {
@@ -945,8 +1001,10 @@ static void forget(struct router *r, uint16_t s) {
     if (!n->used) {
         return;
     }
+    uint16_t was = n->cost;
     n->used = false;
     n->cost = INF;
+    link_down(r, n, was, TSIM_DISTVEC_DOWN_TIMEOUT);
     r->slot_of[n->id] = 0;
     for (uint32_t d = 0; d < r->nodes; d++) {
         struct entry *e = d != r->self ? entry_by(&r->dest[d], s) : NULL;
@@ -1232,6 +1290,7 @@ static uint32_t build(struct router *r, uint8_t *b) {
         for (size_t k = 0; k < taken; k++) {
             r->dest[r->urgent[k]].listed = false;
         }
+        account(r);
         r->urgent_count -= taken;
         if (r->urgent_count) {
             memmove(r->urgent, r->urgent + taken, r->urgent_count * sizeof *r->urgent);
@@ -1378,6 +1437,7 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     r->changed = fresh;
     uint16_t was = n->cost;
     n->cost = link_cost(r, n);
+    link_down(r, n, was, n->dr == 0 ? TSIM_DISTVEC_DOWN_IHU : TSIM_DISTVEC_DOWN_RATE);
     bool flipped = (was == INF) != (n->cost == INF);
     if (flipped ||
         fabs((double)n->cost - (double)n->cost_used) > r->config.change * (double)n->cost_used) {
@@ -1422,6 +1482,7 @@ static void on_ask(struct router *r, uint32_t d, uint16_t seq, uint8_t hops) {
          * brings it down to Imin, so a stream of them cannot keep putting the answer off. */
         r->asked = true;
         if (newer(seq, r->seq)) {
+            r->stats.seq_raised++;
             r->seq = seq;
             r->interval = r->config.imin;
             trickle_begin(r);
@@ -1476,6 +1537,7 @@ static void missed(struct router *r, uint16_t s) {
     n->span = HISTORY;
     uint16_t was = n->cost;
     n->cost = link_cost(r, n);
+    link_down(r, n, was, TSIM_DISTVEC_DOWN_HOP);
     if (n->cost != was) {
         n->cost_used = n->cost;
         reselect_through(r, s);
@@ -2064,6 +2126,7 @@ static void house_fire(void *ctx) {
         }
         uint16_t was = n->cost;
         n->cost = link_cost(r, n);
+        link_down(r, n, was, TSIM_DISTVEC_DOWN_SILENT);
         bool flipped = (was == INF) != (n->cost == INF);
         if (flipped || fabs((double)n->cost - (double)n->cost_used) >
                            r->config.change * (double)n->cost_used) {
@@ -2089,6 +2152,10 @@ static void router_start(void *self) {
     }
     trickle_begin(r);
     tsim_timer_start(r->house, house_period(r));
+    if (r->config.seq_period > 0) {
+        tsim_timer_start(r->seq_timer,
+                         (tsim_time)((double)r->config.seq_period * tsim_rng_unit(&r->rng)));
+    }
 }
 
 static void router_destroy(void *self) {
@@ -2106,6 +2173,7 @@ static void router_destroy(void *self) {
     tsim_timer_destroy(r->house);
     tsim_timer_destroy(r->request_timer);
     tsim_timer_destroy(r->ask_timer);
+    tsim_timer_destroy(r->seq_timer);
     free(r->starving);
     free(r->asks);
     free(r->dest);
@@ -2162,8 +2230,9 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->house = tsim_timer_create(node, house_fire, r);
     r->request_timer = tsim_timer_create(node, request_fire, r);
     r->ask_timer = tsim_timer_create(node, ask_fire, r);
-    if (!r->dest || !r->slot_of || !r->trickle || !r->cap_timer || !r->hop_timer || !r->out_timer ||
-        !r->house || !r->request_timer || !r->ask_timer) {
+    r->seq_timer = tsim_timer_create(node, seq_fire, r);
+    if (!r->seq_timer || !r->dest || !r->slot_of || !r->trickle || !r->cap_timer || !r->hop_timer ||
+        !r->out_timer || !r->house || !r->request_timer || !r->ask_timer) {
         router_destroy(r);
         return NULL;
     }
@@ -2239,6 +2308,25 @@ bool tsim_distvec_next(const void *self, uint32_t dst, uint32_t *next) {
     return n != NULL;
 }
 
+void tsim_distvec_stats(const void *self, struct tsim_distvec_stats *stats) {
+    struct router *r = (struct router *)self; /* brings the books up to now, and nothing else */
+    account(r);
+    *stats = r->stats;
+    for (uint32_t d = 0; d < r->nodes; d++) {
+        struct dest *ds = &r->dest[d];
+        if (d == r->self || ds->sel || !ds->had || !announces(r, d)) {
+            continue;
+        }
+        bool held = false;
+        for (int i = 0; i < ROUTES; i++) {
+            const struct entry *e = &ds->e[i];
+            held |= e->slot && e->metric != INF && usable(r, e->slot, d);
+        }
+        stats->unrouted_infeasible += held;
+        stats->unrouted_empty += !held;
+    }
+}
+
 uint32_t tsim_distvec_neighbours(const void *self) {
     const struct router *r = self;
     uint32_t count = 0;
@@ -2261,6 +2349,8 @@ double tsim_distvec_power(const void *self, uint32_t nb) {
 }
 
 double tsim_distvec_node_power(const void *self) { return ((const struct router *)self)->node_dbm; }
+
+uint16_t tsim_distvec_seq(const void *self) { return ((const struct router *)self)->seq; }
 
 tsim_time tsim_distvec_interval(const void *self) {
     return ((const struct router *)self)->interval;

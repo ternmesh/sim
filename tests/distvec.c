@@ -1203,6 +1203,76 @@ static void a_broken_link_is_found_by_the_data_crossing_it(void) {
 /* Without ETX every link costs the same, so a hop lost - to the load, say - makes no route
  * dearer and none infeasible: the line keeps its routes, and their metrics, until the link goes
  * over etx_max or its neighbour times out. */
+/* The books: a settled line has lost nothing. A link cut under a message first only costs more at
+ * the node that sent into it, which is enough for the nodes behind to lose their routes across it -
+ * outages, without a route for as long as they stay lost - and the link itself is booked lost once
+ * it has gone quiet. */
+static void a_link_lost_and_the_routes_across_it_are_booked(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.etx = true;
+    r.rc.etx_max = 8;
+    line(&r, 4, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    struct tsim_distvec_stats st;
+    for (uint32_t i = 0; i < 4; i++) {
+        tsim_distvec_stats(at(&r, i), &st);
+        CHECK_EQ_U64(st.outages, 0);
+        for (int c = 0; c < TSIM_DISTVEC_DOWN_COUNT; c++) {
+            CHECK_EQ_U64(st.down[c], 0);
+        }
+    }
+    link(&r, 2, 3, LOSS_NONE);
+    tsim_net_originate(r.net, 0, 3, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(420));
+    tsim_distvec_stats(at(&r, 0), &st);
+    CHECK_EQ_U64(st.outages, 1); /* its route to 3 */
+    double unrouted = st.unrouted_s;
+    CHECK(unrouted > 0);
+    tsim_sched_run_until(r.sched, TSIM_S(480));
+    tsim_distvec_stats(at(&r, 0), &st);
+    CHECK(st.unrouted_s >= unrouted + 59.9); /* still without it, a minute on */
+    tsim_sched_run_until(r.sched,
+                         TSIM_S(480) + r.rc.neighbour_timeout + r.rc.neighbour_timeout / 4);
+    tsim_distvec_stats(at(&r, 2), &st);
+    uint64_t downs = 0;
+    for (int c = 0; c < TSIM_DISTVEC_DOWN_COUNT; c++) {
+        downs += st.down[c];
+        CHECK_EQ_U64(st.down_strong[c], 0); /* no floors without power control */
+    }
+    CHECK_EQ_U64(downs, 1);
+    CHECK_EQ_U64(st.outages, 1);
+    rig_close(&r);
+}
+
+/* With seq_period, a node raises its own seq every period, give or take 10%, unasked, and the
+ * routes to it carry the new one; without, a quiet line never raises one. */
+static void seq_period_raises_the_seq_unasked(void) {
+    struct rig r;
+    rig_init(&r);
+    line(&r, 3, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(1200));
+    CHECK_EQ_U64(tsim_distvec_seq(at(&r, 2)), 0);
+    rig_close(&r);
+
+    rig_init(&r);
+    r.rc.seq_period = TSIM_S(60);
+    line(&r, 3, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(1200));
+    uint16_t seq = tsim_distvec_seq(at(&r, 2));
+    CHECK(seq >= 18 && seq <= 23); /* 1200 s at 54 to 66 s, the first within one period */
+    uint32_t next;
+    CHECK(route(&r, 0, 2, &next) && next == 1);
+    struct tsim_distvec_stats st;
+    tsim_distvec_stats(at(&r, 2), &st);
+    CHECK_EQ_U64(st.seq_raised, 0); /* none of them asked for */
+    rig_close(&r);
+
+    struct tsim_distvec_config bad = r.rc;
+    bad.seq_period = -1;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+}
+
 static void a_lost_hop_makes_no_route_dearer(void) {
     struct rig r;
     rig_init(&r);
@@ -1534,6 +1604,8 @@ int main(void) {
     RUN(announces_stay_under_the_cap);
     RUN(a_broken_link_is_found_by_the_data_crossing_it);
     RUN(a_lost_hop_makes_no_route_dearer);
+    RUN(a_link_lost_and_the_routes_across_it_are_booked);
+    RUN(seq_period_raises_the_seq_unasked);
     RUN(routes_stay_loop_free_while_links_change);
     RUN(a_broadcast_reaches_the_line_once_per_relay);
     RUN(the_config_is_checked);

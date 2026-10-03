@@ -1,6 +1,7 @@
 #ifndef TSIM_METRICS_H
 #define TSIM_METRICS_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "tsim/net.h"
@@ -35,6 +36,31 @@ struct tsim_delivery {
     tsim_time latency_p50;
     tsim_time latency_p95;
     tsim_time latency_max;
+};
+
+/* How candidate 3's links and routes held up over the window (MSH-54). Only tsim_scenario_run()
+ * fills it, and only for distvec; `present` is false otherwise. Causes are in the order of enum
+ * tsim_distvec_down: ihu, rate, silent, hop, timeout. */
+#define TSIM_HEALTH_CAUSES 5
+struct tsim_route_health {
+    bool present;
+    double down_per_h[TSIM_HEALTH_CAUSES];   /* usable links going out of use, all nodes */
+    double strong_per_h[TSIM_HEALTH_CAUSES]; /* of those, links the node measured strong */
+    double outages_per_h;     /* routes relays lost to destinations they announce, all relays */
+    double outage_mean_s;     /* how long such a destination stayed without a route, on average */
+    double unrouted_mean;     /* how many a relay was without a route to, on average */
+    double urgent_mean;       /* changed routes waiting on a relay's urgent list, on average */
+    double relay_reach_begin; /* relay to relay pairs whose routes, followed, get there: as the */
+    double relay_reach_end;   /* window begins, and as the run ends */
+    /* Repair, per hour, all nodes: seqno and route requests made, starved destinations given up
+     * on, seqs raised to answer a request. And as the run ends, per relay: destinations without
+     * a route that it holds only infeasible routes to, and that it holds none to. */
+    double seqno_requests_per_h;
+    double route_requests_per_h;
+    double gave_up_per_h;
+    double seq_raised_per_h;
+    double unrouted_infeasible;
+    double unrouted_empty;
 };
 
 struct tsim_report {
@@ -79,6 +105,8 @@ struct tsim_report {
      * tsim_metrics_report() leaves it zero, since only the scenario knows the radio settings;
      * tsim_scenario_run() measures it at the scenario's radio.* modulation and power. */
     struct tsim_phy_links links;
+
+    struct tsim_route_health health;
 };
 
 struct tsim_metrics;

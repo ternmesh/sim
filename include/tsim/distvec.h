@@ -242,6 +242,16 @@
  * announce and every housekeeping round. A neighbour quieter than this node needs to hear it is not
  * heard, and so not used: links stay ones heard both ways.
  *
+ * Periodic seqnos (MSH-54), when seq_period is above 0: every seq_period, give or take 10%, a node
+ * raises its own seq and announces it at once, as if a request had asked it to - DSDV's periodic
+ * sequence numbers, under Babel's feasibility condition, so every route to it that feasibility
+ * starved is feasible again once the new seq arrives, whether or not a request ever got through.
+ * Off by default: measured on the region with 200 relays and parent_oracle, it did not help. Of
+ * 200-300 thousand seqno requests an hour, 15-25 raised a seq there; with a new one every 5 to 30
+ * minutes instead, a relay held 56 destinations unrouted rather than 95 at 0 dBm, but relay to
+ * relay reach stayed near 20%, the urgent list grew fourfold and unicast fell 1-6 points: the new
+ * seqs crossed eight hops of announces under load no better than the routes did.
+ *
  * Not yet here, and left out of MSH-41 for issues of their own: the store-and-forward floor, which
  * only shows its worth under mobility and churn, and per-link modulation, which needs the slotted
  * MAC. */
@@ -284,6 +294,7 @@ struct tsim_distvec_config {
     double hysteresis; /* 0 to 1 */
     double change;     /* 0 to 1 */
     tsim_time request_interval;
+    tsim_time seq_period; /* a node raises its own seq this often, give or take 10%; 0 never */
 
     uint8_t hop_max;
     uint8_t hop_retries;
@@ -377,8 +388,51 @@ bool tsim_distvec_route(const void *self, uint32_t dst, uint32_t *next, uint16_t
  * parent_oracle, its route to the leaf's parent. False if nowhere. */
 bool tsim_distvec_next(const void *self, uint32_t dst, uint32_t *next);
 
+/* What took a usable link out of use (MSH-54): its IHU for this node expired; an announce heard
+ * left its receive rate too low for etx_max; housekeeping found it silent so long its rate fell
+ * too low; a frame sent to it was lost; or it was forgotten, unheard for neighbour_timeout. */
+enum tsim_distvec_down {
+    TSIM_DISTVEC_DOWN_IHU,
+    TSIM_DISTVEC_DOWN_RATE,
+    TSIM_DISTVEC_DOWN_SILENT,
+    TSIM_DISTVEC_DOWN_HOP,
+    TSIM_DISTVEC_DOWN_TIMEOUT,
+    TSIM_DISTVEC_DOWN_COUNT,
+};
+
+/* A node's books on its links and routes since it started, for reports. */
+struct tsim_distvec_stats {
+    uint64_t down[TSIM_DISTVEC_DOWN_COUNT];
+    /* Of those, links its own measure called strong: the neighbour's floor, from its announces,
+     * oracle_margin_db or more below tx_dbm. Unknown without power control, so never strong. */
+    uint64_t down_strong[TSIM_DISTVEC_DOWN_COUNT];
+    /* Routes lost to a destination the node announces and has had a route to before - an outage -
+     * and, over time, how many such destinations it was without a route to and how many changed
+     * routes waited on its urgent list, in destination-seconds. */
+    uint64_t outages;
+    double unrouted_s;
+    double urgent_s;
+    /* Repair: seqno requests and route requests the node made (not those passed on), starved
+     * destinations it stopped asking about after its last try with no route come, and the times
+     * a request raised its own seq. */
+    uint64_t seqno_requests;
+    uint64_t route_requests;
+    uint64_t gave_up;
+    uint64_t seq_raised;
+    /* Now, not summed: of the destinations it announces, has had a route to and has none to, how
+     * many it holds a route to through a usable neighbour that is infeasible, and how many none. */
+    uint32_t unrouted_infeasible;
+    uint32_t unrouted_empty;
+};
+
+/* The node's books, up to now. */
+void tsim_distvec_stats(const void *self, struct tsim_distvec_stats *stats);
+
 /* How many neighbours the node can use: heard both ways, within etx_max. */
 uint32_t tsim_distvec_neighbours(const void *self);
+
+/* The node's own route's sequence number. */
+uint16_t tsim_distvec_seq(const void *self);
 
 /* The node's current Trickle interval. */
 tsim_time tsim_distvec_interval(const void *self);
