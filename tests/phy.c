@@ -1239,6 +1239,32 @@ static void a_marked_frame_reports_its_fate_at_the_receiver(void) {
     CHECK_EQ_I64(m.rival, 2);
 }
 
+/* Pairwise, the rival is the frame the rule counted: a faint frame under the floor brings more
+ * energy over the whole reception, but only a decodable one 2 dB under for the last tenth
+ * destroyed it. */
+static void a_pairwise_rival_is_the_frame_that_counted(void) {
+    struct tsim_sched *sched = tsim_sched_create();
+    struct tsim_phy_params params = with_pairwise();
+    struct tsim_lora sf7 = tsim_lora_default(7, 125000);
+    struct marks m = {0};
+    struct tsim_phy *phy = tsim_phy_create(sched, &params, 4, 0, &sf7,
+                                           (struct tsim_phy_hooks){.ctx = &m, .marked = on_marked});
+    tsim_phy_set_loss(phy, 1, 0, TX_DBM + 122.0);
+    tsim_phy_set_loss(phy, 2, 0, TX_DBM + 126.0);
+    tsim_phy_set_loss(phy, 3, 0, TX_DBM + 124.0);
+    struct marked_send one = {phy, 1, 0, 1}, faint = {phy, 2, UINT32_MAX, 2},
+                       late = {phy, 3, UINT32_MAX, 3};
+    tsim_sched_at(sched, 0, send_marked, &one);
+    tsim_sched_at(sched, TSIM_MS(1), send_marked, &faint);
+    tsim_sched_at(sched, SF7_FRAME - SF7_FRAME / 10, send_marked, &late);
+    tsim_sched_run_until(sched, SF7_FRAME + TSIM_US(1));
+    CHECK_EQ_I64(m.count, 1);
+    CHECK_EQ_I64(m.fate, TSIM_PHY_INTERFERED);
+    CHECK_EQ_I64(m.rival, 3);
+    tsim_phy_destroy(phy);
+    tsim_sched_destroy(sched);
+}
+
 static void marking_changes_nothing_and_refuses_what_it_cannot_mark(void) {
     struct world *w = world_new(2, NULL);
     arrive(w, 1, 0, -86.0);
@@ -1303,6 +1329,7 @@ int main(void) {
     RUN(create_refuses_bad_fading_and_cad);
     RUN(links_count_pairs_that_decode_both_ways);
     RUN(a_marked_frame_reports_its_fate_at_the_receiver);
+    RUN(a_pairwise_rival_is_the_frame_that_counted);
     RUN(marking_changes_nothing_and_refuses_what_it_cannot_mark);
     return CHECK_DONE();
 }

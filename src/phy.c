@@ -262,34 +262,40 @@ static void begin_retune(struct node *nd) {
     nd->wake = tsim_sched_after(phy->sched, phy->params.retune, retune_done, nd);
 }
 
+/* By LoRaSim's rule, below: how far `g` leaves `f` short of the pair's isolation threshold at
+ * `node`, in dB - positive when it destroys it - or -INFINITY for a frame the rule does not count
+ * against it. */
+static double pairwise_shortfall(const struct tsim_phy *phy, const struct tsim_frame *f,
+                                 const struct tsim_frame *g, uint32_t node, double dbm,
+                                 tsim_time since) {
+    if (g->id == f->id || g->channel != f->channel) {
+        return -INFINITY;
+    }
+    tsim_time lo = g->start > since ? g->start : since;
+    tsim_time hi = g->end < f->end ? g->end : f->end;
+    const struct tsim_frame *later = g->start > f->start ? g : f;
+    int64_t grace = (int64_t)later->lora.preamble - (int64_t)phy->params.lock_symbols;
+    /* The overlap starts no earlier than the later frame does; it is forgiven only if it is over
+     * by the end of that frame's grace, wherever the receiver came in. */
+    tsim_time grace_end = later->start + (grace > 0 ? grace : 0) * tsim_lora_symbol(&later->lora);
+    if (hi <= lo || hi <= grace_end) {
+        return -INFINITY;
+    }
+    double other = rx_dbm(phy, g, node);
+    if (!decodable(phy, g, other)) {
+        return -INFINITY;
+    }
+    int sf = g->lora.bw_hz == f->lora.bw_hz ? g->lora.sf : f->lora.sf;
+    return phy->params.isolation_db[f->lora.sf - TSIM_SF_MIN][sf - TSIM_SF_MIN] - (dbm - other);
+}
+
 /* LoRaSim's rule: each interferer on its own, at full weight, and only one the receiver could
  * decode. Overlapping no more than the first (preamble - lock_symbols) symbols of the later of the
  * two frames is no overlap: the receiver had not yet settled on it. */
 static bool survives_pairwise(const struct tsim_phy *phy, const struct tsim_frame *f, uint32_t node,
                               double dbm, tsim_time since) {
-    const double *threshold = phy->params.isolation_db[f->lora.sf - TSIM_SF_MIN];
     for (size_t i = 0; i < phy->count; i++) {
-        const struct tsim_frame *g = &phy->air[phy->head + i].f;
-        if (g->id == f->id || g->channel != f->channel) {
-            continue;
-        }
-        tsim_time lo = g->start > since ? g->start : since;
-        tsim_time hi = g->end < f->end ? g->end : f->end;
-        const struct tsim_frame *later = g->start > f->start ? g : f;
-        int64_t grace = (int64_t)later->lora.preamble - (int64_t)phy->params.lock_symbols;
-        /* The overlap starts no earlier than the later frame does; it is forgiven only if it is
-         * over by the end of that frame's grace, wherever the receiver came in. */
-        tsim_time grace_end =
-            later->start + (grace > 0 ? grace : 0) * tsim_lora_symbol(&later->lora);
-        if (hi <= lo || hi <= grace_end) {
-            continue;
-        }
-        double other = rx_dbm(phy, g, node);
-        if (!decodable(phy, g, other)) {
-            continue;
-        }
-        int sf = g->lora.bw_hz == f->lora.bw_hz ? g->lora.sf : f->lora.sf;
-        if (dbm - other < threshold[sf - TSIM_SF_MIN]) {
+        if (pairwise_shortfall(phy, f, &phy->air[phy->head + i].f, node, dbm, since) > 0) {
             return false;
         }
     }
@@ -329,21 +335,27 @@ static bool survives(const struct tsim_phy *phy, const struct tsim_frame *f, uin
     return true;
 }
 
-/* The frame that brought a reception the most interference energy, or 0 for none. */
+/* The frame that cost a reception lost on interference the most, or 0 for none, by the rule that
+ * judged it: under pairwise, the counted frame furthest past its threshold; otherwise the one that
+ * brought the most interference energy. */
 static uint64_t loudest_rival(const struct tsim_phy *phy, const struct tsim_frame *f, uint32_t node,
-                              tsim_time since) {
+                              double dbm, tsim_time since) {
     double most = 0;
     uint64_t id = 0;
     for (size_t i = 0; i < phy->count; i++) {
         const struct tsim_frame *g = &phy->air[phy->head + i].f;
-        if (g->id == f->id || g->channel != f->channel) {
+        double cost;
+        if (phy->params.pairwise) {
+            cost = pairwise_shortfall(phy, f, g, node, dbm, since);
+        } else if (g->id == f->id || g->channel != f->channel) {
             continue;
+        } else {
+            tsim_time lo = g->start > since ? g->start : since;
+            tsim_time hi = g->end < f->end ? g->end : f->end;
+            cost = hi > lo ? mw(rx_dbm(phy, g, node)) * (double)(hi - lo) : 0;
         }
-        tsim_time lo = g->start > since ? g->start : since;
-        tsim_time hi = g->end < f->end ? g->end : f->end;
-        double energy = hi > lo ? mw(rx_dbm(phy, g, node)) * (double)(hi - lo) : 0;
-        if (energy > most) {
-            most = energy;
+        if (cost > most) {
+            most = cost;
             id = g->id;
         }
     }
@@ -398,7 +410,7 @@ static void frame_end(struct tsim_sched *sched, void *ctx) {
         phy->outcomes[done++] = (struct outcome){i, nd->frame_dbm, ok};
         if (i == watch) {
             fate = ok ? TSIM_PHY_DECODED : TSIM_PHY_INTERFERED;
-            rival = ok ? 0 : loudest_rival(phy, &f, i, nd->since);
+            rival = ok ? 0 : loudest_rival(phy, &f, i, nd->frame_dbm, nd->since);
         }
         nd->state = LISTEN;
     }
