@@ -1605,6 +1605,11 @@ static void by_strength_a_neighbour_is_gone_when_frames_to_it_fail(void) {
     struct tsim_distvec_config bad = r.rc;
     bad.dead_hops = 0;
     CHECK(tsim_distvec_check(&bad) != NULL);
+    /* Sensing never reads them: a config that leaves them 0 is still good there. */
+    bad.links = TSIM_DISTVEC_LINKS_SENSED;
+    bad.silent_max = 0;
+    bad.link_band_db = -1;
+    CHECK(tsim_distvec_check(&bad) == NULL);
 }
 
 /* By strength, housekeeping keeps time with silent_max, not neighbour_timeout: two nodes heard

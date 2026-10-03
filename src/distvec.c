@@ -367,11 +367,14 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     if (c->links > TSIM_DISTVEC_LINKS_STRENGTH) {
         return "links is not sensed, oracle or strength";
     }
-    if (!(c->link_margin_db >= 0 && c->link_margin_db <= 60 && c->link_band_db >= 0 &&
-          c->link_band_db <= 60)) {
+    /* Checked only where used, as the oracle's are: a config written before them may leave them 0.
+     */
+    bool strength = c->links == TSIM_DISTVEC_LINKS_STRENGTH && !c->oracle;
+    if (strength && !(c->link_margin_db >= 0 && c->link_margin_db <= 60 && c->link_band_db >= 0 &&
+                      c->link_band_db <= 60)) {
         return "link_margin or link_band is out of range";
     }
-    if (c->dead_hops < 1 || c->silent_max <= 0) {
+    if (strength && (c->dead_hops < 1 || c->silent_max <= 0)) {
         return "dead_hops is 0, or silent_max is not above 0";
     }
     bool oracle = c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE;
