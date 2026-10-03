@@ -161,6 +161,19 @@ struct tsim_net_hop {
     tsim_time start; /* when the frame began */
 };
 
+/* Every frame at every node watched, addressed or not (MSH-60): tsim_phy_watch() through the
+ * network, with the purpose its sender gave it. Slow; for diagnosis. NULL `fn` stops it. */
+struct tsim_net_heard {
+    uint32_t from;
+    uint32_t to;
+    enum tsim_purpose purpose;
+    enum tsim_phy_fate fate;
+    tsim_time start; /* when the frame began */
+};
+typedef void (*tsim_net_heard_fn)(void *ctx, const struct tsim_net_heard *heard);
+void tsim_net_observe_heard(struct tsim_net *net, tsim_net_heard_fn fn, void *ctx,
+                            const bool *nodes);
+
 /* Called for each addressed frame as it ends, before its sender's routing hears it is done. For
  * the driver's bookkeeping, under the same rules as tsim_net_observe(). One observer at a time;
  * NULL removes it. */

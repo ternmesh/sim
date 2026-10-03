@@ -91,6 +91,25 @@ struct tsim_churn {
     double repair_s;
 };
 
+/* Announces among candidate 3's relays over the window (MSH-60), with report.announces: on each
+ * ordered pair of relays the oracle links, what became of the first's announce frames at the
+ * second, and the silences - from one decoded to the next, or the window's end - of
+ * TSIM_SILENCE or more, split by whether the first sent anything meanwhile and, if it did, what
+ * became of it. Fates are in the order of enum tsim_phy_fate. */
+#define TSIM_SILENCE TSIM_S(15 * 60)
+struct tsim_announces {
+    bool present;
+    uint32_t links;    /* ordered pairs of relays the oracle links */
+    double sent_per_h; /* announce frames, per relay per hour */
+    uint64_t heard[TSIM_PHY_FATE_COUNT];
+    uint64_t silences;
+    double silence_mean_s;
+    uint64_t unsent;                    /* silences the first sent nothing in */
+    uint64_t quiet;                     /* the rest, all it sent too weak at the second */
+    uint64_t lost[TSIM_PHY_FATE_COUNT]; /* frames sent in the others, by fate */
+    uint64_t silent_end;                /* pairs in silence as the window ends */
+};
+
 /* Where a message was dropped: at its source, at the hop before its destination - meant for the
  * destination itself - or between. */
 enum tsim_place {
@@ -187,6 +206,7 @@ struct tsim_report {
     struct tsim_route_health health;
     struct tsim_relay_tier relays;
     struct tsim_churn churn;
+    struct tsim_announces announces;
     struct tsim_losses losses;
 };
 

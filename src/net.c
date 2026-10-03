@@ -69,6 +69,8 @@ struct tsim_net {
     void *finished_ctx;
     tsim_net_hop_fn hop;
     void *hop_ctx;
+    tsim_net_heard_fn heard;
+    void *heard_ctx;
 };
 
 static void on_rx(void *ctx, uint32_t node, const struct tsim_frame *frame, double rssi_dbm,
@@ -418,6 +420,27 @@ void tsim_net_observe(struct tsim_net *net, tsim_net_delivered_fn fn, void *ctx)
 void tsim_net_observe_finished(struct tsim_net *net, tsim_net_finished_fn fn, void *ctx) {
     net->finished = fn;
     net->finished_ctx = ctx;
+}
+
+static void on_heard(void *ctx, uint32_t node, const struct tsim_frame *frame,
+                     enum tsim_phy_fate fate) {
+    struct tsim_net *net = ctx;
+    const struct queued *sent = frame->payload;
+    struct tsim_net_heard h = {
+        .from = frame->src,
+        .to = node,
+        .purpose = sent->tx.purpose,
+        .fate = fate,
+        .start = frame->start,
+    };
+    net->heard(net->heard_ctx, &h);
+}
+
+void tsim_net_observe_heard(struct tsim_net *net, tsim_net_heard_fn fn, void *ctx,
+                            const bool *nodes) {
+    net->heard = fn;
+    net->heard_ctx = ctx;
+    tsim_phy_watch(net->phy, on_heard, net, fn ? nodes : NULL);
 }
 
 void tsim_net_observe_hops(struct tsim_net *net, tsim_net_hop_fn fn, void *ctx) {

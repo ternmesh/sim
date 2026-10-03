@@ -169,6 +169,20 @@ static void print_report(const char *path, const struct tsim_scenario *s,
                r->relays.count, r->relays.components, r->relays.largest, r->relays.pairs,
                r->relays.covered);
     }
+    if (r->announces.present) {
+        static const char *fates[TSIM_PHY_FATE_COUNT] = {"decoded", "weak", "interfered",
+                                                         "taken",   "busy", "deaf"};
+        const struct tsim_announces *a = &r->announces;
+        printf("  \"announces\": {\"links\": %" PRIu32 ", \"sent_per_h\": %.6g, \"heard\": ",
+               a->links, a->sent_per_h);
+        print_counts(fates, a->heard, TSIM_PHY_FATE_COUNT);
+        printf(",\n                \"silences\": %" PRIu64
+               ", \"silence_mean_s\": %.6g, \"unsent\": %" PRIu64 ", \"quiet\": %" PRIu64
+               ", \"lost\": ",
+               a->silences, a->silence_mean_s, a->unsent, a->quiet);
+        print_counts(fates, a->lost, TSIM_PHY_FATE_COUNT);
+        printf(", \"silent_end\": %" PRIu64 "},\n", a->silent_end);
+    }
     if (r->churn.present) {
         printf("  \"churn\": {\"downs\": %" PRIu64 ", \"down_mean\": %.6g, \"to_down\": %" PRIu64
                ", \"hops_to_down\": %" PRIu64 ", \"routed_to\": %" PRIu64

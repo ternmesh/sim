@@ -123,6 +123,8 @@ struct tsim_scenario {
     uint8_t churn_nodes; /* enum tsim_churn_nodes */
     tsim_time churn_up;
     tsim_time churn_down;
+
+    bool report_announces; /* struct tsim_announces, for distvec: slow */
     struct tsim_send sends[TSIM_SENDS_MAX];
     uint32_t send_count;
 
