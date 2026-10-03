@@ -348,7 +348,13 @@ struct tsim_distvec_config {
  * announces counted: it costs the reference frame if the link is one, as above, and nothing goes
  * over it if not; its floor is what the mean loss says; and it is never forgotten, nor marked down
  * for a hop lost. Announces keep their IHUs, so routing takes the airtime it would. What it
- * delivers, against the protocol's own, is what better link sensing could gain. */
+ * delivers, against the protocol's own, is what better link sensing could gain.
+ *
+ * Measured on the region (200 relays, parent_oracle, 3 seeds), unicast on time was 51% at 0 dBm
+ * and 67% at 20 dBm, against 23% and 8% sensed and 58% and 97% under the oracle; relays' routes
+ * to each other reached 70% and 100% of pairs, against 22% and 8% sensed. With links that never
+ * flip, Trickle settles: announces took 12% of airtime, against 36% and 56% sensed. Link sensing,
+ * not route propagation, is most of candidate 3's gap. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */
