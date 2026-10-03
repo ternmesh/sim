@@ -1830,6 +1830,13 @@ static void relays_picked_as_a_connected_dominating_set_join_and_reach_every_nod
     c.relay_count = 6;
     CHECK(tsim_distvec_pick_relays(phy, NULL, &c, set));
     CHECK(set[0] && !set[6] && picked(set, 7) == 6);
+    c.relay_pick = TSIM_DISTVEC_PICK_DEGREE; /* every node a relay: no leaves, no tier */
+    c.relay_count = 7;
+    CHECK(tsim_distvec_pick_relays(phy, NULL, &c, set));
+    CHECK(picked(set, 7) == 7);
+    CHECK(tsim_distvec_tier(phy, &c, &t));
+    CHECK(!t.present);
+    c.relay_pick = TSIM_DISTVEC_PICK_CDS;
     tsim_phy_destroy(phy);
 
     /* Two triangles apart: a relay in each, which no link joins. */

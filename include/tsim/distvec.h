@@ -505,8 +505,9 @@ bool tsim_distvec_pick_relays(const struct tsim_phy *phy, const struct tsim_pos 
 
 struct tsim_relay_tier;
 
-/* How well `config`'s infrastructure joins up over the oracle's links, from those `phy` has now.
- * Returns false, leaving `out` zero, when memory runs out or the modulation is invalid. */
+/* How well `config`'s infrastructure joins up over the oracle's links, from those `phy` has now;
+ * `present` only when some nodes are leaves. Returns false, leaving `out` zero, when memory runs
+ * out or the modulation is invalid. */
 bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_config *config,
                        struct tsim_relay_tier *out);
 

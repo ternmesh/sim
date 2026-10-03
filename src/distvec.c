@@ -3247,7 +3247,7 @@ bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_con
         joined += (uint64_t)tail * (tail - 1);
     }
     if (ok) {
-        out->present = true;
+        out->present = leaves > 0; /* with none, there is no tier to speak of */
         out->pairs = out->count > 1 ? (double)joined / ((double)out->count * (out->count - 1)) : 0;
         out->covered = leaves ? (double)covered / leaves : 1;
     }
