@@ -69,6 +69,8 @@ struct tsim_net {
     void *finished_ctx;
     tsim_net_hop_fn hop;
     void *hop_ctx;
+    tsim_net_heard_fn heard;
+    void *heard_ctx;
 };
 
 static void on_rx(void *ctx, uint32_t node, const struct tsim_frame *frame, double rssi_dbm,
@@ -420,6 +422,27 @@ void tsim_net_observe_finished(struct tsim_net *net, tsim_net_finished_fn fn, vo
     net->finished_ctx = ctx;
 }
 
+static void on_heard(void *ctx, uint32_t node, const struct tsim_frame *frame,
+                     enum tsim_phy_fate fate) {
+    struct tsim_net *net = ctx;
+    const struct queued *sent = frame->payload;
+    struct tsim_net_heard h = {
+        .from = frame->src,
+        .to = node,
+        .purpose = sent->tx.purpose,
+        .fate = fate,
+        .start = frame->start,
+    };
+    net->heard(net->heard_ctx, &h);
+}
+
+void tsim_net_observe_heard(struct tsim_net *net, tsim_net_heard_fn fn, void *ctx,
+                            const bool *nodes) {
+    net->heard = fn;
+    net->heard_ctx = ctx;
+    tsim_phy_watch(net->phy, on_heard, net, fn ? nodes : NULL);
+}
+
 void tsim_net_observe_hops(struct tsim_net *net, tsim_net_hop_fn fn, void *ctx) {
     net->hop = fn;
     net->hop_ctx = ctx;
@@ -639,6 +662,10 @@ const struct tsim_tx *tsim_node_head(const struct tsim_node *nd) {
 size_t tsim_node_queue_length(const struct tsim_node *nd) { return nd->queue_len; }
 
 bool tsim_node_sending(const struct tsim_node *nd) { return nd->sending; }
+
+const struct tsim_tx *tsim_net_on_air(const struct tsim_net *net, uint32_t node) {
+    return node < net->n && net->nodes[node].sending ? &net->nodes[node].air.tx : NULL;
+}
 
 bool tsim_node_transmit(struct tsim_node *nd) {
     if (nd->sending || nd->queue_len == 0) {

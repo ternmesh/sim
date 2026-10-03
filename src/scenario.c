@@ -1005,6 +1005,9 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     if (strcmp(key, "traffic.lead") == 0) {
         return parse_time(v, &s->lead) ? NULL : "expected a time, such as 3 h";
     }
+    if (strcmp(key, "report.announces") == 0) {
+        return parse_yes_no(v, &s->report_announces) ? NULL : "expected yes or no";
+    }
     if (strcmp(key, "churn.share") == 0) {
         return parse_fraction(v, &s->churn_share) ? NULL : "expected a fraction from 0 to 1";
     }
@@ -1431,6 +1434,155 @@ bool tsim_scenario_read_links(const struct tsim_scenario *s, const char *text,
 
 /* --- Running --- */
 
+/* Announces among relays (MSH-60): every ordered pair of relays the oracle links, from the window
+ * on. */
+struct pair {
+    tsim_time heard;                       /* last decoded, or the window's start */
+    uint32_t pending[TSIM_PHY_FATE_COUNT]; /* frames since, by fate */
+};
+
+struct announces {
+    uint32_t n;
+    uint32_t relays;
+    uint32_t *index;    /* [node]: its relay index, or UINT32_MAX */
+    bool *watch;        /* [node]: a relay */
+    uint8_t *linked;    /* [relay * relays + relay] */
+    struct pair *pairs; /* [relay * relays + relay] */
+    uint64_t sent;      /* announce frames relays had sent as the window began */
+    struct tsim_announces report;
+    double silence_s;
+};
+
+static void close_silence(struct announces *a, struct pair *p, tsim_time now) {
+    uint64_t sent = 0;
+    for (int f = 0; f < TSIM_PHY_FATE_COUNT; f++) {
+        sent += p->pending[f];
+    }
+    if (now - p->heard >= TSIM_SILENCE) {
+        a->report.silences++;
+        a->silence_s += (double)(now - p->heard) / 1e9;
+        if (sent == 0) {
+            a->report.unsent++;
+        } else if (p->pending[TSIM_PHY_WEAK] == sent) {
+            a->report.quiet++;
+        } else {
+            for (int f = 0; f < TSIM_PHY_FATE_COUNT; f++) {
+                a->report.lost[f] += p->pending[f];
+            }
+        }
+    }
+    memset(p->pending, 0, sizeof p->pending);
+}
+
+static void announce_heard(void *ctx, const struct tsim_net_heard *h) {
+    struct announces *a = ctx;
+    if (h->purpose != TSIM_PURPOSE_ANNOUNCE || a->index[h->from] == UINT32_MAX) {
+        return;
+    }
+    uint32_t from = a->index[h->from], to = a->index[h->to];
+    size_t k = (size_t)from * a->relays + to;
+    if (!a->linked[k]) {
+        return;
+    }
+    a->report.heard[h->fate]++;
+    struct pair *p = &a->pairs[k];
+    if (h->fate == TSIM_PHY_DECODED) {
+        close_silence(a, p, h->start);
+        p->heard = h->start;
+    } else {
+        p->pending[h->fate]++;
+    }
+}
+
+/* Readies the watch over relays linked as the oracle has them: both ends decoding the other at
+ * tx_dbm with oracle_margin_db to spare. */
+static bool announces_start(struct announces *a, struct tsim_net *net,
+                            const struct tsim_distvec_config *dv, tsim_time now) {
+    uint32_t n = tsim_net_nodes(net);
+    const struct tsim_phy *phy = tsim_net_phy(net);
+    a->n = n;
+    a->index = malloc(n * sizeof *a->index);
+    a->watch = calloc(n, sizeof *a->watch);
+    if (!a->index || !a->watch) {
+        return false;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        a->watch[i] = tsim_distvec_relay(dv, i);
+        a->index[i] = a->watch[i] ? a->relays++ : UINT32_MAX;
+    }
+    size_t rr = (size_t)a->relays * a->relays;
+    a->linked = calloc(rr ? rr : 1, 1);
+    a->pairs = calloc(rr ? rr : 1, sizeof *a->pairs);
+    if (!a->linked || !a->pairs) {
+        return false;
+    }
+    double top = dv->tx_dbm - dv->oracle_margin_db - tsim_phy_floor_dbm(phy, &dv->lora);
+    for (uint32_t x = 0; x < n; x++) {
+        for (uint32_t y = 0; y < n; y++) {
+            if (x != y && a->watch[x] && a->watch[y] && tsim_phy_loss(phy, x, y) <= top &&
+                tsim_phy_loss(phy, y, x) <= top) {
+                size_t k = (size_t)a->index[x] * a->relays + a->index[y];
+                a->linked[k] = 1;
+                a->report.links++;
+                a->pairs[k].heard = now;
+            }
+        }
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        a->sent += a->watch[i] ? tsim_net_ledger(net, i)->frames[TSIM_PURPOSE_ANNOUNCE] : 0;
+    }
+    tsim_net_observe_heard(net, announce_heard, a, a->watch);
+    return true;
+}
+
+/* Counts the links relays use against the oracle's. */
+static void sensed_links(const struct announces *a, struct tsim_net *net, uint32_t out[3]) {
+    out[0] = out[1] = out[2] = 0;
+    for (uint32_t x = 0; x < a->n; x++) {
+        const void *r = tsim_net_routing(net, x); /* NULL while down: it uses no link */
+        for (uint32_t y = 0; a->watch[x] && y < a->n; y++) {
+            if (x == y || !a->watch[y]) {
+                continue;
+            }
+            bool used = r && tsim_distvec_uses(r, y);
+            bool true_link = a->linked[(size_t)a->index[x] * a->relays + a->index[y]];
+            out[used && true_link ? 0 : used ? 1 : 2] += used || true_link;
+        }
+    }
+}
+
+static void announces_report(struct announces *a, struct tsim_net *net, tsim_time begun,
+                             tsim_time end, struct tsim_announces *out) {
+    /* From the senders' own books, so a lone relay's count too - less what is still on the air,
+     * whose fates are not yet known, so that it is in neither the frames sent nor the silences. */
+    uint64_t sent = 0;
+    for (uint32_t i = 0; i < a->n; i++) {
+        if (a->watch[i]) {
+            const struct tsim_tx *air = tsim_net_on_air(net, i);
+            sent += tsim_net_ledger(net, i)->frames[TSIM_PURPOSE_ANNOUNCE] -
+                    (air && air->purpose == TSIM_PURPOSE_ANNOUNCE);
+        }
+    }
+    for (size_t k = 0; k < (size_t)a->relays * a->relays; k++) {
+        if (a->linked[k]) {
+            a->report.silent_end += end - a->pairs[k].heard >= TSIM_SILENCE;
+            close_silence(a, &a->pairs[k], end);
+        }
+    }
+    *out = a->report;
+    out->present = true;
+    double hours = (double)(end - begun) / (double)TSIM_S(3600);
+    out->sent_per_h = a->relays && hours > 0 ? (double)(sent - a->sent) / a->relays / hours : 0;
+    out->silence_mean_s = a->report.silences ? a->silence_s / (double)a->report.silences : 0;
+}
+
+static void announces_free(struct announces *a) {
+    free(a->index);
+    free(a->watch);
+    free(a->linked);
+    free(a->pairs);
+}
+
 /* What the window's start leaves for its end to be measured against. */
 struct window {
     struct tsim_metrics *metrics;
@@ -1438,6 +1590,8 @@ struct window {
     const struct tsim_distvec_config *dv;     /* NULL for other routing */
     bool *relay;                              /* [node], with dv */
     const struct tsim_distvec_stats *retired; /* books of routers since powered down */
+    struct announces *announces;              /* with report.announces */
+    bool failed;
     tsim_time begun;
     struct tsim_distvec_stats stats;
     double relay_reach;
@@ -1500,6 +1654,11 @@ static void begin_window(struct tsim_sched *sched, void *ctx) {
     if (w->dv) {
         distvec_sum(w->net, w->retired, &w->stats);
         w->relay_reach = relay_reach(w->net, w->relay);
+    }
+    if (w->announces && !announces_start(w->announces, w->net, w->dv, w->begun)) {
+        w->failed = true;
+    } else if (w->announces) {
+        sensed_links(w->announces, w->net, w->announces->report.sensed[0]);
     }
 }
 
@@ -1688,6 +1847,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     uint8_t *relay_set = NULL;
     struct window window = {0};
     struct churn churn = {0};
+    struct announces announces = {0};
     bool ok = false;
     /* The oracle's routes are the driver's to hand down: the plugin is given where they will be,
      * and they are built once the links are laid. So is the table leaves' parents are kept in. */
@@ -1774,6 +1934,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
             window.relay[i] = tsim_distvec_relay(dv, i);
         }
         window.dv = dv;
+        window.announces = s->report_announces ? &announces : NULL;
     }
     /* Scheduled before the traffic, so it runs first of what happens as the warmup ends: a
      * message sent at that instant is all in the window. */
@@ -1816,7 +1977,11 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     if (window.dv) {
         health(&window, tsim_sched_now(sched), &report->health);
     }
-    ok = !churn.failed &&
+    if (window.announces && !window.failed) {
+        sensed_links(&announces, net, announces.report.sensed[1]);
+        announces_report(&announces, net, window.begun, tsim_sched_now(sched), &report->announces);
+    }
+    ok = !churn.failed && !window.failed &&
          tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);
     if (ok && dv && (dv->relay_pick != TSIM_DISTVEC_PICK_LIST || strcmp(dv->relays, "all") != 0)) {
         ok = tsim_distvec_tier(tsim_net_phy(net), dv, &report->relays);
@@ -1830,6 +1995,7 @@ done:
     free(parents);
     free(relay_set);
     free(churn.churners);
+    announces_free(&announces); /* the network that called into it is gone */
     free(window.relay);
     tsim_sched_destroy(sched);
     free(pos);

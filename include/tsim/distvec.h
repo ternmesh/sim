@@ -475,7 +475,21 @@ struct tsim_distvec_config {
  * its time down: routes still led into it, relays' routes to each other reaching 79% and 63% of
  * pairs against 95% and 100%. Forgetting on silence sooner fails worse, and without churn too:
  * silent_max 60 min made 48% and 11% with every node up, 15 min 22% and 7%, live neighbours going
- * that long unheard (MSH-60). A dead neighbour wants a signal that a live one never gives. */
+ * that long unheard (MSH-60). A dead neighbour wants a signal that a live one never gives.
+ *
+ * Why live ones go unheard (MSH-60, report.announces; cds 200, 3 seeds): their announces are sent
+ * and lost. Of the announces between relays the oracle links that reach the far end above its
+ * floor, 36% were decoded at 0 dBm - 31% lost to interference, 31% to a receiver busy with
+ * another frame - and 2.6% at 20 dBm, 43% and 50%. Of the silences of 15 minutes or more, 85% at
+ * 0 dBm were of announces lost, 15% of none sent; at 20 dBm 72% were of announces too quiet to
+ * reach, power control not meaning them to. Louder announces did not help: power_k 16, 32 and
+ * power off decoded 38%, 38% and 39% at 0 dBm for 67% of unicasts on time either way, and at 20
+ * dBm made 52%, 29% and 13%, the extra power costing more in collisions than it found. Strength
+ * never used a link the oracle lacks. It used 95% of the oracle's relay links at 0 dBm, 2.7
+ * points short of the link oracle there (66.3% against 69.0%), but 8% at 20 dBm, where routes
+ * over the nearest links alone, more hops each, fell 10.7 short (70.3% against 81.0%), mostly in
+ * retries: what announcing to power_k neighbours leaves unknown, and what learning more costs
+ * more than it gains. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */
@@ -593,6 +607,9 @@ struct tsim_distvec_stats {
 
 /* The node's books, up to now. */
 void tsim_distvec_stats(const void *self, struct tsim_distvec_stats *stats);
+
+/* Whether the node can use its link to `nb`: heard both ways, within etx_max. */
+bool tsim_distvec_uses(const void *self, uint32_t nb);
 
 /* How many neighbours the node can use: heard both ways, within etx_max. */
 uint32_t tsim_distvec_neighbours(const void *self);

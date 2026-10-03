@@ -2868,6 +2868,15 @@ uint32_t tsim_distvec_neighbours(const void *self) {
     return count;
 }
 
+bool tsim_distvec_uses(const void *self, uint32_t nb) {
+    const struct router *r = self;
+    if (nb >= r->nodes || !r->slot_of[nb]) {
+        return false;
+    }
+    const struct neighbour *n = slot((struct router *)r, r->slot_of[nb]);
+    return n->used && n->cost != INF;
+}
+
 tsim_time tsim_distvec_promise(const void *self) { return ((const struct router *)self)->promised; }
 
 uint32_t tsim_distvec_round(const void *self) { return ((const struct router *)self)->round; }

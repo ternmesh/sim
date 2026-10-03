@@ -187,6 +187,13 @@ bool tsim_phy_links(const struct tsim_phy *phy, const struct tsim_lora *lora, do
 void tsim_phy_set_losses(struct tsim_phy *phy, const struct tsim_channel_params *channel,
                          const struct tsim_pos *pos);
 
+/* Watches every frame begun from now on at every node in `nodes` ([node], kept by the caller)
+ * but its sender (MSH-60): as each ends, `fn` is told its fate at each, as tsim_phy_mark() would
+ * book it for that node alone. Slow: for diagnosis, not for every run. NULL `nodes` stops it. */
+typedef void (*tsim_phy_heard_fn)(void *ctx, uint32_t node, const struct tsim_frame *frame,
+                                  enum tsim_phy_fate fate);
+void tsim_phy_watch(struct tsim_phy *phy, tsim_phy_heard_fn fn, void *ctx, const bool *nodes);
+
 /* Powers a radio down or up (MSH-59). Down, it hears nothing - a frame meant for it is booked deaf
  * - senses no carrier and sends nothing: what it was receiving is lost, though a frame it is
  * sending runs to its end. Up again, it listens as it was tuned. Radios start up. */
