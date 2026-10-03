@@ -265,6 +265,12 @@ enum tsim_distvec_leaves {
     TSIM_DISTVEC_LEAVES_PARENT_ORACLE,
 };
 
+/* How a node judges its links: by announces counted and IHUs, or from the oracle's (below). */
+enum tsim_distvec_links {
+    TSIM_DISTVEC_LINKS_SENSED,
+    TSIM_DISTVEC_LINKS_ORACLE,
+};
+
 struct tsim_distvec_oracle;
 
 struct tsim_distvec_config {
@@ -317,8 +323,10 @@ struct tsim_distvec_config {
 
     /* The oracle, below: off for the protocol itself. */
     bool oracle;
+    uint8_t links;           /* enum tsim_distvec_links */
     double oracle_margin_db; /* a link's loss leaves at least this above the floor, both ways */
-    const struct tsim_distvec_oracle *oracle_routes; /* set by the driver, never parsed */
+    const struct tsim_distvec_oracle
+        *oracle_routes; /* with either: set by the driver, never parsed */
 };
 
 /* The oracle: a yardstick for the protocol, never a candidate. With `oracle`, a node announces
@@ -332,7 +340,21 @@ struct tsim_distvec_config {
  * mean loss. A route is a path of the fewest links through relays only, each hop to the neighbour
  * of those one hop nearer with the least loss. A hop goes at the power its next hop needs with
  * margin_db, and frames for every neighbour at what the power_k nearest need, as power control
- * would set them knowing every floor exactly; without power control, at tx_dbm. */
+ * would set them knowing every floor exactly; without power control, at tx_dbm.
+ *
+ * The link oracle (MSH-57), with `links` oracle, is the same yardstick for links alone: the
+ * protocol runs as ever - announces, IHUs, Trickle, the cap, feasibility, requests - but a
+ * neighbour, once an announce of its has been heard, is judged by the oracle's links, not by its
+ * announces counted: it costs the reference frame if the link is one, as above, and nothing goes
+ * over it if not; its floor is what the mean loss says; and it is never forgotten, nor marked down
+ * for a hop lost. Announces keep their IHUs, so routing takes the airtime it would. What it
+ * delivers, against the protocol's own, is what better link sensing could gain.
+ *
+ * Measured on the region (200 relays, parent_oracle, 3 seeds), unicast on time was 51% at 0 dBm
+ * and 67% at 20 dBm, against 23% and 8% sensed and 58% and 97% under the oracle; relays' routes
+ * to each other reached 70% and 100% of pairs, against 22% and 8% sensed. With links that never
+ * flip, Trickle settles: announces took 12% of airtime, against 36% and 56% sensed. Link sensing,
+ * not route propagation, is most of candidate 3's gap. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */
@@ -343,13 +365,15 @@ struct tsim_distvec_oracle {
     uint32_t nodes;
     struct tsim_distvec_oracle_route *route; /* [src * nodes + dst] */
     float *node_dbm;                         /* per node */
+    float *need; /* [a * nodes + b]: what a frame from a needs to be decoded at b, in dBm */
+    double top;  /* the most a link's `need` may be, both ways */
 };
 
 struct tsim_phy;
 
-/* Builds the oracle's routes for `config` from the links `phy` has now. Returns false, leaving
- * `oracle` empty, when memory runs out or the modulation is invalid. Takes time in proportion to
- * the node count times the links. */
+/* Builds the oracle's routes and links for `config` from the links `phy` has now. Returns false,
+ * leaving `oracle` empty, when memory runs out or the modulation is invalid. Takes time in
+ * proportion to the node count times the links. */
 bool tsim_distvec_oracle_build(struct tsim_distvec_oracle *oracle, const struct tsim_phy *phy,
                                const struct tsim_distvec_config *config);
 
@@ -365,7 +389,8 @@ void tsim_distvec_oracle_free(struct tsim_distvec_oracle *oracle);
  * on the second copy heard. Power control on, with power_k 8 - without it, the region's unicast
  * fell from 22% to 2% as density rose (MSH-45) - frames going no quieter than -9 dBm, the SX1262's
  * least, with a 10 dB margin and 3 dB more for each try lost, and the SNR floor Semtech's for the
- * SF: -7.5 dB at SF7, 2.5 dB lower for each SF above. The oracle off, with a 3 dB margin when on.
+ * SF: -7.5 dB at SF7, 2.5 dB lower for each SF above. The oracle off and links sensed, with a 3 dB
+ * margin for either oracle.
  *
  * The cap is per node, so in a neighbourhood of n nodes routing may take n times it of the
  * channel: 2% - Reticulum's announce cap - saturated a 200-node town at SF9, which 0.5% did not.

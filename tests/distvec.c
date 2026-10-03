@@ -1427,6 +1427,48 @@ static void the_oracle_routes_by_the_fewest_hops_and_announces_nothing(void) {
     CHECK(tsim_distvec_check(&bad) != NULL);
 }
 
+/* The link oracle judges links by the oracle's, not by announces: with no IHUs sent, sensing finds
+ * no link both ways, and the link oracle every one with its margin. Nodes 0 to 3 are a line, and
+ * the link from 0 to 3 is decoded, at -123 dBm over a -124.5 dBm floor, but with less than the 3 dB
+ * margin, so the link oracle never uses it. Routes are the protocol's own, from announces. */
+static void the_link_oracle_uses_its_links_and_no_others(void) {
+    struct rig r;
+    struct tsim_distvec_oracle o = {0};
+    for (int oracle = 0; oracle < 2; oracle++) {
+        rig_init(&r);
+        r.rc.ihu_max = 0;
+        r.rc.links = oracle ? TSIM_DISTVEC_LINKS_ORACLE : TSIM_DISTVEC_LINKS_SENSED;
+        r.rc.oracle_routes = oracle ? &o : NULL;
+        build(&r, 4, 1);
+        for (uint32_t i = 0; i + 1 < 4; i++) {
+            link(&r, i, i + 1, LOSS_LOUD);
+        }
+        link(&r, 0, 3, 137);
+        CHECK(tsim_distvec_oracle_build(&o, tsim_net_phy(r.net), &r.rc));
+        tsim_net_start(r.net);
+        tsim_sched_run_until(r.sched, TSIM_S(300));
+        uint32_t next = 0;
+        if (!oracle) {
+            CHECK(!route(&r, 0, 1, &next));
+            CHECK(!route(&r, 0, 3, &next));
+        } else {
+            CHECK(route(&r, 0, 1, &next) && next == 1);
+            CHECK(route(&r, 0, 3, &next) && next == 1);
+            CHECK(route(&r, 3, 0, &next) && next == 2);
+            CHECK(frames(&r, 0, TSIM_PURPOSE_ANNOUNCE) > 0);
+            uint64_t m = tsim_net_originate(r.net, 0, 3, 40);
+            tsim_sched_run_until(r.sched, TSIM_S(600));
+            CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+        }
+        rig_close(&r);
+        tsim_distvec_oracle_free(&o);
+    }
+
+    struct tsim_distvec_config bad = r.rc;
+    bad.links = TSIM_DISTVEC_LINKS_ORACLE + 1;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+}
+
 /* With power control, SF7 and 14 dBm: a neighbour at loss L is heard at SNR 131 - L, so its floor
  * is L - 124.5 dBm, and a frame to it goes at L - 114.5, rounded up, between -9 and 14. */
 static void power_rig(struct rig *r, uint32_t nodes, const double *losses) {
@@ -1603,6 +1645,7 @@ static void a_lost_message_is_booked_where_it_was_lost(void) {
 int main(void) {
     RUN(a_line_converges_on_its_one_path);
     RUN(the_oracle_routes_by_the_fewest_hops_and_announces_nothing);
+    RUN(the_link_oracle_uses_its_links_and_no_others);
     RUN(a_near_neighbour_is_sent_to_quieter_than_a_far_one);
     RUN(a_relay_goes_loud_enough_for_the_hop_before);
     RUN(a_hop_lost_at_its_power_is_tried_again_louder);

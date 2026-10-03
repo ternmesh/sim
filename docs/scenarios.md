@@ -166,7 +166,8 @@ default.
 | `routing.snr_floor` (`distvec`) | Semtech's for the SF | the SNR the radio demodulates down to, in dB, from which a neighbour's floor is reckoned |
 | `routing.seq_period` (`distvec`) | `0 s` | how often each node raises its own sequence number unasked, give or take 10%, so routes that feasibility starved come back without a request getting through (DSDV's periodic seqnos). `0 s` never. Measured on the region it did not help (MSH-54) |
 | `routing.oracle` (`distvec`) | `no` | `yes` makes candidate 3 a yardstick, not a candidate: no announces or requests, and routes and powers handed down from the simulator's own links - the fewest hops over links with `routing.oracle_margin` to spare - with the data path, broadcasts and MAC unchanged. What it delivers is the most better routing could gain |
-| `routing.oracle_margin` (`distvec`) | 3 | dB above the floor, at `radio.tx_dbm` by the mean loss, that both ends of a link the oracle uses must have, 0 to 60 |
+| `routing.links` (`distvec`) | `sensed` | how a node judges its links: `sensed`, by announces counted and IHUs; or `oracle`, a yardstick for link sensing alone (MSH-57) - the protocol runs as ever, announces and their IHUs included, but a neighbour once heard is judged by the oracle's links: used, at an ETX of 1, if it is one, never if not, at its true floor, and never forgotten. Ignored under `routing.oracle` |
+| `routing.oracle_margin` (`distvec`) | 3 | dB above the floor, at `radio.tx_dbm` by the mean loss, that both ends of a link the oracle uses must have, 0 to 60; for `routing.links` oracle too |
 
 The routing and the MAC each keep their own copy of the window: the routing sizes its
 acknowledgement wait by it. Settings that bound each other, such as `cw_min` and `cw_max`, are

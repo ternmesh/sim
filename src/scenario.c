@@ -597,6 +597,16 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "oracle") == 0) {
         return parse_yes_no(value, &c->oracle) ? NULL : "expected yes or no";
     }
+    if (strcmp(key, "links") == 0) {
+        if (strcmp(value, "sensed") == 0) {
+            c->links = TSIM_DISTVEC_LINKS_SENSED;
+        } else if (strcmp(value, "oracle") == 0) {
+            c->links = TSIM_DISTVEC_LINKS_ORACLE;
+        } else {
+            return "expected sensed or oracle";
+        }
+        return NULL;
+    }
     if (strcmp(key, "oracle_margin") == 0) {
         return distvec_factor(value, 0, 60, &c->oracle_margin_db);
     }
@@ -1463,7 +1473,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     struct tsim_distvec_config *dv = NULL;
     if (s->routing->routing == &tsim_distvec) {
         dv = (struct tsim_distvec_config *)routing_config;
-        dv->oracle_routes = dv->oracle ? &oracle : NULL;
+        dv->oracle_routes = dv->oracle || dv->links == TSIM_DISTVEC_LINKS_ORACLE ? &oracle : NULL;
         if (dv->leaves == TSIM_DISTVEC_LEAVES_PARENT_ORACLE) {
             parents = malloc(s->nodes * sizeof *parents);
             dv->parents = parents;
@@ -1518,7 +1528,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         channel.seed = s->seed;
         tsim_phy_set_losses(tsim_net_phy(net), &channel, pos);
     }
-    if (dv && dv->oracle && !tsim_distvec_oracle_build(&oracle, tsim_net_phy(net), dv)) {
+    if (dv && dv->oracle_routes && !tsim_distvec_oracle_build(&oracle, tsim_net_phy(net), dv)) {
         goto done;
     }
 

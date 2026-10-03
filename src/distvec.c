@@ -210,6 +210,7 @@ struct router {
     uint32_t data_head;
     double node_dbm;                          /* what frames for every neighbour go at */
     const struct tsim_distvec_oracle *oracle; /* routes handed down, or NULL */
+    const struct tsim_distvec_oracle *truth;  /* with links oracle: whose links are used */
     struct tsim_distvec_config config;
     struct tsim_rng rng;
     double ref_ms; /* the reference frame's airtime */
@@ -357,7 +358,11 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
         return "with power control, tx_dbm and tx_min_dbm are not whole dBm apart within -128 to "
                "127, or a margin is out of range";
     }
-    if (c->oracle && !(c->oracle_margin_db >= 0 && c->oracle_margin_db <= 60)) {
+    if (c->links > TSIM_DISTVEC_LINKS_ORACLE) {
+        return "links is not sensed or oracle";
+    }
+    bool oracle = c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE;
+    if (oracle && !(c->oracle_margin_db >= 0 && c->oracle_margin_db <= 60)) {
         return "oracle_margin is out of range";
     }
     if (c->hop_max < 1 || c->bcast_hops > 254) {
@@ -504,7 +509,24 @@ static uint8_t heard_rate(const struct router *r, const struct neighbour *n) {
     return (uint8_t)(255 * __builtin_popcount(history) / span);
 }
 
+/* What a frame from this node needs to be decoded at `id`, in dBm, by the link oracle's mean loss.
+ */
+static double true_need(const struct router *r, uint32_t id) {
+    return r->truth->need[(size_t)r->self * r->nodes + id];
+}
+
+/* Whether the link oracle has a link between this node and `id`: each decodes the other. */
+static bool true_link(const struct router *r, uint32_t id) {
+    const struct tsim_distvec_oracle *o = r->truth;
+    return o->need[(size_t)r->self * r->nodes + id] <= o->top &&
+           o->need[(size_t)id * r->nodes + r->self] <= o->top;
+}
+
 static uint16_t link_cost(const struct router *r, const struct neighbour *n) {
+    if (r->truth) {
+        double cost = ceil(r->ref_ms); /* an ETX of 1 */
+        return !true_link(r, n->id) ? INF : cost < 1 ? 1 : cost >= INF ? INF - 1 : (uint16_t)cost;
+    }
     uint8_t got = heard_rate(r, n);
     if (n->dr == 0 || got == 0) {
         return INF; /* not heard both ways */
@@ -540,7 +562,9 @@ static void choose_parent(struct router *r) {
         if (!n->used || !n->infra || n->cost == INF) {
             continue;
         }
-        double q = (double)heard_rate(r, n) * n->dr;
+        /* With the link oracle, the margin the link has: above 0 for any it uses. */
+        double q =
+            r->truth ? r->truth->top - true_need(r, n->id) + 1 : (double)heard_rate(r, n) * n->dr;
         if (n == cur) {
             cur_q = q;
         }
@@ -1404,7 +1428,9 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     n->heard = now(r);
     n->infra = b[9] & FLAG_INFRA;
     n->promise = promise_time(get16(b + 10));
-    if (r->config.power) {
+    if (r->config.power && r->truth) {
+        n->floor = true_need(r, from);
+    } else if (r->config.power) {
         double floor = floor_of(r, b[16], snr);
         n->floor = isnan(n->floor) ? floor : 0.75 * n->floor + 0.25 * floor;
     }
@@ -2132,8 +2158,10 @@ static void house_fire(void *ctx) {
         if (!n->used) {
             continue;
         }
-        /* Never before it has let two of its promises pass: a node may go quiet that long. */
-        if (t - n->heard > r->config.neighbour_timeout && t - n->heard > 2 * n->promise) {
+        /* Never before it has let two of its promises pass: a node may go quiet that long. And
+         * never with the link oracle, whose links stay. */
+        if (!r->truth && t - n->heard > r->config.neighbour_timeout &&
+            t - n->heard > 2 * n->promise) {
             forget(r, s);
             continue;
         }
@@ -2213,7 +2241,9 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->infra = tsim_nodeset_contains(c->relays, r->self) == 1;
     r->config = *c;
     r->oracle = c->oracle ? c->oracle_routes : NULL;
-    if (c->oracle && !r->oracle) { /* the routes themselves come once the links are laid */
+    r->truth = c->links == TSIM_DISTVEC_LINKS_ORACLE && !c->oracle ? c->oracle_routes : NULL;
+    if ((c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE) &&
+        !c->oracle_routes) { /* the routes themselves come once the links are laid */
         free(r);
         return NULL;
     }
@@ -2374,6 +2404,7 @@ tsim_time tsim_distvec_interval(const void *self) {
 void tsim_distvec_oracle_free(struct tsim_distvec_oracle *o) {
     free(o->route);
     free(o->node_dbm);
+    free(o->need);
     *o = (struct tsim_distvec_oracle){0};
 }
 
@@ -2399,6 +2430,7 @@ bool tsim_distvec_oracle_build(struct tsim_distvec_oracle *o, const struct tsim_
     float *near = malloc(n * sizeof *near);
     uint32_t *adj = NULL;
     bool ok = false;
+    double top = c->tx_dbm - c->oracle_margin_db;
     if (!need || !start || !dist || !queue || !o->route || !o->node_dbm || !near) {
         goto done;
     }
@@ -2407,7 +2439,6 @@ bool tsim_distvec_oracle_build(struct tsim_distvec_oracle *o, const struct tsim_
             need[(size_t)a * n + b] = (float)(tsim_phy_loss(phy, a, b) + floor_dbm);
         }
     }
-    double top = c->tx_dbm - c->oracle_margin_db;
     for (uint32_t a = 0; a < n; a++) {
         for (uint32_t b = 0; b < n; b++) {
             start[a + 1] +=
@@ -2479,7 +2510,8 @@ bool tsim_distvec_oracle_build(struct tsim_distvec_oracle *o, const struct tsim_
     o->nodes = n;
     ok = true;
 done:
-    free(need);
+    o->need = need;
+    o->top = top;
     free(start);
     free(dist);
     free(queue);
