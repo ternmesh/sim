@@ -2439,11 +2439,16 @@ static void found(struct router *r, uint32_t t) {
             i++;
             continue;
         }
-        r->parked[i] = r->parked[--r->parked_count];
+        /* Kept parked if the reply left no route this node can use: asked again, or dropped when
+         * it expires. */
         const uint8_t *b = p.bytes;
-        route_frame(r, TYPE_DATA, get32(b + 5), get32(b + 9), get32(b + 13), (uint8_t)(b[17] - 1),
-                    b + r->data_head, p.len - r->data_head, TSIM_PURPOSE_RELAY, get32(b + 13),
-                    p.back, NULL);
+        if (route_frame(r, TYPE_DATA, get32(b + 5), get32(b + 9), get32(b + 13),
+                        (uint8_t)(b[17] - 1), b + r->data_head, p.len - r->data_head,
+                        TSIM_PURPOSE_RELAY, get32(b + 13), p.back, NULL)) {
+            r->parked[i] = r->parked[--r->parked_count];
+        } else {
+            i++;
+        }
     }
     for (struct awaiting *a = r->awaiting; a; a = a->next) {
         if (a->routeless && a->handle == 0 && target_of(r, a->dst) == t &&
@@ -2512,7 +2517,9 @@ static void on_rreq(struct router *r, const uint8_t *b, uint32_t len) {
         uint16_t next = (uint16_t)(r->seq + 1);
         r->seq = asks_seq && newer(want, next) ? want : next;
         r->stats.seq_raised++;
-        if (route_frame(r, TYPE_RREP, target, origin, id, r->config.hop_max, NULL, 0,
+        /* A reply goes as the target's, so it takes an id of the target's own: the request's id
+         * is the origin's, and two origins' requests for one target may share it. */
+        if (route_frame(r, TYPE_RREP, target, origin, ++r->rreq_id, r->config.hop_max, NULL, 0,
                         TSIM_PURPOSE_CONTROL, 0, NAN, NULL)) {
             r->stats.route_replies++;
         }
