@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include "tsim/metrics.h"
 
 #include <stdlib.h>
@@ -145,6 +146,32 @@ static void count_routes(struct tsim_metrics *m) {
                      routing->next_hop(tsim_net_routing(net, at), dst, &next));
             reach += at == dst;
         }
+    }
+    if (getenv("TSIM_DIAG")) { /* DIAG: temporary */
+        uint32_t R = (uint32_t)atoi(getenv("TSIM_DIAG"));
+        uint64_t h[4] = {0}, rc[4] = {0}, tot[4] = {0}, stopr[4] = {0}, stopl[4] = {0}, loop[4] = {0};
+        for (uint32_t src = 0; src < n; src++) {
+            for (uint32_t dst = 0; dst < n; dst++) {
+                if (src == dst) continue;
+                int k = (src >= R) * 2 + (dst >= R);
+                tot[k]++;
+                uint32_t at = src, next, hops = 0;
+                if (!routing->next_hop(tsim_net_routing(net, src), dst, &next)) continue;
+                h[k]++;
+                bool ok = true;
+                do {
+                    at = next;
+                    if (at == dst) break;
+                    if (++hops >= n - 1) { ok = false; loop[k]++; break; }
+                    if (!routing->next_hop(tsim_net_routing(net, at), dst, &next)) { ok = false; if (at < R) stopr[k]++; else stopl[k]++; break; }
+                } while (1);
+                rc[k] += ok && at == dst;
+            }
+        }
+        const char *nm[4] = {"relay->relay", "relay->leaf", "leaf->relay", "leaf->leaf"};
+        for (int k = 0; k < 4; k++)
+            fprintf(stderr, "DIAG %-13s held %5.1f%% reach %5.1f%% stop@relay %5.1f%% stop@leaf %5.1f%% loop %5.1f%%\n", nm[k],
+                    100.0 * (double)h[k] / (double)tot[k], 100.0 * (double)rc[k] / (double)tot[k], 100.0 * (double)stopr[k] / (double)tot[k], 100.0 * (double)stopl[k] / (double)tot[k], 100.0 * (double)loop[k] / (double)tot[k]);
     }
     double pairs = (double)n * (double)(n - 1);
     m->routes = (double)held / pairs;

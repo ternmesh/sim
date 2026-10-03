@@ -95,6 +95,18 @@ static uint64_t frame_key(uint8_t type, uint32_t src, uint32_t id) {
     return h ? h : 1; /* 0 marks an empty slot */
 }
 
+/* DIAG: temporary */
+#include <stdio.h>
+static unsigned long long diag_down[6];
+static long long diag_after = -1;
+__attribute__((destructor)) static void diag_print(void) {
+    if (getenv("TSIM_DIAG"))
+        fprintf(stderr, "DIAGLINK ihu_expired %llu rate_or_etx %llu hop_missed %llu house %llu forgot %llu\n",
+                diag_down[0], diag_down[1], diag_down[2], diag_down[3], diag_down[4]);
+}
+#define DIAG_COUNT(r, k) do { if (diag_after < 0) diag_after = TSIM_S(3 * 3600); if (now(r) >= diag_after) diag_down[k]++; } while (0)
+
+
 /* --- State --- */
 
 /* A route to a destination through one neighbour, as the neighbour advertised it. */
@@ -945,6 +957,7 @@ static void forget(struct router *r, uint16_t s) {
     if (!n->used) {
         return;
     }
+    if (n->cost != INF) DIAG_COUNT(r, 4);
     n->used = false;
     n->cost = INF;
     r->slot_of[n->id] = 0;
@@ -1379,6 +1392,7 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     uint16_t was = n->cost;
     n->cost = link_cost(r, n);
     bool flipped = (was == INF) != (n->cost == INF);
+    if (was != INF && n->cost == INF) { if (n->dr == 0) DIAG_COUNT(r, 0); else DIAG_COUNT(r, 1); }
     if (flipped ||
         fabs((double)n->cost - (double)n->cost_used) > r->config.change * (double)n->cost_used) {
         n->cost_used = n->cost;
@@ -1476,6 +1490,7 @@ static void missed(struct router *r, uint16_t s) {
     n->span = HISTORY;
     uint16_t was = n->cost;
     n->cost = link_cost(r, n);
+    if (was != INF && n->cost == INF) DIAG_COUNT(r, 2);
     if (n->cost != was) {
         n->cost_used = n->cost;
         reselect_through(r, s);
@@ -2065,6 +2080,7 @@ static void house_fire(void *ctx) {
         uint16_t was = n->cost;
         n->cost = link_cost(r, n);
         bool flipped = (was == INF) != (n->cost == INF);
+        if (was != INF && n->cost == INF) DIAG_COUNT(r, 3);
         if (flipped || fabs((double)n->cost - (double)n->cost_used) >
                            r->config.change * (double)n->cost_used) {
             n->cost_used = n->cost;
