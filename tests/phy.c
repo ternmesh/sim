@@ -1241,6 +1241,57 @@ static void a_radio_powered_down_neither_sends_nor_hears(void) {
     world_free(w);
 }
 
+struct heard_log {
+    int count;
+    uint32_t node[8];
+    enum tsim_phy_fate fate[8];
+};
+
+static void on_heard(void *ctx, uint32_t node, const struct tsim_frame *f,
+                     enum tsim_phy_fate fate) {
+    (void)f;
+    struct heard_log *h = ctx;
+    if (h->count < 8) {
+        h->node[h->count] = node;
+        h->fate[h->count++] = fate;
+    }
+}
+
+/* Watched, every frame's fate is told at every node watched but its sender: decoded where loud,
+ * weak where not, deaf where the node was sending; unwatched nodes, and frames once the watch
+ * stops, are not. */
+static void every_watched_node_is_told_each_frames_fate(void) {
+    struct world *w = world_new(4, NULL);
+    arrive(w, 1, 0, -86.0);
+    arrive(w, 1, 2, -130.0);
+    arrive(w, 1, 3, -86.0);
+    bool watch[4] = {true, true, true, false};
+    struct heard_log h = {0};
+    tsim_phy_watch(w->phy, on_heard, &h, watch);
+    tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK_EQ_I64(h.count, 2);
+    CHECK(h.node[0] == 0 && h.fate[0] == TSIM_PHY_DECODED);
+    CHECK(h.node[1] == 2 && h.fate[1] == TSIM_PHY_WEAK);
+
+    h.count = 0;
+    tsim_phy_transmit(w->phy, 0, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_sched_run_until(w->sched, TSIM_S(2));
+    bool deaf = false;
+    for (int i = 0; i < h.count; i++) {
+        deaf |= h.node[i] == 0 && h.fate[i] == TSIM_PHY_DEAF;
+    }
+    CHECK(deaf);
+
+    tsim_phy_watch(w->phy, on_heard, &h, NULL);
+    h.count = 0;
+    tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_sched_run_until(w->sched, TSIM_S(3));
+    CHECK_EQ_I64(h.count, 0);
+    world_free(w);
+}
+
 static void a_marked_frame_reports_its_fate_at_the_receiver(void) {
     struct marks m = mark_case(-86, NAN, 0, 0, -1);
     CHECK_EQ_I64(m.count, 1);
@@ -1391,6 +1442,7 @@ int main(void) {
     RUN(create_refuses_bad_fading_and_cad);
     RUN(links_count_pairs_that_decode_both_ways);
     RUN(a_radio_powered_down_neither_sends_nor_hears);
+    RUN(every_watched_node_is_told_each_frames_fate);
     RUN(a_marked_frame_reports_its_fate_at_the_receiver);
     RUN(a_pairwise_rival_is_the_frame_that_counted);
     RUN(a_summed_rival_comes_from_the_group_that_failed);
