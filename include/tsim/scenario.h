@@ -64,6 +64,14 @@ struct tsim_radio {
     double tx_dbm;
 };
 
+/* Which nodes churn may take down: relays are the routing's - distvec's infrastructure, MeshCore's
+ * repeaters - and for routing without tiers, every node. */
+enum tsim_churn_nodes {
+    TSIM_CHURN_ALL,
+    TSIM_CHURN_RELAYS,
+    TSIM_CHURN_LEAVES,
+};
+
 /* A routing or MAC the scenario format knows by name. */
 struct tsim_plugin;
 
@@ -107,6 +115,14 @@ struct tsim_scenario {
     double reply;
     tsim_time reply_delay;
     tsim_time lead; /* traffic before the warmup ends, at most the warmup */
+
+    /* Churn (MSH-59): this share of the nodes `churn_nodes` names each go down and come back up
+     * for the whole run, for times drawn from exponentials of these means, as tsim_net_power()
+     * does it. A share of 0 is none. */
+    double churn_share;
+    uint8_t churn_nodes; /* enum tsim_churn_nodes */
+    tsim_time churn_up;
+    tsim_time churn_down;
     struct tsim_send sends[TSIM_SENDS_MAX];
     uint32_t send_count;
 

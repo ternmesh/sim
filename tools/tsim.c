@@ -169,6 +169,13 @@ static void print_report(const char *path, const struct tsim_scenario *s,
                r->relays.count, r->relays.components, r->relays.largest, r->relays.pairs,
                r->relays.covered);
     }
+    if (r->churn.present) {
+        printf("  \"churn\": {\"downs\": %" PRIu64 ", \"down_mean\": %.6g, \"to_down\": %" PRIu64
+               ", \"hops_to_down\": %" PRIu64 ", \"routed_to\": %" PRIu64
+               ", \"repair_s\": %.6g},\n",
+               r->churn.downs, r->churn.down_mean, r->churn.to_down, r->churn.hops_to_down,
+               r->churn.routed_to, r->churn.repair_s);
+    }
     print_losses(&r->losses);
     printf("  \"on_time_per_airtime_s\": %.6g,\n", r->on_time_per_airtime_s);
     printf("  \"duty_max\": %.6g, \"duty_max_node\": %" PRIu32 ", \"duty_mean\": %.6g,\n",

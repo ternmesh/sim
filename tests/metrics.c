@@ -16,9 +16,12 @@ struct rig {
 static void line(struct rig *r, uint32_t nodes, tsim_time max_delay, tsim_time deadline,
                  uint64_t seed) {
     struct tsim_net_params p = tsim_net_defaults(seed);
-    struct tsim_flood_config fc = {
+    /* Static: a node powered up again is made from them, after this returns. */
+    static struct tsim_flood_config fc;
+    static struct tsim_aloha_config ac;
+    fc = (struct tsim_flood_config){
         .channel = 0, .lora = tsim_lora_default(7, 125000), .tx_dbm = 14.0, .hops = 10};
-    struct tsim_aloha_config ac = {max_delay};
+    ac = (struct tsim_aloha_config){max_delay};
     r->sched = tsim_sched_create();
     r->net = tsim_net_create(r->sched, &p, nodes, &tsim_flood, &fc, &tsim_aloha, &ac);
     for (uint32_t i = 0; i + 1 < nodes; i++) {
@@ -42,6 +45,32 @@ static tsim_time frame_airtime(uint32_t payload) {
 /* A percentile is the floor of its bucket: at most 1/64 under the true value, never over it. */
 static bool near_below(tsim_time got, tsim_time want) {
     return got <= want && got >= want - want / 64;
+}
+
+/* Node 2 down from 10 s to 30 s of a 40 s window: one down, half a node down on average, and a
+ * message made for it meanwhile booked as made for a node down. */
+static void churn_books_downs_and_messages_for_nodes_down(void) {
+    struct rig r;
+    line(&r, 3, 0, TSIM_S(60), 1);
+    struct tsim_report rep;
+    tsim_metrics_report(r.metrics, &rep);
+    CHECK(!rep.churn.present);
+    tsim_metrics_begin(r.metrics);
+    tsim_sched_run_until(r.sched, TSIM_S(10));
+    CHECK(tsim_net_power(r.net, 2, false) && tsim_metrics_power(r.metrics, 2, false));
+    tsim_sched_run_until(r.sched, TSIM_S(20));
+    tsim_net_originate(r.net, 0, 2, 10);
+    tsim_sched_run_until(r.sched, TSIM_S(30));
+    CHECK(tsim_net_power(r.net, 2, true) && tsim_metrics_power(r.metrics, 2, true));
+    tsim_net_originate(r.net, 0, 2, 10);
+    tsim_sched_run_until(r.sched, TSIM_S(40));
+    tsim_metrics_report(r.metrics, &rep);
+    CHECK(rep.churn.present);
+    CHECK_EQ_U64(rep.churn.downs, 1);
+    CHECK(rep.churn.down_mean > 0.4999 && rep.churn.down_mean < 0.5001);
+    CHECK_EQ_U64(rep.churn.to_down, 1);
+    CHECK_EQ_U64(rep.unicast.delivered, 1);
+    rig_close(&r);
 }
 
 /* Node 0's broadcast reaches 1, 2, 3 and 4 at one, two, three and four frame times. */
@@ -225,5 +254,6 @@ int main(void) {
     RUN(a_message_before_the_window_is_not_counted);
     RUN(a_message_at_the_window_but_before_it_is_not_counted);
     RUN(destroy_stops_watching);
+    RUN(churn_books_downs_and_messages_for_nodes_down);
     return CHECK_DONE();
 }

@@ -47,7 +47,31 @@ struct tsim_metrics {
     uint32_t *adj_at;
     uint32_t *adj;
     uint16_t **dist;
+    /* Power, once tsim_metrics_power() is first called: each node's times down, as [down, up)
+     * pairs, up -1 while down; and since its last going down, the last data hop meant for it. */
+    struct power *power;
+    uint32_t down_now;
+    tsim_time down_since; /* when down_now last changed */
+    double down_ns;       /* nodes down times time, since the window began */
+    struct tsim_churn churn;
 };
+
+struct power {
+    tsim_time *spans; /* down, up, down, up... */
+    size_t count;
+    size_t cap;
+    tsim_time last_hit; /* -1 for none */
+};
+
+static bool down_at(const struct power *p, tsim_time t) {
+    for (size_t i = 0; i < p->count; i += 2) {
+        tsim_time up = i + 1 < p->count ? p->spans[i + 1] : -1;
+        if (t >= p->spans[i] && (up < 0 || t < up)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 #define FAR UINT16_MAX
 
@@ -177,6 +201,10 @@ static void hop_seen(void *ctx, const struct tsim_net_hop *hop) {
     if (hop->carries && (!rec || rec->msg.dst == TSIM_BROADCAST)) {
         return;
     }
+    if (hop->carries && m->power && !tsim_net_on(m->net, hop->to)) {
+        m->power[hop->to].last_hit = tsim_sched_now(tsim_net_sched(m->net));
+        m->churn.hops_to_down++;
+    }
     m->hops[hop->carries ? 0 : 1][hop->fate]++;
     if (!hop->carries) {
         return;
@@ -238,6 +266,51 @@ bool tsim_metrics_links(struct tsim_metrics *m, const struct tsim_lora *lora, do
     return true;
 }
 
+/* Books the downs that ended, or the window's end, at `at`: routed to, if data hops still came. */
+static void close_down(struct tsim_churn *c, const struct power *p, tsim_time begun) {
+    tsim_time down = p->spans[p->count - 1];
+    if (down >= begun && p->last_hit >= down) {
+        c->routed_to++;
+        c->repair_s += (double)(p->last_hit - down) / 1e9; /* a sum until the report */
+    }
+}
+
+bool tsim_metrics_power(struct tsim_metrics *m, uint32_t node, bool on) {
+    uint32_t n = tsim_net_nodes(m->net);
+    if (!m->power && !(m->power = calloc(n, sizeof *m->power))) {
+        return false;
+    }
+    m->churn.present = true;
+    struct power *p = &m->power[node];
+    bool down = p->count % 2 == 1;
+    if (down != on) {
+        return true; /* already as told */
+    }
+    tsim_time now = tsim_sched_now(tsim_net_sched(m->net));
+    if (p->count == p->cap) {
+        size_t cap = p->cap ? 2 * p->cap : 8;
+        tsim_time *grown = realloc(p->spans, cap * sizeof *grown);
+        if (!grown) {
+            return false;
+        }
+        p->spans = grown;
+        p->cap = cap;
+    }
+    m->down_ns +=
+        (double)m->down_now * (double)(now - (m->down_since > m->begun ? m->down_since : m->begun));
+    m->down_since = now;
+    if (on) {
+        close_down(&m->churn, p, m->begun);
+        m->down_now--;
+    } else {
+        p->last_hit = -1;
+        m->churn.downs += now >= m->begun;
+        m->down_now++;
+    }
+    p->spans[p->count++] = now;
+    return true;
+}
+
 struct tsim_metrics *tsim_metrics_create(struct tsim_net *net, tsim_time deadline) {
     struct tsim_metrics *m = calloc(1, sizeof *m);
     if (!m) {
@@ -268,6 +341,10 @@ void tsim_metrics_destroy(struct tsim_metrics *m) {
     free(m->adj_at);
     free(m->adj);
     free(m->base);
+    for (uint32_t i = 0; m->power && i < tsim_net_nodes(m->net); i++) {
+        free(m->power[i].spans);
+    }
+    free(m->power);
     free(m);
 }
 
@@ -284,14 +361,15 @@ static void count_routes(struct tsim_metrics *m) {
     for (uint32_t src = 0; src < n; src++) {
         for (uint32_t dst = 0; dst < n; dst++) {
             uint32_t at = src, next, hops = 0;
-            if (dst == src || !routing->next_hop(tsim_net_routing(net, src), dst, &next)) {
+            void *r = tsim_net_routing(net, src); /* NULL for a node powered down */
+            if (dst == src || !r || !routing->next_hop(r, dst, &next)) {
                 continue;
             }
             held++;
             do {
                 at = next;
-            } while (at != dst && ++hops < n - 1 && at < n &&
-                     routing->next_hop(tsim_net_routing(net, at), dst, &next));
+            } while (at != dst && ++hops < n - 1 && at < n && (r = tsim_net_routing(net, at)) &&
+                     routing->next_hop(r, dst, &next));
             reach += at == dst;
         }
     }
@@ -326,6 +404,8 @@ void tsim_metrics_begin(struct tsim_metrics *m) {
     memset(m->hops, 0, sizeof m->hops);
     memset(m->rivals, 0, sizeof m->rivals);
     memset(m->progress, 0, sizeof m->progress);
+    m->churn = (struct tsim_churn){.present = m->churn.present};
+    m->down_ns = 0;
     count_routes(m);
 }
 
@@ -393,7 +473,27 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
         d->delivered += rec->delivered;
         if (rec->msg.dst != TSIM_BROADCAST) {
             fate(m, rec, &r->losses, &wait_ns, &transit_ns, &late_sent);
+            if (m->power && down_at(&m->power[rec->msg.dst], rec->msg.created)) {
+                r->churn.to_down++;
+            }
         }
+    }
+    if (m->power) {
+        tsim_time now = tsim_sched_now(tsim_net_sched(net));
+        struct tsim_churn c = m->churn;
+        for (uint32_t i = 0; i < tsim_net_nodes(net); i++) {
+            if (m->power[i].count % 2 == 1) {
+                close_down(&c, &m->power[i], m->begun); /* still down as the window ends */
+            }
+        }
+        tsim_time since = m->down_since > m->begun ? m->down_since : m->begun;
+        double down_ns = m->down_ns + (double)m->down_now * (double)(now - since);
+        r->churn.present = true;
+        r->churn.downs = c.downs;
+        r->churn.hops_to_down = c.hops_to_down;
+        r->churn.routed_to = c.routed_to;
+        r->churn.repair_s = c.routed_to ? c.repair_s / (double)c.routed_to : 0;
+        r->churn.down_mean = r->elapsed > 0 ? down_ns / (double)r->elapsed : 0;
     }
     if (late_sent) {
         r->losses.late_wait_s = wait_ns / (double)late_sent / 1e9;

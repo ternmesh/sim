@@ -187,9 +187,15 @@ bool tsim_phy_links(const struct tsim_phy *phy, const struct tsim_lora *lora, do
 void tsim_phy_set_losses(struct tsim_phy *phy, const struct tsim_channel_params *channel,
                          const struct tsim_pos *pos);
 
+/* Powers a radio down or up (MSH-59). Down, it hears nothing - a frame meant for it is booked deaf
+ * - senses no carrier and sends nothing: what it was receiving is lost, though a frame it is
+ * sending runs to its end. Up again, it listens as it was tuned. Radios start up. */
+void tsim_phy_power(struct tsim_phy *phy, uint32_t node, bool on);
+bool tsim_phy_on(const struct tsim_phy *phy, uint32_t node);
+
 /* Puts a frame on the air now. Returns its id, or 0 - leaving every radio as it was - if the node
- * is already transmitting, the modulation and length have no airtime, the frame would end past
- * the end of the clock, or memory runs out. */
+ * is already transmitting or powered down, the modulation and length have no airtime, the frame
+ * would end past the end of the clock, or memory runs out. */
 uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel,
                            const struct tsim_lora *lora, uint32_t len, double tx_dbm,
                            void *payload);
