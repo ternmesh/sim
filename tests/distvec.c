@@ -1465,8 +1465,177 @@ static void the_link_oracle_uses_its_links_and_no_others(void) {
     }
 
     struct tsim_distvec_config bad = r.rc;
-    bad.links = TSIM_DISTVEC_LINKS_ORACLE + 1;
+    bad.links = TSIM_DISTVEC_LINKS_STRENGTH + 1;
     CHECK(tsim_distvec_check(&bad) != NULL);
+}
+
+/* By strength, SF7 at 14 dBm, without power control: a neighbour at loss L is heard at SNR
+ * 131 - L, over a -7.5 dB floor, so with 138.5 - L dB of margin. With link_band 1, a link comes up
+ * with 3 dB each way, at a loss of 135.5 or less, and goes down below 2, over 136.5. */
+static void links_by_strength_come_up_and_go_down_on_margin(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.link_band_db = 1;
+    build(&r, 2, 1);
+    link(&r, 0, 1, 137);
+    tsim_net_start(r.net);
+    uint32_t next = 0;
+    tsim_sched_run_until(r.sched, TSIM_S(1800));
+    CHECK(!route(&r, 0, 1, &next)); /* decoded, but with 1.5 dB */
+    link(&r, 0, 1, 134);
+    tsim_sched_run_until(r.sched, TSIM_S(5400));
+    CHECK(route(&r, 0, 1, &next) && next == 1);
+    CHECK(route(&r, 1, 0, &next) && next == 0);
+    link(&r, 0, 1, 136); /* 2.5 dB: inside the band, so it stays */
+    tsim_sched_run_until(r.sched, TSIM_S(9000));
+    CHECK(route(&r, 0, 1, &next) && next == 1);
+    link(&r, 0, 1, 137.5); /* 1 dB: below it */
+    tsim_sched_run_until(r.sched, TSIM_S(12600));
+    CHECK(!route(&r, 0, 1, &next));
+    CHECK(!route(&r, 1, 0, &next));
+    rig_close(&r);
+
+    /* One way only: node 1 hears node 0, never the reverse, so neither uses the link. */
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    build(&r, 2, 1);
+    tsim_phy_set_loss_from(tsim_net_phy(r.net), 0, 1, LOSS_LOUD);
+    tsim_phy_set_loss_from(tsim_net_phy(r.net), 1, 0, LOSS_NONE);
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(1800));
+    CHECK(!route(&r, 0, 1, &next));
+    CHECK(!route(&r, 1, 0, &next));
+    rig_close(&r);
+
+    /* One way 4.5 dB, the other 2.6: the end hearing 2.6 reports 2, never 3, so neither end takes
+     * the link up. */
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    build(&r, 2, 1);
+    tsim_phy_set_loss_from(tsim_net_phy(r.net), 0, 1, 134);
+    tsim_phy_set_loss_from(tsim_net_phy(r.net), 1, 0, 135.9);
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(1800));
+    CHECK(!route(&r, 0, 1, &next));
+    CHECK(!route(&r, 1, 0, &next));
+    rig_close(&r);
+
+    /* Without power control, a floor is reckoned from tx_dbm itself, not tx_dbm rounded to a power
+     * byte: at 14.5 dBm, a loss of 135.75 leaves 3.25 dB, up, where 15 dBm would leave 2.75. */
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.tx_dbm = 14.5;
+    build(&r, 2, 1);
+    link(&r, 0, 1, 135.75);
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(1800));
+    CHECK(route(&r, 0, 1, &next) && next == 1);
+    rig_close(&r);
+
+    struct tsim_distvec_config bad = r.rc;
+    bad.link_band_db = -1;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+}
+
+/* By strength, a hop lost is a frame lost, not a link: with node 1 deaf to node 0 a while, every
+ * try of a message fails, and the link stays in use. */
+static void a_lost_hop_takes_no_link_down_by_strength(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    line(&r, 2, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    uint32_t next = 0;
+    CHECK(route(&r, 0, 1, &next));
+    tsim_phy_set_loss_from(tsim_net_phy(r.net), 0, 1, LOSS_NONE);
+    uint64_t m = tsim_net_originate(r.net, 0, 1, 40);
+    tsim_sched_run_until(r.sched, TSIM_S(420));
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 0);
+    struct tsim_distvec_stats st;
+    tsim_distvec_stats(at(&r, 0), &st);
+    for (int c = 0; c < TSIM_DISTVEC_DOWN_COUNT; c++) {
+        CHECK_EQ_U64(st.down[c], 0);
+    }
+    CHECK(route(&r, 0, 1, &next) && next == 1);
+    rig_close(&r);
+}
+
+/* By strength, a neighbour is gone when dead_hops hops to it are lost with nothing heard from it
+ * between, not when it goes quiet: node 1, the middle of a line, falls silent, and node 0 keeps it
+ * until frames sent through it fail. A neighbour merely unheard is kept until silent_max. */
+static void by_strength_a_neighbour_is_gone_when_frames_to_it_fail(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.dead_hops = 3;
+    line(&r, 3, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(600));
+    uint32_t next = 0;
+    CHECK(route(&r, 0, 2, &next) && next == 1);
+    for (uint32_t i = 0; i < 3; i += 2) {
+        link(&r, 1, i, LOSS_NONE);
+    }
+    tsim_sched_run_until(r.sched, TSIM_S(600 + 3 * 3600)); /* past neighbour_timeout */
+    CHECK(route(&r, 0, 1, &next) && next == 1);
+    /* Each message here gives up on two hops. */
+    uint64_t m = tsim_net_originate(r.net, 0, 2, 40);
+    tsim_sched_run_until(r.sched, TSIM_S(900 + 3 * 3600));
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->drops[TSIM_DROP_RETRIES], 2);
+    CHECK(route(&r, 0, 1, &next)); /* two lost: not yet */
+    m = tsim_net_originate(r.net, 0, 2, 40);
+    tsim_sched_run_until(r.sched, TSIM_S(1200 + 3 * 3600));
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK(!route(&r, 0, 1, &next));
+    CHECK(!route(&r, 0, 2, &next));
+    struct tsim_distvec_stats st;
+    tsim_distvec_stats(at(&r, 0), &st);
+    CHECK_EQ_U64(st.down[TSIM_DISTVEC_DOWN_HOP], 1);
+    CHECK_EQ_U64(st.down[TSIM_DISTVEC_DOWN_TIMEOUT], 0);
+    /* Node 2 sent nothing through node 1: it keeps it until silent_max. */
+    CHECK(route(&r, 2, 1, &next) && next == 1);
+    tsim_sched_run_until(r.sched, TSIM_S(1200 + 25 * 3600));
+    CHECK(!route(&r, 2, 1, &next));
+    tsim_distvec_stats(at(&r, 2), &st);
+    CHECK_EQ_U64(st.down[TSIM_DISTVEC_DOWN_TIMEOUT], 1);
+    rig_close(&r);
+
+    struct tsim_distvec_config bad = r.rc;
+    bad.dead_hops = 0;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    /* Sensing never reads them: a config that leaves them 0 is still good there. */
+    bad.links = TSIM_DISTVEC_LINKS_SENSED;
+    bad.silent_max = 0;
+    bad.link_band_db = -1;
+    CHECK(tsim_distvec_check(&bad) == NULL);
+}
+
+/* By strength, housekeeping keeps time with silent_max, not neighbour_timeout: two nodes heard
+ * early, while their promises are short, fall silent, and are forgotten soon after silent_max -
+ * within 300 s here, where looking every 15 min, as neighbour_timeout would, took until 900 s. */
+static void by_strength_silence_is_checked_as_often_as_silent_max_needs(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.silent_max = TSIM_S(240);
+    r.rc.imin = TSIM_S(1);
+    r.rc.doublings = 14; /* imax 4.5 h: housekeeping by neighbour_timeout would come every 15 min */
+    r.rc.quiet_max = 0;
+    r.rc.cap = 0.5;
+    CHECK(tsim_distvec_check(&r.rc) == NULL);
+    line(&r, 2, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(20));
+    uint32_t next = 0;
+    CHECK(route(&r, 0, 1, &next) && next == 1);
+    link(&r, 0, 1, LOSS_NONE);
+    tsim_sched_run_until(r.sched, TSIM_S(20 + 360)); /* by neighbour_timeout's, still kept */
+    CHECK(!route(&r, 0, 1, &next));
+    struct tsim_distvec_stats st;
+    tsim_distvec_stats(at(&r, 0), &st);
+    CHECK_EQ_U64(st.down[TSIM_DISTVEC_DOWN_TIMEOUT], 1);
+    rig_close(&r);
 }
 
 /* With power control, SF7 and 14 dBm: a neighbour at loss L is heard at SNR 131 - L, so its floor
@@ -1646,6 +1815,10 @@ int main(void) {
     RUN(a_line_converges_on_its_one_path);
     RUN(the_oracle_routes_by_the_fewest_hops_and_announces_nothing);
     RUN(the_link_oracle_uses_its_links_and_no_others);
+    RUN(links_by_strength_come_up_and_go_down_on_margin);
+    RUN(a_lost_hop_takes_no_link_down_by_strength);
+    RUN(by_strength_a_neighbour_is_gone_when_frames_to_it_fail);
+    RUN(by_strength_silence_is_checked_as_often_as_silent_max_needs);
     RUN(a_near_neighbour_is_sent_to_quieter_than_a_far_one);
     RUN(a_relay_goes_loud_enough_for_the_hop_before);
     RUN(a_hop_lost_at_its_power_is_tried_again_louder);
