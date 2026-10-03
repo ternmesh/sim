@@ -377,8 +377,8 @@ struct tsim_distvec_config {
  * after silent_max. The IHU still expires as with sensing.
  *
  * Measured on the region (200 relays, parent_oracle, 3 seeds), unicast on time was 50% at 0 dBm
- * and 52% at 20 dBm, against 23% and 8% sensed and the link oracle's 51% and 67%; relays' routes
- * to each other reached 68% and 94% of pairs. No link went down on strength. Forgetting on
+ * and 51% at 20 dBm, against 23% and 8% sensed and the link oracle's 51% and 67%; relays' routes
+ * to each other reached 70% and 93% of pairs. No link went down on strength. Forgetting on
  * silence after neighbour_timeout, an hour, made 40% and 12%: neighbours loud enough to be heard
  * each way, by the powers both ends announced at, went an hour unheard thousands of times an hour
  * at 20 dBm, three in four of them links between leaves no route uses. Forgetting on lost hops

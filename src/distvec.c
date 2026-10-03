@@ -540,10 +540,10 @@ static bool by_strength(const struct router *r) {
     return r->config.links == TSIM_DISTVEC_LINKS_STRENGTH && !r->oracle;
 }
 
-/* What a frame says it went at, as a floor reckons it: its power byte, or without power control,
- * tx_dbm as power_byte() rounds it. */
-static uint8_t sent_byte(const struct router *r, const uint8_t *power) {
-    return r->config.power ? *power : power_byte(r->config.tx_dbm);
+/* What a frame went at, as a floor reckons it: the power byte at `power`, or without power control,
+ * which leaves frames none, tx_dbm itself - any power, not only one a byte holds. */
+static double sent_dbm(const struct router *r, const uint8_t *power) {
+    return r->config.power ? (int8_t)*power : r->config.tx_dbm;
 }
 
 /* With links by strength, an IHU's byte is the margin its sender hears this node with, in whole
@@ -1484,7 +1484,7 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     if (r->config.power && r->truth) {
         n->floor = true_need(r, from);
     } else if (r->config.power || by_strength(r)) {
-        double floor = floor_of(r, sent_byte(r, b + 16), snr);
+        double floor = sent_dbm(r, b + 16) - (snr - r->config.snr_floor_db);
         n->floor = isnan(n->floor) ? floor : 0.75 * n->floor + 0.25 * floor;
     }
     if (fresh) {
@@ -1739,7 +1739,7 @@ static void withdrawn(struct router *r, uint64_t handle) {
  * the power byte at `power`: as an announce's, its strength is the link's, and it is heard. */
 static void heard_from(struct router *r, uint16_t s, const uint8_t *power, double snr) {
     struct neighbour *n = slot(r, s);
-    double floor = floor_of(r, sent_byte(r, power), snr);
+    double floor = sent_dbm(r, power) - (snr - r->config.snr_floor_db);
     n->floor = isnan(n->floor) ? floor : 0.75 * n->floor + 0.25 * floor;
     n->heard = now(r);
     n->lost = 0;
@@ -1773,7 +1773,11 @@ static void overheard(struct router *r, const uint8_t *b, double snr) {
                 withdrawn(r, h->handle);
             }
             uint16_t s = r->slot_of[h->next];
-            from = h->next;
+            /* Its next hop sent what passed it on, and the first copy of an acknowledgement, with
+             * hop_max hops left; a relay may have sent a later one. */
+            if (passed || hops == r->config.hop_max) {
+                from = h->next;
+            }
             if (s && slot(r, s)->boost > 0) {
                 slot(r, s)->boost = slot(r, s)->boost > 1 ? slot(r, s)->boost - 1 : 0;
             }
