@@ -68,7 +68,7 @@ struct tsim_radio {
 struct tsim_plugin;
 
 /* Room for any plugin's configuration. */
-#define TSIM_PLUGIN_CONFIG_MAX 384
+#define TSIM_PLUGIN_CONFIG_MAX 512
 
 struct tsim_scenario {
     uint64_t seed;

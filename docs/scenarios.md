@@ -165,7 +165,7 @@ default.
 | `routing.tx_min`, `routing.margin`, `routing.step` (`distvec`) | -9, 10, 3 | power control's quietest frame in dBm, its margin above a neighbour's floor in dB, and the dB each lost try adds |
 | `routing.snr_floor` (`distvec`) | Semtech's for the SF | the SNR the radio demodulates down to, in dB, from which a neighbour's floor is reckoned |
 | `routing.seq_period` (`distvec`) | `0 s` | how often each node raises its own sequence number unasked, give or take 10%, so routes that feasibility starved come back without a request getting through (DSDV's periodic seqnos). `0 s` never. Measured on the region it did not help (MSH-54) |
-| `routing.routes` (`distvec`) | proactive | `proactive` announces routes to every node; `demand` (MSH-43, work in progress) announces none, and finds routes with route requests and learns them from the traffic: see `tsim/distvec.h` |
+| `routing.routes` (`distvec`) | proactive | `proactive` announces routes to every node; `demand` (MSH-43, an experiment) announces none, and finds routes with route requests and learns them from the traffic: see `tsim/distvec.h`. On the region with `routing.links` strength it got under half of proactive's unicast: requests took about half the airtime and under a third were answered |
 | `routing.route_ttl` (`distvec`) | 10 min | with demand routes, how long a route lasts unheard of |
 | `routing.req_hops` (`distvec`) | 16 | with demand routes, relays a route request crosses, at most |
 | `routing.req_cancel` (`distvec`) | 2 | with demand routes, copies of a route request a relay hears before it drops its own; 0 never |
