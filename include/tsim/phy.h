@@ -98,13 +98,32 @@ struct tsim_frame {
     void *payload; /* the sender's, carried untouched */
 };
 
+/* What became of a frame at the one receiver it was marked for (tsim_phy_mark()): decoded, or the
+ * reason it was not, as that radio last had it. */
+enum tsim_phy_fate {
+    TSIM_PHY_DECODED,
+    TSIM_PHY_WEAK,       /* below the demodulation floor there */
+    TSIM_PHY_INTERFERED, /* received to the end, then failed on interference */
+    TSIM_PHY_TAKEN,      /* taken by a louder frame */
+    TSIM_PHY_BUSY,       /* began while it was receiving another, which it kept */
+    TSIM_PHY_DEAF,       /* transmitting, retuning or tuned elsewhere */
+    TSIM_PHY_FATE_COUNT,
+};
+
 /* Called from inside the scheduler. A frame passed to a hook is valid only for the call. A hook
- * may transmit or retune; it sees every radio already in the state the frame's end left it in. */
+ * may transmit or retune; it sees every radio already in the state the frame's end left it in.
+ *
+ * `marked`, if given, is called once for each frame marked for a receiver, as the frame ends and
+ * before tx_done: with the receiver, the fate, and the tag of the frame that cost it - for
+ * interfered, the one that brought the receiver the most interference energy; for taken, the
+ * louder frame; for busy, the one it kept; for deaf, the one it was sending, if any - or -1. */
 struct tsim_phy_hooks {
     void (*rx)(void *ctx, uint32_t node, const struct tsim_frame *frame, double rssi_dbm,
                double snr_db);
     void (*tx_done)(void *ctx, uint32_t node, const struct tsim_frame *frame);
     void *ctx;
+    void (*marked)(void *ctx, uint32_t node, const struct tsim_frame *frame,
+                   enum tsim_phy_fate fate, int rival);
 };
 
 struct tsim_phy_stats {
@@ -174,6 +193,13 @@ void tsim_phy_set_losses(struct tsim_phy *phy, const struct tsim_channel_params 
 uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel,
                            const struct tsim_lora *lora, uint32_t len, double tx_dbm,
                            void *payload);
+
+/* Marks a frame for the books, as it goes on the air - straight after tsim_phy_transmit(), at the
+ * same instant: `tag` is any number from 0 to 127 the caller files it under, reported for it as a
+ * rival, and `node`, unless it is out of range or the sender, is the receiver whose fate the
+ * frame's end reports to the marked hook. Changes nothing about what anyone receives. Returns
+ * false for a frame no longer on the air or a tag out of range. */
+bool tsim_phy_mark(struct tsim_phy *phy, uint64_t frame, uint32_t node, int tag);
 
 /* Retunes a node's receiver. Retuning to what it is already tuned to does nothing; otherwise any
  * reception is aborted and the radio is deaf for `retune`. While transmitting, the new tuning

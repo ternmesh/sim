@@ -90,6 +90,15 @@ struct tsim_net_stats {
 
 const struct tsim_net_stats *tsim_net_stats(const struct tsim_net *net, uint32_t node);
 
+/* A drop of a message, as tsim_node_drop() booked it. */
+struct tsim_message_drop {
+    enum tsim_drop cause; /* TSIM_DROP_COUNT for none */
+    uint32_t node;
+    uint32_t next;  /* the next hop it was meant for, or TSIM_BROADCAST */
+    bool next_held; /* the next hop held the message already */
+    tsim_time at;
+};
+
 /* A message and how far it got. */
 struct tsim_message_record {
     struct tsim_message msg;
@@ -99,6 +108,12 @@ struct tsim_message_record {
     tsim_time last;
     bool refused;  /* the source's routing could not carry it */
     bool finished; /* the source's routing is done with it; see tsim_node_finished() */
+    /* For the books: when a frame carrying it first went on the air from its source, or -1; the
+     * drops booked for it, by cause; and the first of them - passing over any whose next hop
+     * already held the message, which lost only the confirmation, unless every one did. */
+    tsim_time sent;
+    uint32_t drops[TSIM_DROP_COUNT];
+    struct tsim_message_drop drop;
 };
 
 /* The record for a message id, or NULL. Valid until the next message is originated. */
@@ -121,5 +136,23 @@ void tsim_net_observe(struct tsim_net *net, tsim_net_delivered_fn fn, void *ctx)
  * from inside tsim_net_originate() or a plugin. One observer at a time; NULL removes it. */
 typedef void (*tsim_net_finished_fn)(void *ctx, const struct tsim_message_record *record);
 void tsim_net_observe_finished(struct tsim_net *net, tsim_net_finished_fn fn, void *ctx);
+
+/* An addressed frame (tsim_tx.addressed) as it ends, and what became of it at the node it was
+ * meant for. `rival` is the purpose of the frame that cost it, as struct tsim_phy_hooks has it, or
+ * -1. */
+struct tsim_net_hop {
+    uint32_t from;
+    uint32_t to;
+    enum tsim_purpose purpose;
+    uint64_t carries;
+    enum tsim_phy_fate fate;
+    int rival;
+};
+
+/* Called for each addressed frame as it ends, before its sender's routing hears it is done. For
+ * the driver's bookkeeping, under the same rules as tsim_net_observe(). One observer at a time;
+ * NULL removes it. */
+typedef void (*tsim_net_hop_fn)(void *ctx, const struct tsim_net_hop *hop);
+void tsim_net_observe_hops(struct tsim_net *net, tsim_net_hop_fn fn, void *ctx);
 
 #endif

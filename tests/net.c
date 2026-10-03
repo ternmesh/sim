@@ -741,6 +741,115 @@ static void destroy_leaves_the_scheduler_runnable(void) {
     tsim_sched_destroy(r.sched);
 }
 
+/* Drops are booked against the message, the first one kept - unless it lost only the
+ * confirmation, when a later real one replaces it - and a full queue books one by itself. */
+static void drops_are_booked_against_the_message(void) {
+    struct rig r;
+    struct tsim_net_params p = tsim_net_defaults(1);
+    p.queue_limit = 1;
+    rig_open(&r, p, 3);
+    uint64_t id = tsim_net_originate(r.net, 0, 2, 8);
+    const struct tsim_message_record *rec = tsim_net_message(r.net, id);
+    struct tsim_node *n0 = tsim_net_node(r.net, 0), *n1 = tsim_net_node(r.net, 1);
+    CHECK_EQ_I64(rec->drop.cause, TSIM_DROP_COUNT);
+    CHECK_EQ_I64(rec->sent, -1);
+
+    CHECK(!tsim_node_drop(n1, id, TSIM_DROP_NO_ROUTE, TSIM_BROADCAST)); /* not held there */
+    CHECK(!tsim_node_drop(n0, id, TSIM_DROP_COUNT, TSIM_BROADCAST));
+    CHECK(!tsim_node_drop(n0, id + 1, TSIM_DROP_NO_ROUTE, TSIM_BROADCAST));
+
+    struct tsim_tx tx = frame(TSIM_PURPOSE_DATA, 0, 12);
+    memcpy(tx.bytes + 4, rec->msg.content, 8);
+    tx.carries = id;
+    tx.carries_at = 4;
+    tx.addressed = true;
+    tx.to = 1;
+    run_for(&r, TSIM_MS(3));
+    CHECK(tsim_node_send(n0, &tx) != 0);
+    CHECK_EQ_U64(tsim_node_send(n0, &tx), 0); /* the queue is full */
+    CHECK_EQ_I64(rec->drops[TSIM_DROP_QUEUE], 1);
+    CHECK_EQ_I64(rec->drop.cause, TSIM_DROP_QUEUE);
+    CHECK_EQ_I64(rec->drop.node, 0);
+    CHECK_EQ_I64(rec->drop.next, 1);
+    CHECK(!rec->drop.next_held);
+    CHECK_EQ_I64(rec->drop.at, TSIM_MS(3));
+
+    CHECK(tsim_node_transmit(n0));
+    CHECK_EQ_I64(rec->sent, TSIM_MS(3));
+    run_for(&r, TSIM_S(1));
+    /* Node 1 has it now. A retry given up on at node 0 lost only the confirmation, but the queue
+     * drop came first and stays. */
+    CHECK(tsim_node_drop(n0, id, TSIM_DROP_RETRIES, 1));
+    CHECK_EQ_I64(rec->drop.cause, TSIM_DROP_QUEUE);
+    CHECK_EQ_I64(rec->drops[TSIM_DROP_RETRIES], 1);
+    rig_close(&r);
+
+    rig_open(&r, tsim_net_defaults(1), 3);
+    id = tsim_net_originate(r.net, 0, 2, 8);
+    rec = tsim_net_message(r.net, id);
+    n0 = tsim_net_node(r.net, 0);
+    n1 = tsim_net_node(r.net, 1);
+    memcpy(tx.bytes + 4, rec->msg.content, 8);
+    tx.carries = id;
+    CHECK(tsim_node_send(n0, &tx) != 0);
+    CHECK(tsim_node_transmit(n0));
+    run_for(&r, TSIM_S(1));
+    CHECK(tsim_node_drop(n0, id, TSIM_DROP_RETRIES, 1));
+    CHECK(rec->drop.next_held);
+    CHECK(tsim_node_drop(n1, id, TSIM_DROP_NO_ROUTE, TSIM_BROADCAST));
+    CHECK_EQ_I64(rec->drop.cause, TSIM_DROP_NO_ROUTE);
+    CHECK_EQ_I64(rec->drop.node, 1);
+    CHECK(!rec->drop.next_held);
+    CHECK(tsim_node_drop(n1, id, TSIM_DROP_HOP_LIMIT, TSIM_BROADCAST));
+    CHECK_EQ_I64(rec->drop.cause, TSIM_DROP_NO_ROUTE); /* the first real one stays */
+    rig_close(&r);
+}
+
+struct hops_seen {
+    int count;
+    struct tsim_net_hop last;
+};
+
+static void on_hop(void *ctx, const struct tsim_net_hop *hop) {
+    struct hops_seen *h = ctx;
+    h->count++;
+    h->last = *hop;
+}
+
+/* An addressed frame reports what became of it at the node it was meant for; others do not. */
+static void an_addressed_frame_reports_its_fate(void) {
+    struct rig r;
+    struct hops_seen seen = {0};
+    rig_open(&r, tsim_net_defaults(1), 3);
+    tsim_net_observe_hops(r.net, on_hop, &seen);
+    struct tsim_node *n0 = tsim_net_node(r.net, 0);
+    struct tsim_tx tx = frame(TSIM_PURPOSE_CONTROL, 0, 12);
+    CHECK(tsim_node_send(n0, &tx) != 0);
+    CHECK(tsim_node_transmit(n0));
+    run_for(&r, TSIM_S(1));
+    CHECK_EQ_I64(seen.count, 0);
+
+    tx.addressed = true;
+    tx.to = 1;
+    CHECK(tsim_node_send(n0, &tx) != 0);
+    CHECK(tsim_node_transmit(n0));
+    run_for(&r, TSIM_S(1));
+    CHECK_EQ_I64(seen.count, 1);
+    CHECK_EQ_I64(seen.last.from, 0);
+    CHECK_EQ_I64(seen.last.to, 1);
+    CHECK_EQ_I64(seen.last.purpose, TSIM_PURPOSE_CONTROL);
+    CHECK_EQ_I64(seen.last.fate, TSIM_PHY_DECODED);
+
+    tx.to = 2; /* no link */
+    CHECK(tsim_node_send(n0, &tx) != 0);
+    CHECK(tsim_node_transmit(n0));
+    run_for(&r, TSIM_S(1));
+    CHECK_EQ_I64(seen.count, 2);
+    CHECK_EQ_I64(seen.last.fate, TSIM_PHY_WEAK);
+    tsim_net_observe_hops(r.net, NULL, NULL);
+    rig_close(&r);
+}
+
 int main(void) {
     RUN(head_handle_names_the_frame_at_the_head);
     RUN(a_node_knows_its_own_airtime);
@@ -758,6 +867,8 @@ int main(void) {
     RUN(delivery_needs_the_message_to_have_arrived);
     RUN(a_frame_must_carry_what_it_claims);
     RUN(the_observer_sees_each_delivery);
+    RUN(drops_are_booked_against_the_message);
+    RUN(an_addressed_frame_reports_its_fate);
     RUN(a_message_is_finished_once_by_its_source);
     RUN(the_routing_can_withdraw_a_frame_when_it_is_due);
     RUN(streams_are_separate_and_repeatable);

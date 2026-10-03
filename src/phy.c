@@ -12,9 +12,19 @@
 
 enum radio_state { LISTEN, RECEIVE, TRANSMIT, RETUNE };
 
+/* Not yet decided: the marked receiver is on the frame, or may still catch it. */
+#define PENDING TSIM_PHY_FATE_COUNT
+
 struct air {
     struct tsim_frame f;
     bool on_air;
+    /* For the books (tsim_phy_mark()): the tag, -1 for none, and the receiver whose fate is
+     * followed, UINT32_MAX for none, with that fate so far and the frame that cost it, 0 for
+     * none. */
+    int8_t tag;
+    uint32_t watch;
+    uint8_t fate;
+    uint64_t rival;
 };
 
 struct node {
@@ -80,6 +90,21 @@ static struct air *find(struct tsim_phy *phy, uint64_t id) {
     return &phy->air[phy->head + (id - phy->first_id)];
 }
 
+/* A frame still kept, or NULL. */
+static struct air *kept(struct tsim_phy *phy, uint64_t id) {
+    return id >= phy->first_id && id - phy->first_id < phy->count ? find(phy, id) : NULL;
+}
+
+/* Books a fate for a frame at a receiver, if the frame is marked for that receiver. */
+static void befall(struct tsim_phy *phy, uint64_t frame, uint32_t node, uint8_t fate,
+                   uint64_t rival) {
+    struct air *a = kept(phy, frame);
+    if (a && a->watch == node) {
+        a->fate = fate;
+        a->rival = rival;
+    }
+}
+
 /* The fading on one frame at one receiver: a pure function of the seed, the frame and the node,
  * drawn from a domain of its own so it never repeats a stream the seed roots elsewhere. */
 static double fade(const struct tsim_phy *phy, uint64_t frame, uint32_t node) {
@@ -135,6 +160,7 @@ static void count_reception(struct node *nd) {
 
 static void sync_to(struct node *nd, const struct tsim_frame *f, double dbm) {
     tsim_time now = tsim_sched_now(nd->phy->sched);
+    befall(nd->phy, f->id, nd->index, PENDING, 0);
     nd->state = RECEIVE;
     nd->frame = f->id;
     nd->frame_dbm = dbm;
@@ -162,9 +188,11 @@ static void forget_settled(struct node *nd) {
  * remembers it until the frame's lock_by, so that catching the frame after all can take the
  * outcome back. Only frames that can no longer be caught are forgotten, whatever the radio is
  * tuned to meanwhile. Out of memory, the outcome stands, and a frame caught after all counts
- * twice. */
-static void settle(struct node *nd, uint64_t frame, tsim_time frame_lock_by, uint64_t *counter) {
+ * twice. The fate is booked for a marked frame, with the frame that cost it. */
+static void settle(struct node *nd, uint64_t frame, tsim_time frame_lock_by, uint64_t *counter,
+                   uint8_t fate, uint64_t rival) {
     (*counter)++;
+    befall(nd->phy, frame, nd->index, fate, rival);
     if (nd->unsettled_count == nd->unsettled_cap) {
         forget_settled(nd);
     }
@@ -301,6 +329,27 @@ static bool survives(const struct tsim_phy *phy, const struct tsim_frame *f, uin
     return true;
 }
 
+/* The frame that brought a reception the most interference energy, or 0 for none. */
+static uint64_t loudest_rival(const struct tsim_phy *phy, const struct tsim_frame *f, uint32_t node,
+                              tsim_time since) {
+    double most = 0;
+    uint64_t id = 0;
+    for (size_t i = 0; i < phy->count; i++) {
+        const struct tsim_frame *g = &phy->air[phy->head + i].f;
+        if (g->id == f->id || g->channel != f->channel) {
+            continue;
+        }
+        tsim_time lo = g->start > since ? g->start : since;
+        tsim_time hi = g->end < f->end ? g->end : f->end;
+        double energy = hi > lo ? mw(rx_dbm(phy, g, node)) * (double)(hi - lo) : 0;
+        if (energy > most) {
+            most = energy;
+            id = g->id;
+        }
+    }
+    return id;
+}
+
 /* Drops ended frames that no frame still on the air overlaps. */
 static void prune(struct tsim_phy *phy) {
     tsim_time cutoff = INT64_MAX;
@@ -330,6 +379,9 @@ static void frame_end(struct tsim_sched *sched, void *ctx) {
 
     /* Decide every reception first, then let the radios listen again, then run the hooks, so the
      * outcome does not depend on which node a hook belongs to. */
+    uint32_t watch = a->watch;
+    uint8_t fate = a->fate;
+    uint64_t rival = a->rival;
     size_t done = 0;
     for (uint32_t i = 0; i < phy->n; i++) {
         struct node *nd = &phy->nodes[i];
@@ -344,7 +396,19 @@ static void frame_end(struct tsim_sched *sched, void *ctx) {
             nd->stats.rx_lost++;
         }
         phy->outcomes[done++] = (struct outcome){i, nd->frame_dbm, ok};
+        if (i == watch) {
+            fate = ok ? TSIM_PHY_DECODED : TSIM_PHY_INTERFERED;
+            rival = ok ? 0 : loudest_rival(phy, &f, i, nd->since);
+        }
         nd->state = LISTEN;
+    }
+    int rival_tag = -1;
+    if (watch < phy->n) {
+        if (fate == PENDING) {
+            fate = decodable(phy, &f, rx_dbm(phy, &f, watch)) ? TSIM_PHY_DEAF : TSIM_PHY_WEAK;
+        }
+        const struct air *r = rival ? kept(phy, rival) : NULL;
+        rival_tag = r ? r->tag : -1;
     }
 
     if (tuned_to(tx, &f)) {
@@ -366,6 +430,9 @@ static void frame_end(struct tsim_sched *sched, void *ctx) {
                 phy->hooks.rx(phy->hooks.ctx, o->node, &f, o->rssi_dbm, o->rssi_dbm - noise);
             }
         }
+    }
+    if (phy->hooks.marked && watch < phy->n) {
+        phy->hooks.marked(phy->hooks.ctx, watch, &f, (enum tsim_phy_fate)fate, rival_tag);
     }
     if (phy->hooks.tx_done) {
         phy->hooks.tx_done(phy->hooks.ctx, tx->index, &f);
@@ -594,6 +661,10 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
         return 0;
     }
     a->on_air = true;
+    a->tag = -1;
+    a->watch = UINT32_MAX;
+    a->fate = PENDING;
+    a->rival = 0;
     a->f = (struct tsim_frame){
         .id = phy->next_id++,
         .src = node,
@@ -609,7 +680,8 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
 
     if (tx->state == RECEIVE) {
         count_reception(tx);
-        settle(tx, tx->frame, lock_by(phy, &find(phy, tx->frame)->f), &tx->stats.rx_aborted);
+        settle(tx, tx->frame, lock_by(phy, &find(phy, tx->frame)->f), &tx->stats.rx_aborted,
+               TSIM_PHY_DEAF, f->id);
     } else if (tx->state == RETUNE) {
         tsim_sched_cancel(phy->sched, tx->wake);
     }
@@ -643,10 +715,10 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
                 dbm >= nd->frame_dbm + phy->params.capture_db) {
                 count_reception(nd);
                 settle(nd, nd->frame, lock_by(phy, &find(phy, nd->frame)->f),
-                       &nd->stats.rx_preempted);
+                       &nd->stats.rx_preempted, TSIM_PHY_TAKEN, f->id);
                 sync_to(nd, f, dbm);
             } else {
-                settle(nd, f->id, f_lock_by, &nd->stats.rx_missed);
+                settle(nd, f->id, f_lock_by, &nd->stats.rx_missed, TSIM_PHY_BUSY, nd->frame);
             }
         }
     }
@@ -668,9 +740,39 @@ bool tsim_phy_tune(struct tsim_phy *phy, uint32_t node, uint16_t channel,
     }
     if (nd->state == RECEIVE) {
         count_reception(nd);
-        settle(nd, nd->frame, lock_by(phy, &find(phy, nd->frame)->f), &nd->stats.rx_aborted);
+        settle(nd, nd->frame, lock_by(phy, &find(phy, nd->frame)->f), &nd->stats.rx_aborted,
+               TSIM_PHY_DEAF, 0);
     }
     begin_retune(nd);
+    return true;
+}
+
+bool tsim_phy_mark(struct tsim_phy *phy, uint64_t frame, uint32_t node, int tag) {
+    struct air *a = kept(phy, frame);
+    if (!a || !a->on_air || tag < 0 || tag > 127) {
+        return false;
+    }
+    a->tag = (int8_t)tag;
+    if (node >= phy->n || node == a->f.src) {
+        return true;
+    }
+    /* Where the receiver stands now, as the frame begins; what it does later rebooks it. */
+    const struct node *nd = &phy->nodes[node];
+    a->watch = node;
+    a->rival = 0;
+    if (nd->state == RECEIVE && nd->frame == frame) {
+        a->fate = PENDING;
+    } else if (nd->state == TRANSMIT || nd->state == RETUNE || !tuned_to(nd, &a->f)) {
+        a->fate = TSIM_PHY_DEAF;
+        a->rival = nd->state == TRANSMIT ? nd->frame : 0;
+    } else if (!decodable(phy, &a->f, rx_dbm(phy, &a->f, node))) {
+        a->fate = TSIM_PHY_WEAK;
+    } else if (nd->state == RECEIVE) {
+        a->fate = TSIM_PHY_BUSY;
+        a->rival = nd->frame;
+    } else {
+        a->fate = TSIM_PHY_DEAF; /* listening, but too late in the preamble to lock on */
+    }
     return true;
 }
 

@@ -63,6 +63,8 @@ struct tsim_net {
     void *observer_ctx;
     tsim_net_finished_fn finished;
     void *finished_ctx;
+    tsim_net_hop_fn hop;
+    void *hop_ctx;
 };
 
 static void on_rx(void *ctx, uint32_t node, const struct tsim_frame *frame, double rssi_dbm,
@@ -83,6 +85,23 @@ static void on_rx(void *ctx, uint32_t node, const struct tsim_frame *frame, doub
     struct tsim_node *nd = &net->nodes[node];
     net->routing->rx(nd->routing, &rx);
     net->mac->kick(nd->mac);
+}
+
+static void on_marked(void *ctx, uint32_t node, const struct tsim_frame *frame,
+                      enum tsim_phy_fate fate, int rival) {
+    struct tsim_net *net = ctx;
+    const struct queued *sent = frame->payload;
+    if (net->hop) {
+        struct tsim_net_hop hop = {
+            .from = frame->src,
+            .to = node,
+            .purpose = sent->tx.purpose,
+            .carries = sent->tx.carries,
+            .fate = fate,
+            .rival = rival,
+        };
+        net->hop(net->hop_ctx, &hop);
+    }
 }
 
 static void on_tx_done(void *ctx, uint32_t node, const struct tsim_frame *frame) {
@@ -127,7 +146,7 @@ struct tsim_net *tsim_net_create(struct tsim_sched *sched, const struct tsim_net
     struct tsim_phy_params phy = params->phy;
     phy.fading_seed = params->seed;
     net->phy = tsim_phy_create(sched, &phy, nodes, params->channel, &params->listen,
-                               (struct tsim_phy_hooks){on_rx, on_tx_done, net});
+                               (struct tsim_phy_hooks){on_rx, on_tx_done, net, on_marked});
     if (!net->nodes || !net->phy) {
         tsim_net_destroy(net);
         return NULL;
@@ -268,7 +287,10 @@ uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, ui
         .content = content,
     };
     net->messages[net->message_count++] = (struct record){
-        .r = {.msg = msg, .wanted = dst == TSIM_BROADCAST ? net->n - 1 : 1},
+        .r = {.msg = msg,
+              .wanted = dst == TSIM_BROADCAST ? net->n - 1 : 1,
+              .sent = -1,
+              .drop = {.cause = TSIM_DROP_COUNT}},
         .content = content,
         .held = held,
     };
@@ -324,6 +346,11 @@ void tsim_net_observe(struct tsim_net *net, tsim_net_delivered_fn fn, void *ctx)
 void tsim_net_observe_finished(struct tsim_net *net, tsim_net_finished_fn fn, void *ctx) {
     net->finished = fn;
     net->finished_ctx = ctx;
+}
+
+void tsim_net_observe_hops(struct tsim_net *net, tsim_net_hop_fn fn, void *ctx) {
+    net->hop = fn;
+    net->hop_ctx = ctx;
 }
 
 /* --- A node, as its plugins see it --- */
@@ -420,6 +447,10 @@ uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
     }
     if (net->params.queue_limit && nd->queue_len >= net->params.queue_limit) {
         nd->stats.dropped++;
+        if (tx->carries) {
+            tsim_node_drop(nd, tx->carries, TSIM_DROP_QUEUE,
+                           tx->addressed ? tx->to : TSIM_BROADCAST);
+        }
         return 0;
     }
     if (nd->queue_len == nd->queue_cap) {
@@ -501,6 +532,26 @@ bool tsim_node_deliver(struct tsim_node *nd, uint64_t msg) {
     return true;
 }
 
+bool tsim_node_drop(struct tsim_node *nd, uint64_t msg, enum tsim_drop cause, uint32_t next) {
+    struct record *rec = held_by(nd, msg);
+    if (!rec || (int)cause < 0 || cause >= TSIM_DROP_COUNT) {
+        return false;
+    }
+    struct tsim_message_record *r = &rec->r;
+    bool held = next < nd->net->n && bit_get(rec->held, next);
+    r->drops[cause]++;
+    if (r->drop.cause == TSIM_DROP_COUNT || (r->drop.next_held && !held)) {
+        r->drop = (struct tsim_message_drop){
+            .cause = cause,
+            .node = nd->index,
+            .next = next,
+            .next_held = held,
+            .at = tsim_sched_now(nd->net->sched),
+        };
+    }
+    return true;
+}
+
 bool tsim_node_finished(struct tsim_node *nd, uint64_t msg) {
     struct tsim_net *net = nd->net;
     if (msg == 0 || msg > net->message_count || net->messages[msg - 1].r.msg.src != nd->index) {
@@ -530,9 +581,18 @@ bool tsim_node_transmit(struct tsim_node *nd) {
     }
     nd->air = nd->queue[0];
     const struct tsim_tx *tx = &nd->air.tx;
-    if (!tsim_phy_transmit(nd->net->phy, nd->index, tx->channel, &tx->lora, tx->len, tx->tx_dbm,
-                           &nd->air)) {
+    struct tsim_net *net = nd->net;
+    uint64_t frame = tsim_phy_transmit(net->phy, nd->index, tx->channel, &tx->lora, tx->len,
+                                       tx->tx_dbm, &nd->air);
+    if (!frame) {
         return false;
+    }
+    tsim_phy_mark(net->phy, frame, tx->addressed ? tx->to : UINT32_MAX, (int)tx->purpose);
+    if (tx->carries) {
+        struct tsim_message_record *r = &net->messages[tx->carries - 1].r;
+        if (r->sent < 0 && r->msg.src == nd->index) {
+            r->sent = tsim_sched_now(net->sched);
+        }
     }
     remove_at(nd, 0);
     nd->sending = true;

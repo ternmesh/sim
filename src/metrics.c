@@ -1,6 +1,7 @@
 #include "tsim/metrics.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "tsim/phy.h"
 #include "tsim/sched.h"
@@ -35,7 +36,20 @@ struct tsim_metrics {
     double warmup_ns;
     double routes;
     double routes_reach;
+    /* Addressed frames since the window began; see struct tsim_losses. */
+    uint64_t hops[2][TSIM_PHY_FATE_COUNT];
+    uint64_t rivals[TSIM_PHY_FATE_COUNT][TSIM_PURPOSE_COUNT + 1];
+    uint64_t progress[TSIM_PROGRESS_COUNT];
+    /* The links hops are judged against, by tsim_metrics_links(): each node's neighbours are
+     * adj[adj_at[i]] to adj[adj_at[i + 1]], and dist[d], once worked out, every node's hops to d.
+     */
+    double budget;
+    uint32_t *adj_at;
+    uint32_t *adj;
+    uint16_t **dist;
 };
+
+#define FAR UINT16_MAX
 
 static int msb(uint64_t v) {
     int r = 0;
@@ -99,6 +113,131 @@ static void delivered(void *ctx, const struct tsim_message_record *rec, uint32_t
     }
 }
 
+/* Every node's hops to `d` over the links, FAR where it cannot get there; NULL when memory runs
+ * out. */
+static const uint16_t *hops_to(struct tsim_metrics *m, uint32_t d) {
+    if (m->dist[d]) {
+        return m->dist[d];
+    }
+    uint32_t n = tsim_net_nodes(m->net);
+    uint16_t *dist = malloc(n * sizeof *dist);
+    uint32_t *queue = malloc(n * sizeof *queue);
+    if (!dist || !queue) {
+        free(dist);
+        free(queue);
+        return NULL;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        dist[i] = FAR;
+    }
+    uint32_t head = 0, tail = 0;
+    dist[d] = 0;
+    queue[tail++] = d;
+    while (head < tail) {
+        uint32_t at = queue[head++];
+        for (uint32_t k = m->adj_at[at]; k < m->adj_at[at + 1]; k++) {
+            uint32_t b = m->adj[k];
+            if (dist[b] == FAR && dist[at] + 1 < FAR) {
+                dist[b] = (uint16_t)(dist[at] + 1);
+                queue[tail++] = b;
+            }
+        }
+    }
+    free(queue);
+    m->dist[d] = dist;
+    return dist;
+}
+
+/* Whether a and b are a link at the losses there are now. */
+static bool linked_now(const struct tsim_metrics *m, uint32_t a, uint32_t b) {
+    const struct tsim_phy *phy = tsim_net_phy(m->net);
+    return tsim_phy_loss(phy, a, b) <= m->budget && tsim_phy_loss(phy, b, a) <= m->budget;
+}
+
+/* Whether they were one when tsim_metrics_links() was called: a's neighbours are in order. */
+static bool linked(const struct tsim_metrics *m, uint32_t a, uint32_t b) {
+    uint32_t lo = m->adj_at[a], hi = m->adj_at[a + 1];
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (m->adj[mid] == b) {
+            return true;
+        }
+        if (m->adj[mid] < b) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return false;
+}
+
+static void hop_seen(void *ctx, const struct tsim_net_hop *hop) {
+    struct tsim_metrics *m = ctx;
+    const struct tsim_message_record *rec = tsim_net_message(m->net, hop->carries);
+    if (hop->carries && (!rec || rec->msg.dst == TSIM_BROADCAST)) {
+        return;
+    }
+    m->hops[hop->carries ? 0 : 1][hop->fate]++;
+    if (!hop->carries) {
+        return;
+    }
+    int rival =
+        hop->rival >= 0 && hop->rival < TSIM_PURPOSE_COUNT ? hop->rival : TSIM_PURPOSE_COUNT;
+    m->rivals[hop->fate][rival]++;
+    if (!m->adj_at) {
+        return;
+    }
+    const uint16_t *dist = hops_to(m, rec->msg.dst);
+    if (!dist) {
+        return;
+    }
+    enum tsim_progress p = !linked(m, hop->from, hop->to)    ? TSIM_PROGRESS_NOT_A_LINK
+                           : dist[hop->to] < dist[hop->from] ? TSIM_PROGRESS_CLOSER
+                           : dist[hop->to] > dist[hop->from] ? TSIM_PROGRESS_FARTHER
+                                                             : TSIM_PROGRESS_LEVEL;
+    m->progress[p]++;
+}
+
+bool tsim_metrics_links(struct tsim_metrics *m, const struct tsim_lora *lora, double tx_dbm) {
+    const struct tsim_phy *phy = tsim_net_phy(m->net);
+    uint32_t n = tsim_net_nodes(m->net);
+    double floor = tsim_phy_floor_dbm(phy, lora);
+    if (floor != floor) {
+        return false; /* NAN: an invalid modulation */
+    }
+    uint32_t *at = calloc((size_t)n + 1, sizeof *at);
+    uint16_t **dist = calloc(n, sizeof *dist);
+    if (!at || !dist) {
+        free(at);
+        free(dist);
+        return false;
+    }
+    m->budget = tx_dbm - floor;
+    for (uint32_t a = 0; a < n; a++) {
+        for (uint32_t b = 0; b < n; b++) {
+            at[a + 1] += a != b && linked_now(m, a, b);
+        }
+        at[a + 1] += at[a];
+    }
+    uint32_t *adj = malloc((at[n] ? at[n] : 1) * sizeof *adj);
+    if (!adj) {
+        free(at);
+        free(dist);
+        return false;
+    }
+    for (uint32_t a = 0, k = 0; a < n; a++) {
+        for (uint32_t b = 0; b < n; b++) {
+            if (a != b && linked_now(m, a, b)) {
+                adj[k++] = b;
+            }
+        }
+    }
+    m->adj_at = at;
+    m->adj = adj;
+    m->dist = dist;
+    return true;
+}
+
 struct tsim_metrics *tsim_metrics_create(struct tsim_net *net, tsim_time deadline) {
     struct tsim_metrics *m = calloc(1, sizeof *m);
     if (!m) {
@@ -110,6 +249,7 @@ struct tsim_metrics *tsim_metrics_create(struct tsim_net *net, tsim_time deadlin
     m->routes = -1;
     m->routes_reach = -1;
     tsim_net_observe(net, delivered, m);
+    tsim_net_observe_hops(net, hop_seen, m);
     return m;
 }
 
@@ -118,6 +258,15 @@ void tsim_metrics_destroy(struct tsim_metrics *m) {
         return;
     }
     tsim_net_observe(m->net, NULL, NULL);
+    tsim_net_observe_hops(m->net, NULL, NULL);
+    if (m->dist) {
+        for (uint32_t d = 0; d < tsim_net_nodes(m->net); d++) {
+            free(m->dist[d]);
+        }
+    }
+    free(m->dist);
+    free(m->adj_at);
+    free(m->adj);
     free(m->base);
     free(m);
 }
@@ -174,6 +323,9 @@ void tsim_metrics_begin(struct tsim_metrics *m) {
     /* Every delivery so far was of a message made before the window. */
     m->unicast = (struct latencies){0};
     m->broadcast = (struct latencies){0};
+    memset(m->hops, 0, sizeof m->hops);
+    memset(m->rivals, 0, sizeof m->rivals);
+    memset(m->progress, 0, sizeof m->progress);
     count_routes(m);
 }
 
@@ -182,6 +334,40 @@ static void finish(struct tsim_delivery *d, const struct latencies *l) {
     d->latency_p50 = percentile(l, 0.50);
     d->latency_p95 = percentile(l, 0.95);
     d->latency_max = l->max;
+}
+
+/* Books a unicast message's one fate. */
+static void fate(const struct tsim_metrics *m, const struct tsim_message_record *rec,
+                 struct tsim_losses *l, double *wait_ns, double *transit_ns, uint64_t *late_sent) {
+    const struct tsim_message_drop *drop = &rec->drop;
+    for (int c = 0; c < TSIM_DROP_COUNT; c++) {
+        l->drops[c] += rec->drops[c];
+    }
+    if (rec->delivered) {
+        if (rec->first - rec->msg.created <= m->deadline) {
+            l->on_time++;
+            return;
+        }
+        l->late++;
+        if (rec->sent >= 0) {
+            *wait_ns += (double)(rec->sent - rec->msg.created);
+            *transit_ns += (double)(rec->first - rec->sent);
+            (*late_sent)++;
+        }
+    } else if (rec->refused) {
+        l->refused++;
+    } else if (drop->cause < TSIM_DROP_COUNT && !drop->next_held) {
+        enum tsim_place place = drop->node == rec->msg.src   ? TSIM_PLACE_SOURCE
+                                : drop->next == rec->msg.dst ? TSIM_PLACE_LAST_HOP
+                                                             : TSIM_PLACE_PARTWAY;
+        l->dropped[drop->cause][place]++;
+    } else if (drop->cause < TSIM_DROP_COUNT) {
+        l->unheard++;
+    } else if (rec->finished) {
+        l->vanished++;
+    } else {
+        l->pending++;
+    }
 }
 
 void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
@@ -196,6 +382,8 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
     };
 
     uint64_t count = tsim_net_message_count(net);
+    double wait_ns = 0, transit_ns = 0;
+    uint64_t late_sent = 0;
     for (uint64_t id = m->first; id <= count; id++) {
         const struct tsim_message_record *rec = tsim_net_message(net, id);
         struct tsim_delivery *d = rec->msg.dst == TSIM_BROADCAST ? &r->broadcast : &r->unicast;
@@ -203,7 +391,17 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
         d->refused += rec->refused;
         d->wanted += rec->wanted;
         d->delivered += rec->delivered;
+        if (rec->msg.dst != TSIM_BROADCAST) {
+            fate(m, rec, &r->losses, &wait_ns, &transit_ns, &late_sent);
+        }
     }
+    if (late_sent) {
+        r->losses.late_wait_s = wait_ns / (double)late_sent / 1e9;
+        r->losses.late_transit_s = transit_ns / (double)late_sent / 1e9;
+    }
+    memcpy(r->losses.hops, m->hops, sizeof m->hops);
+    memcpy(r->losses.rivals, m->rivals, sizeof m->rivals);
+    memcpy(r->losses.progress, m->progress, sizeof m->progress);
     finish(&r->unicast, &m->unicast);
     finish(&r->broadcast, &m->broadcast);
 
