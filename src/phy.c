@@ -25,6 +25,7 @@ struct air {
     uint32_t watch;
     uint8_t fate;
     uint64_t rival;
+    uint8_t *fates; /* with tsim_phy_watch(): each node's fate so far, or NULL */
 };
 
 struct node {
@@ -79,6 +80,9 @@ struct tsim_phy {
     size_t cap;
     uint64_t first_id; /* the id of air[head] */
     uint64_t next_id;
+    tsim_phy_heard_fn heard; /* tsim_phy_watch() */
+    void *heard_ctx;
+    const bool *heard_by;
 };
 
 static double mw(double dbm) { return pow(10.0, dbm / 10.0); }
@@ -103,6 +107,9 @@ static void befall(struct tsim_phy *phy, uint64_t frame, uint32_t node, uint8_t 
     if (a && a->watch == node) {
         a->fate = fate;
         a->rival = rival;
+    }
+    if (a && a->fates) {
+        a->fates[node] = fate;
     }
 }
 
@@ -417,6 +424,8 @@ static void frame_end(struct tsim_sched *sched, void *ctx) {
     struct air *a = find(phy, tx->frame);
     a->on_air = false;
     struct tsim_frame f = a->f;
+    uint8_t *fates = a->fates; /* this frame's, which the hooks may move */
+    a->fates = NULL;
 
     /* Decide every reception first, then let the radios listen again, then run the hooks, so the
      * outcome does not depend on which node a hook belongs to. */
@@ -437,6 +446,9 @@ static void frame_end(struct tsim_sched *sched, void *ctx) {
             nd->stats.rx_lost++;
         }
         phy->outcomes[done++] = (struct outcome){i, nd->frame_dbm, ok};
+        if (fates) {
+            fates[i] = ok ? TSIM_PHY_DECODED : TSIM_PHY_INTERFERED;
+        }
         if (i == watch) {
             fate = ok ? TSIM_PHY_DECODED : TSIM_PHY_INTERFERED;
             rival = ok ? 0 : loudest_rival(phy, &f, i, nd->frame_dbm, nd->since);
@@ -474,6 +486,19 @@ static void frame_end(struct tsim_sched *sched, void *ctx) {
     }
     if (phy->hooks.marked && watch < phy->n) {
         phy->hooks.marked(phy->hooks.ctx, watch, &f, (enum tsim_phy_fate)fate, rival_tag);
+    }
+    if (fates) {
+        for (uint32_t i = 0; phy->heard && i < phy->n; i++) {
+            if (i == f.src || !phy->heard_by[i]) {
+                continue;
+            }
+            uint8_t fi = fates[i];
+            if (fi == PENDING) { /* as tsim_phy_mark() books it: never engaged */
+                fi = decodable(phy, &f, rx_dbm(phy, &f, i)) ? TSIM_PHY_DEAF : TSIM_PHY_WEAK;
+            }
+            phy->heard(phy->heard_ctx, i, &f, (enum tsim_phy_fate)fi);
+        }
+        free(fates);
     }
     if (phy->hooks.tx_done) {
         phy->hooks.tx_done(phy->hooks.ctx, tx->index, &f);
@@ -579,8 +604,17 @@ void tsim_phy_destroy(struct tsim_phy *phy) {
     free(phy->nodes);
     free(phy->loss);
     free(phy->outcomes);
+    for (size_t i = 0; i < phy->count; i++) {
+        free(phy->air[phy->head + i].fates);
+    }
     free(phy->air);
     free(phy);
+}
+
+void tsim_phy_watch(struct tsim_phy *phy, tsim_phy_heard_fn fn, void *ctx, const bool *nodes) {
+    phy->heard = nodes ? fn : NULL;
+    phy->heard_ctx = ctx;
+    phy->heard_by = nodes;
 }
 
 void tsim_phy_set_loss(struct tsim_phy *phy, uint32_t a, uint32_t b, double loss_db) {
@@ -706,6 +740,10 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
     a->watch = UINT32_MAX;
     a->fate = PENDING;
     a->rival = 0;
+    a->fates = phy->heard ? malloc(phy->n) : NULL; /* none if memory runs out: unreported */
+    if (a->fates) {
+        memset(a->fates, PENDING, phy->n);
+    }
     a->f = (struct tsim_frame){
         .id = phy->next_id++,
         .src = node,
