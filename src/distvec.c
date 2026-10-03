@@ -23,6 +23,8 @@
 #define TYPE_DATA 0x03
 #define TYPE_ACK 0x04
 #define TYPE_BCAST 0x05
+#define TYPE_RREQ 0x06
+#define TYPE_RREP 0x07
 
 #define ANNOUNCE_HEAD 16
 #define IHU_LEN 5
@@ -33,6 +35,12 @@
 #define DATA_HEAD 18
 #define ACK_LEN 18
 #define BCAST_HEAD 10
+/* With demand routes, a data, acknowledgement or reply frame's route to its source, and a route
+ * request's length: see the header. */
+#define TRAIL_LEN 10
+#define RREQ_LEN 27
+#define PARKED_MAX 16 /* frames a relay holds while it asks for a route */
+#define RREQ_SEQ 0x01 /* a route request's flag: it asks for the target's seq */
 /* The longest IHU round an announce can tell, in its two bytes. */
 #define ROUND_MAX 32767
 /* The most announces a neighbour may go without an IHU, whatever its round: half the 16-bit count,
@@ -102,6 +110,7 @@ struct entry {
     uint16_t slot; /* the neighbour's slot plus 1; 0 for none */
     uint16_t seq;
     uint16_t metric; /* the neighbour's, without the link */
+    tsim_time until; /* with demand routes, when it is gone unless heard of again; 0 for never */
 };
 
 struct dest {
@@ -186,9 +195,19 @@ struct awaiting {
     uint8_t attempt;
     struct tsim_timer *timer;
     uint64_t handle; /* the attempt's frame, while it waits in the queue; 0 once it has gone */
+    bool routeless;  /* its last attempt found no route, and waits on one */
     tsim_time wait;  /* how long to wait for the acknowledgement once it has */
     uint32_t len;
     uint8_t content[FRAME_MAX];
+};
+
+/* With demand routes, a frame to pass on that waits for the route its relay asked for. */
+struct parked {
+    uint32_t target;
+    tsim_time until;
+    double back;
+    uint32_t len;
+    uint8_t bytes[FRAME_MAX];
 };
 
 /* Airtime a node may still spend, in nanoseconds: a token bucket. */
@@ -210,7 +229,9 @@ struct router {
     tsim_time acc_at;  /* when unrouted and the urgent list were last counted into stats */
     uint32_t ann_head; /* an announce's head, and a data frame's: longer with power control */
     uint32_t data_head;
-    double node_dbm;                          /* what frames for every neighbour go at */
+    uint32_t trail_at; /* with demand routes, where a data frame's route to its source goes */
+    uint32_t rreq_id;  /* the last route request this node made */
+    double node_dbm;   /* what frames for every neighbour go at */
     const struct tsim_distvec_oracle *oracle; /* routes handed down, or NULL */
     const struct tsim_distvec_oracle *truth;  /* with links oracle: whose links are used */
     struct tsim_distvec_config config;
@@ -275,6 +296,8 @@ struct router {
     size_t ask_cap;
     struct tsim_timer *ask_timer;
     struct tsim_timer *seq_timer;
+    struct parked *parked;
+    size_t parked_count;
 };
 
 struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct tsim_lora *lora,
@@ -285,6 +308,10 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .tx_dbm = tx_dbm,
         .relays = "all",
         .leaves = TSIM_DISTVEC_LEAVES_ROUTED,
+        .routes = TSIM_DISTVEC_ROUTES_PROACTIVE,
+        .route_ttl = TSIM_S(10 * 60),
+        .req_hops = 16,
+        .req_cancel = 2,
         .imin = TSIM_S(8),
         .doublings = 6,
         .redundancy = 3,
@@ -333,6 +360,9 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     }
     if (c->leaves > TSIM_DISTVEC_LEAVES_PARENT_ORACLE) {
         return "leaves is not routed or parent_oracle";
+    }
+    if (c->routes > TSIM_DISTVEC_ROUTES_DEMAND || c->route_ttl <= 0 || c->req_hops < 1) {
+        return "routes is not proactive or demand, route_ttl is not above 0, or req_hops is 0";
     }
     if (tsim_lora_airtime(&c->lora, c->ref_len) < 0) {
         return "ref_len has no airtime at the radio's modulation";
@@ -400,10 +430,15 @@ static bool by_parent(const struct router *r) {
     return r->config.leaves == TSIM_DISTVEC_LEAVES_PARENT_ORACLE;
 }
 
+/* Whether routes come on demand. The oracle's never do: it is handed them. */
+static bool demand(const struct router *r) {
+    return r->config.routes == TSIM_DISTVEC_ROUTES_DEMAND && !r->oracle;
+}
+
 /* Whether this node announces its route to `d`: infrastructure does, but never to a leaf when
- * leaves are reached through their parents. */
+ * leaves are reached through their parents, and with demand routes nobody does. */
 static bool announces(const struct router *r, uint32_t d) {
-    return r->infra && !(by_parent(r) && r->dest[d].leaf);
+    return r->infra && !(by_parent(r) && r->dest[d].leaf) && !demand(r);
 }
 
 static bool seen(const struct router *r, uint64_t key) {
@@ -666,29 +701,61 @@ static struct entry *entry_by(struct dest *d, uint16_t s) {
     return NULL;
 }
 
+/* Whether a route is still there: with demand routes, not past its time. */
+static bool alive(const struct router *r, const struct entry *e) {
+    return e->until == 0 || e->until > now(r);
+}
+
+/* The selected route to `d`, or NULL for none or one past its time. Nothing is changed: a route
+ * past its time stays selected until something next reselects, but is never followed. */
+static const struct entry *live_sel(const struct router *r, uint32_t d) {
+    const struct dest *ds = &r->dest[d];
+    for (int i = 0; ds->sel && i < ROUTES; i++) {
+        if (ds->e[i].slot == ds->sel) {
+            return alive(r, &ds->e[i]) ? &ds->e[i] : NULL;
+        }
+    }
+    return NULL;
+}
+
 /* The node whose route a frame for `dst` follows: `dst`, or with parent_oracle, the parent of a
  * leaf this node has no route to - TSIM_DISTVEC_NO_PARENT if it has none, and this node itself if
  * it is the parent but cannot reach the leaf. */
 static uint32_t target_of(const struct router *r, uint32_t dst) {
-    if (!by_parent(r) || r->dest[dst].sel) {
+    if (!by_parent(r) || live_sel(r, dst)) {
         return dst;
     }
     return r->config.parents[dst];
 }
 
-/* The neighbour a frame for `dst` goes to next, or NULL for none, and the metric of the way there:
- * through a leaf's parent, the route to the parent and a hop more. */
-static struct neighbour *next_toward(struct router *r, uint32_t dst, uint16_t *metric) {
-    uint32_t t = target_of(r, dst);
-    if (t >= r->nodes || t == r->self || !r->dest[t].sel) {
+/* With demand routes and parent_oracle, where a leaf sends what it has no route for: its parent,
+ * if it can use the link. */
+static struct neighbour *up(struct router *r) {
+    if (!demand(r) || r->infra || !by_parent(r) || r->parent >= r->nodes) {
         return NULL;
     }
-    struct dest *ds = &r->dest[t];
-    struct neighbour *n = slot(r, ds->sel);
+    uint16_t s = r->slot_of[r->parent];
+    return s && usable(r, s, r->parent) ? slot(r, s) : NULL;
+}
+
+/* The neighbour a frame for `dst` goes to next, or NULL for none, and the metric of the way there:
+ * through a leaf's parent, the route to the parent and a hop more. Changes nothing. */
+static struct neighbour *next_toward(struct router *r, uint32_t dst, uint16_t *metric) {
+    uint32_t t = target_of(r, dst);
+    double hop = ceil(r->ref_ms);
+    uint16_t one = (uint16_t)(hop < 1 ? 1 : hop);
+    const struct entry *e = t < r->nodes && t != r->self ? live_sel(r, t) : NULL;
+    if (!e) {
+        struct neighbour *p = t < r->nodes && t != r->self ? up(r) : NULL;
+        if (p && metric) {
+            *metric = total(p->cost, one);
+        }
+        return p;
+    }
+    struct neighbour *n = slot(r, e->slot);
     if (metric) {
-        uint16_t m = total(entry_by(ds, ds->sel)->metric, n->cost);
-        double hop = ceil(r->ref_ms);
-        *metric = t == dst ? m : total(m, (uint16_t)(hop < 1 ? 1 : hop));
+        uint16_t m = total(e->metric, n->cost);
+        *metric = t == dst ? m : total(m, one);
     }
     return n;
 }
@@ -936,7 +1003,7 @@ static void reselect(struct router *r, uint32_t d) {
     bool infeasible = false;
     for (int i = 0; i < ROUTES; i++) {
         struct entry *e = &ds->e[i];
-        if (!e->slot || e->metric == INF || !usable(r, e->slot, d)) {
+        if (!e->slot || e->metric == INF || !alive(r, e) || !usable(r, e->slot, d)) {
             continue;
         }
         if (!feasible(ds, e)) {
@@ -959,8 +1026,8 @@ static void reselect(struct router *r, uint32_t d) {
     }
     bool was = ds->sel != 0;
     ds->sel = chosen ? chosen->slot : 0;
-    if (!chosen && infeasible) {
-        starved(r, d);
+    if (!chosen && infeasible && !demand(r)) {
+        starved(r, d); /* on demand, a route is asked for only when a message needs it */
     }
     if (!announces(r, d)) {
         return; /* a leaf announces no routes, and with parents nobody announces one to a leaf */
@@ -1002,7 +1069,7 @@ struct rank {
 static struct rank rank_of(struct router *r, uint32_t d, const struct entry *e) {
     uint16_t t = total(e->metric, slot(r, e->slot)->cost);
     return (struct rank){
-        .selectable = t != INF && usable(r, e->slot, d) && feasible(&r->dest[d], e),
+        .selectable = t != INF && alive(r, e) && usable(r, e->slot, d) && feasible(&r->dest[d], e),
         .seq = e->seq,
         .total = t,
     };
@@ -1019,13 +1086,28 @@ static bool below(struct rank a, struct rank b) {
     return a.total > b.total;
 }
 
-/* What the neighbour in slot `s` advertises about `d`. */
+/* What the neighbour in slot `s` advertises about `d`, for as long as `life` with demand routes -
+ * never longer than route_ttl, nor than the neighbour has it for. */
+static void update_for(struct router *r, uint32_t d, uint16_t seq, uint16_t metric, uint16_t s,
+                       tsim_time life);
+
 static void update(struct router *r, uint32_t d, uint16_t seq, uint16_t metric, uint16_t s) {
+    update_for(r, d, seq, metric, s, r->config.route_ttl);
+}
+
+static void update_for(struct router *r, uint32_t d, uint16_t seq, uint16_t metric, uint16_t s,
+                       tsim_time life) {
     if (d == r->self || d >= r->nodes) {
         return;
     }
     struct dest *ds = &r->dest[d];
     struct entry *e = entry_by(ds, s);
+    /* On demand a route lasts route_ttl from when it was last heard of - but not a neighbour's
+     * route to itself, which lasts as long as the link. */
+    if (life > r->config.route_ttl) {
+        life = r->config.route_ttl;
+    }
+    tsim_time until = demand(r) && !(metric == 0 && slot(r, s)->id == d) ? now(r) + life : 0;
     if (metric == INF) {
         if (!e) {
             return;
@@ -1034,6 +1116,7 @@ static void update(struct router *r, uint32_t d, uint16_t seq, uint16_t metric, 
     } else if (e) {
         e->seq = seq;
         e->metric = metric;
+        e->until = until;
     } else {
         /* A free place, or else the worst route that is not the selected one, if this beats it -
          * worst by what makes a route worth keeping: one that could be selected now before one
@@ -1058,7 +1141,7 @@ static void update(struct router *r, uint32_t d, uint16_t seq, uint16_t metric, 
         if (!place || (place->slot && !below(worst, mine))) {
             return;
         }
-        *place = (struct entry){.slot = s, .seq = seq, .metric = metric};
+        *place = (struct entry){.slot = s, .seq = seq, .metric = metric, .until = until};
     }
     reselect(r, d);
 }
@@ -1796,7 +1879,101 @@ static void overheard(struct router *r, const uint8_t *b, double snr) {
     }
 }
 
+/* --- Routes on demand --- */
+
+/* The route to `d` this node would put in a frame, as an announce would: its own, or its selected
+ * one, setting the feasibility distance as advertise() does. False for none. */
+static bool offer(struct router *r, uint32_t d, uint16_t *seq, uint16_t *metric, uint16_t *life) {
+    double ttl_s = floor((double)r->config.route_ttl / (double)TSIM_S(1));
+    *life = (uint16_t)(ttl_s > UINT16_MAX ? UINT16_MAX : ttl_s);
+    if (d == r->self) {
+        *seq = r->seq;
+        *metric = 0;
+        return true;
+    }
+    const struct entry *e = d < r->nodes ? live_sel(r, d) : NULL;
+    uint16_t m = e ? total(e->metric, slot(r, e->slot)->cost) : INF;
+    if (m == INF) {
+        return false;
+    }
+    struct dest *ds = &r->dest[d];
+    if (!ds->has_fd || newer(e->seq, ds->fd_seq) || (e->seq == ds->fd_seq && m < ds->fd_metric)) {
+        ds->has_fd = true;
+        ds->fd_seq = e->seq;
+        ds->fd_metric = m;
+    }
+    *seq = e->seq;
+    *metric = m;
+    if (e->until) {
+        /* What is left of it, rounded down: a node that learns it never keeps it longer. */
+        double left = floor((double)(e->until - now(r)) / (double)TSIM_S(1));
+        if (left < 1) {
+            return false;
+        }
+        if (left < *life) {
+            *life = (uint16_t)left;
+        }
+    }
+    return true;
+}
+
+/* The route to a data, acknowledgement or reply frame's source that its sender put in it, taken as
+ * the sender advertising it. */
+static void learn(struct router *r, const uint8_t *b) {
+    uint32_t sender = get32(b + r->trail_at);
+    uint16_t metric = get16(b + r->trail_at + 6);
+    tsim_time life = (tsim_time)get16(b + r->trail_at + 8) * TSIM_S(1);
+    if (sender < r->nodes && sender != r->self && r->slot_of[sender] && metric != INF) {
+        update_for(r, get32(b + 5), get16(b + r->trail_at + 4), metric, r->slot_of[sender], life);
+    }
+}
+
+/* Floods a route request for `t`, at most once a request_interval, out of the requests' share of
+ * the cap. It asks for the seq after this node's feasibility distance, if it has one, so the
+ * routes the reply leaves are feasible here. */
+static void discover(struct router *r, uint32_t t) {
+    struct dest *ds = &r->dest[t];
+    tsim_time at = now(r);
+    if (ds->asked >= 0 && at - ds->asked < r->config.request_interval) {
+        return;
+    }
+    struct bucket *b = &r->requests;
+    refill(r, b);
+    struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_CONTROL);
+    double cost = (double)tsim_lora_airtime(&tx.lora, RREQ_LEN);
+    if (b->ns < cost) {
+        return;
+    }
+    uint32_t id = ++r->rreq_id;
+    /* A new seq of its own with each request, as AODV's: the routes back to it the request leaves
+     * are feasible wherever it goes, however many earlier ones went a shorter way. */
+    r->seq++;
+    tx.bytes[0] = TYPE_RREQ;
+    put32(tx.bytes + 1, r->self);
+    put32(tx.bytes + 5, id);
+    put32(tx.bytes + 9, t);
+    put16(tx.bytes + 13, ds->has_fd ? (uint16_t)(ds->fd_seq + 1) : 0);
+    tx.bytes[15] = ds->has_fd ? RREQ_SEQ : 0;
+    tx.bytes[16] = r->config.req_hops;
+    uint16_t seq, metric, life;
+    offer(r, r->self, &seq, &metric, &life);
+    put32(tx.bytes + 17, r->self);
+    put16(tx.bytes + 21, seq);
+    put16(tx.bytes + 23, metric);
+    put16(tx.bytes + 25, life);
+    tx.len = RREQ_LEN;
+    if (!tsim_node_send(r->node, &tx)) {
+        return;
+    }
+    b->ns -= cost;
+    ds->asked = at;
+    r->stats.route_requests++;
+    mark_seen(r, frame_key(TYPE_RREQ, r->self, id));
+}
+
 /* --- Messages --- */
+
+static void found(struct router *r, uint32_t t);
 
 static void hold(struct router *r, const struct tsim_tx *tx, uint64_t key, bool listen,
                  double airtimes);
@@ -1824,9 +2001,9 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
         next = n->id;
     }
     struct tsim_tx tx = frame(r, purpose,
-                              type == TYPE_ACK               ? PRIORITY_CONTROL
-                              : purpose == TSIM_PURPOSE_DATA ? PRIORITY_DATA
-                                                             : PRIORITY_RELAY);
+                              type == TYPE_ACK || type == TYPE_RREP ? PRIORITY_CONTROL
+                              : purpose == TSIM_PURPOSE_DATA        ? PRIORITY_DATA
+                                                                    : PRIORITY_RELAY);
     tx.addressed = true;
     tx.to = next;
     tx.bytes[0] = type;
@@ -1839,6 +2016,14 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
         tx.tx_dbm = n ? power_for(r, n, back) : oracle_power(r, dst, back);
         tx.bytes[18] = power_byte(tx.tx_dbm);
     }
+    if (demand(r)) {
+        uint16_t seq = 0, metric = INF, life = 0;
+        offer(r, src, &seq, &metric, &life);
+        put32(tx.bytes + r->trail_at, r->self);
+        put16(tx.bytes + r->trail_at + 4, seq);
+        put16(tx.bytes + r->trail_at + 6, metric);
+        put16(tx.bytes + r->trail_at + 8, life);
+    }
     if (len) {
         memcpy(tx.bytes + r->data_head, content, len);
     }
@@ -1847,8 +2032,8 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
         tx.carries = carries;
         tx.carries_at = r->data_head;
     }
-    /* The last hop of an acknowledgement has nothing to hear. */
-    bool listen = !(type == TYPE_ACK && next == dst);
+    /* The last hop of an acknowledgement or a reply has nothing to hear. */
+    bool listen = !((type == TYPE_ACK || type == TYPE_RREP) && next == dst);
     if (purpose == TSIM_PURPOSE_DATA) {
         uint64_t handle = send_hop(r, &tx, listen);
         if (queued) {
@@ -1867,6 +2052,10 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
 static void no_route(struct router *r, uint32_t dst, bool at_once) {
     uint32_t t = target_of(r, dst);
     if (t >= r->nodes || t == r->self) {
+        return;
+    }
+    if (demand(r)) {
+        discover(r, t);
         return;
     }
     if (at_once) {
@@ -1901,6 +2090,7 @@ static void send_attempt(struct awaiting *a) {
             r->oracle ? r->oracle->route[(size_t)r->self * r->nodes + a->dst].hops * ceil(r->ref_ms)
                       : route_metric;
         wait += (tsim_time)(r->config.ack_factor * metric * (double)TSIM_MS(1));
+        a->routeless = false;
         if (handle) {
             /* The wait starts when the frame goes: however long it queues behind other traffic,
              * no second copy joins it, and the message is not given up while one still waits. */
@@ -1911,6 +2101,7 @@ static void send_attempt(struct awaiting *a) {
         /* Refused by a full queue: tried again after the wait, as if it had been lost. */
     } else {
         tsim_node_drop(r->node, a->id, TSIM_DROP_NO_ROUTE, TSIM_BROADCAST);
+        a->routeless = true;
         no_route(r, a->dst, true); /* a message waits on it: ask now */
     }
     tsim_timer_start(a->timer, wait);
@@ -2026,7 +2217,45 @@ static bool passing_on(const struct router *r, uint8_t type, uint32_t src, uint3
             return true;
         }
     }
+    for (size_t i = 0; i < r->parked_count; i++) {
+        const uint8_t *b = r->parked[i].bytes;
+        if (b[0] == type && get32(b + 5) == src && get32(b + 13) == id) {
+            return true;
+        }
+    }
     return false;
+}
+
+/* Holds a data frame this relay has no route to pass on, until the route it asks for comes or two
+ * request intervals go by. False if there is no room. */
+static void unpark_expired(struct router *r) {
+    for (size_t i = 0; i < r->parked_count;) {
+        if (r->parked[i].until <= now(r)) {
+            tsim_node_drop(r->node, get32(r->parked[i].bytes + 13), TSIM_DROP_NO_ROUTE,
+                           TSIM_BROADCAST);
+            r->parked[i] = r->parked[--r->parked_count];
+        } else {
+            i++;
+        }
+    }
+}
+
+static bool park(struct router *r, uint32_t target, const uint8_t *b, uint32_t len, double back) {
+    tsim_time t = now(r);
+    unpark_expired(r);
+    if (!r->parked) {
+        r->parked = malloc(PARKED_MAX * sizeof *r->parked);
+    }
+    if (!r->parked || r->parked_count == PARKED_MAX) {
+        return false;
+    }
+    struct parked *p = &r->parked[r->parked_count++];
+    p->target = target;
+    p->until = t + 2 * r->config.request_interval;
+    p->back = back;
+    p->len = len;
+    memcpy(p->bytes, b, len);
+    return true;
 }
 
 static bool router_originate(void *self, const struct tsim_message *msg) {
@@ -2082,6 +2311,9 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
         return;
     }
     overheard(r, b, snr);
+    if (demand(r)) {
+        learn(r, b);
+    }
     if (type == TYPE_ACK && dst == r->self) {
         for (struct awaiting *a = r->awaiting; a; a = a->next) {
             if (a->id == id && a->dst == src) {
@@ -2092,6 +2324,10 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
         return;
     }
     if (next != r->self) {
+        return;
+    }
+    if (type == TYPE_RREP && dst == r->self) {
+        found(r, src);
         return;
     }
     if (type == TYPE_DATA && dst == r->self) {
@@ -2116,16 +2352,24 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
     mark_seen(r, key);
     bool data = type == TYPE_DATA;
     if (!route_frame(r, type, src, dst, id, (uint8_t)(hops - 1), b + r->data_head,
-                     len - r->data_head, data ? TSIM_PURPOSE_RELAY : TSIM_PURPOSE_CONTROL,
-                     data ? id : 0, back, NULL)) {
+                     data ? len - r->data_head : 0,
+                     data ? TSIM_PURPOSE_RELAY : TSIM_PURPOSE_CONTROL, data ? id : 0, back, NULL)) {
+        uint32_t to = target_of(r, dst);
+        if (data && demand(r) && to < r->nodes && to != r->self && park(r, to, b, len, back)) {
+            no_route(r, dst, false);
+            return; /* passed on when the route comes */
+        }
         if (data) {
             tsim_node_drop(r->node, id, TSIM_DROP_NO_ROUTE, TSIM_BROADCAST);
+        }
+        if (type == TYPE_RREP) {
+            return; /* the way back to the origin is gone: it asks again */
         }
         /* Sent here, so the hop before still has the route: if it had it from this node, its
          * retraction never got there. Say it again. */
         uint32_t t = target_of(r, dst);
         struct dest *ds = t < r->nodes ? &r->dest[t] : NULL;
-        if (ds && t != r->self && ds->has_fd && !ds->advertised && !ds->urgent) {
+        if (ds && !demand(r) && t != r->self && ds->has_fd && !ds->advertised && !ds->urgent) {
             if (!ds->retracts) {
                 ds->retracts = 1;
                 r->retracting++;
@@ -2137,26 +2381,32 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
     }
 }
 
+/* Another copy heard of a flooded frame this node holds to pass on: counted, and with
+ * bcast_cancel of them, the frame is dropped. */
+static void heard_again(struct router *r, uint64_t key, uint8_t cancel) {
+    for (size_t i = 0; i < r->held_count; i++) {
+        struct held *h = &r->held[i];
+        if (h->key != key) {
+            continue;
+        }
+        if (h->heard < UINT8_MAX) {
+            h->heard++;
+        }
+        if (cancel && h->heard >= cancel &&
+            (h->handle == 0 || tsim_node_cancel(r->node, h->handle))) {
+            r->held[i] = r->held[--r->held_count];
+            arm_out(r);
+        }
+        break;
+    }
+}
+
 static void on_bcast(struct router *r, const uint8_t *b, uint32_t len) {
     uint32_t src = get32(b + 1), id = get32(b + 5);
     uint8_t hops = b[9];
     uint64_t key = frame_key(TYPE_BCAST, src, id);
     if (seen(r, key)) {
-        for (size_t i = 0; i < r->held_count; i++) {
-            struct held *h = &r->held[i];
-            if (h->key != key) {
-                continue;
-            }
-            if (h->heard < UINT8_MAX) {
-                h->heard++;
-            }
-            if (r->config.bcast_cancel && h->heard >= r->config.bcast_cancel &&
-                (h->handle == 0 || tsim_node_cancel(r->node, h->handle))) {
-                r->held[i] = r->held[--r->held_count];
-                arm_out(r);
-            }
-            break;
-        }
+        heard_again(r, key, r->config.bcast_cancel);
         return;
     }
     mark_seen(r, key);
@@ -2173,6 +2423,80 @@ static void on_bcast(struct router *r, const uint8_t *b, uint32_t len) {
     hold(r, &tx, key, false, r->config.bcast_window);
 }
 
+/* A reply reached this node, which asked for a route to `t`: the messages waiting on it go now. */
+static void found(struct router *r, uint32_t t) {
+    unpark_expired(r);
+    for (size_t i = 0; i < r->parked_count;) {
+        struct parked p = r->parked[i];
+        if (p.target != t) {
+            i++;
+            continue;
+        }
+        r->parked[i] = r->parked[--r->parked_count];
+        const uint8_t *b = p.bytes;
+        route_frame(r, TYPE_DATA, get32(b + 5), get32(b + 9), get32(b + 13), (uint8_t)(b[17] - 1),
+                    b + r->data_head, p.len - r->data_head, TSIM_PURPOSE_RELAY, get32(b + 13),
+                    p.back, NULL);
+    }
+    for (struct awaiting *a = r->awaiting; a; a = a->next) {
+        if (a->routeless && a->handle == 0 && target_of(r, a->dst) == t &&
+            next_toward(r, a->dst, NULL)) {
+            tsim_timer_stop(a->timer);
+            send_attempt(a);
+        }
+    }
+}
+
+/* A route request: the route to its origin taken, then answered, passed on, or let be. */
+static void on_rreq(struct router *r, const uint8_t *b, uint32_t len) {
+    if (!demand(r) || len < RREQ_LEN) {
+        return;
+    }
+    uint32_t origin = get32(b + 1), id = get32(b + 5), target = get32(b + 9);
+    uint32_t sender = get32(b + 17);
+    uint16_t want = get16(b + 13), metric = get16(b + 23);
+    bool asks_seq = b[15] & RREQ_SEQ;
+    uint8_t hops = b[16];
+    if (origin >= r->nodes || target >= r->nodes || sender >= r->nodes || origin == r->self) {
+        return;
+    }
+    uint64_t key = frame_key(TYPE_RREQ, origin, id);
+    if (seen(r, key)) {
+        heard_again(r, key, r->config.req_cancel);
+        return;
+    }
+    mark_seen(r, key);
+    if (sender != r->self && r->slot_of[sender] && metric != INF) {
+        update_for(r, origin, get16(b + 21), metric, r->slot_of[sender],
+                   (tsim_time)get16(b + 25) * TSIM_S(1));
+    }
+    if (target == r->self) {
+        /* A new seq with each reply, at least the one asked for, so the routes it leaves are
+         * feasible at every hop on the way back, as the request's were. */
+        uint16_t next = (uint16_t)(r->seq + 1);
+        r->seq = asks_seq && newer(want, next) ? want : next;
+        r->stats.seq_raised++;
+        if (route_frame(r, TYPE_RREP, target, origin, id, r->config.hop_max, NULL, 0,
+                        TSIM_PURPOSE_CONTROL, 0, NAN, NULL)) {
+            r->stats.route_replies++;
+        }
+        return;
+    }
+    uint16_t seq, back, life;
+    if (!r->infra || hops <= 1 || !offer(r, origin, &seq, &back, &life)) {
+        return; /* nothing to pass on, or no way for a reply to come back through here */
+    }
+    struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_CONTROL);
+    memcpy(tx.bytes, b, RREQ_LEN);
+    tx.bytes[16] = (uint8_t)(hops - 1);
+    put32(tx.bytes + 17, r->self);
+    put16(tx.bytes + 21, seq);
+    put16(tx.bytes + 23, back);
+    put16(tx.bytes + 25, life);
+    tx.len = RREQ_LEN;
+    hold(r, &tx, key, false, r->config.bcast_window);
+}
+
 static void router_rx(void *self, const struct tsim_rx *rx) {
     struct router *r = self;
     if (rx->len < 1) {
@@ -2185,8 +2509,12 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
     case TYPE_REQUEST:
         on_request(r, rx->bytes, rx->len);
         return;
+    case TYPE_RREQ:
+        on_rreq(r, rx->bytes, rx->len);
+        return;
     case TYPE_DATA:
     case TYPE_ACK:
+    case TYPE_RREP:
         if (rx->len >= r->data_head) {
             on_data(r, rx->bytes, rx->len, rx->snr_db);
         }
@@ -2283,6 +2611,7 @@ static void house_fire(void *ctx) {
     }
     choose_parent(r);
     node_power(r);
+    unpark_expired(r);
     tsim_timer_start(r->house, house_period(r));
 }
 
@@ -2324,6 +2653,7 @@ static void router_destroy(void *self) {
     free(r->urgent);
     free(r->hops);
     free(r->held);
+    free(r->parked);
     free(r);
 }
 
@@ -2357,7 +2687,8 @@ static void *router_create(struct tsim_node *node, const void *config) {
         c->parents[r->self] = r->infra ? r->self : TSIM_DISTVEC_NO_PARENT;
     }
     r->ann_head = ANNOUNCE_HEAD + (c->power ? 1 : 0);
-    r->data_head = DATA_HEAD + (c->power ? 1 : 0);
+    r->trail_at = DATA_HEAD + (c->power ? 1 : 0);
+    r->data_head = r->trail_at + (demand(r) ? TRAIL_LEN : 0);
     node_power(r);
     tsim_node_rng(node, TSIM_STREAM_ROUTING, &r->rng);
     r->ref_ms = (double)tsim_lora_airtime(&c->lora, c->ref_len) / (double)TSIM_MS(1);
