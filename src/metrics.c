@@ -277,12 +277,18 @@ bool tsim_metrics_links(struct tsim_metrics *m, const struct tsim_lora *lora, do
     return true;
 }
 
-bool tsim_metrics_power(struct tsim_metrics *m, uint32_t node, bool on) {
-    uint32_t n = tsim_net_nodes(m->net);
-    if (!m->power && !(m->power = calloc(n, sizeof *m->power))) {
+bool tsim_metrics_churn(struct tsim_metrics *m) {
+    if (!m->power && !(m->power = calloc(tsim_net_nodes(m->net), sizeof *m->power))) {
         return false;
     }
     m->churn.present = true;
+    return true;
+}
+
+bool tsim_metrics_power(struct tsim_metrics *m, uint32_t node, bool on) {
+    if (!tsim_metrics_churn(m)) {
+        return false;
+    }
     struct power *p = &m->power[node];
     bool down = p->count && p->spans[p->count - 1].up < 0;
     if (down != on) {

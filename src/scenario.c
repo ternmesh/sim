@@ -1806,7 +1806,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
                                .down = s->churn_down,
                                .dv = dv != NULL};
         window.retired = &churn.retired;
-        if (!churn_start(&churn, s, dv, sched)) {
+        if (!tsim_metrics_churn(metrics) || !churn_start(&churn, s, dv, sched)) {
             goto done;
         }
     }

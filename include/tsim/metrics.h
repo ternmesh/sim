@@ -77,8 +77,8 @@ struct tsim_relay_tier {
 };
 
 /* Nodes powered down and up over the window (MSH-59), as the driver tells tsim_metrics_power():
- * `present` once it has been told of any. A data hop is a frame carrying a unicast message,
- * addressed to one node. */
+ * `present` once it has been told of any, or readied with tsim_metrics_churn(). A data hop is a
+ * frame carrying a unicast message, addressed to one node. */
 struct tsim_churn {
     bool present;
     uint64_t downs;        /* nodes powered down in the window */
@@ -203,8 +203,13 @@ struct tsim_metrics *tsim_metrics_create(struct tsim_net *net, tsim_time deadlin
  * Returns false when memory runs out or the modulation is invalid, leaving progress unbooked. */
 bool tsim_metrics_links(struct tsim_metrics *metrics, const struct tsim_lora *lora, double tx_dbm);
 
+/* Readies struct tsim_churn, reported from then on even if no node goes down. Returns false when
+ * memory runs out. */
+bool tsim_metrics_churn(struct tsim_metrics *metrics);
+
 /* Tells the metrics a node was just powered down or up (tsim_net_power()), for struct
- * tsim_churn. Returns false when memory runs out, leaving the churn report short of it. */
+ * tsim_churn, readying it if need be. Returns false when memory runs out, leaving the churn
+ * report short of it. */
 bool tsim_metrics_power(struct tsim_metrics *metrics, uint32_t node, bool on);
 
 /* Stops watching and frees it. */

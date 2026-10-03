@@ -55,6 +55,9 @@ static void churn_books_downs_and_messages_for_nodes_down(void) {
     struct tsim_report rep;
     tsim_metrics_report(r.metrics, &rep);
     CHECK(!rep.churn.present);
+    CHECK(tsim_metrics_churn(r.metrics)); /* readied, it reports even before any node goes */
+    tsim_metrics_report(r.metrics, &rep);
+    CHECK(rep.churn.present && rep.churn.downs == 0 && rep.churn.down_mean == 0);
     tsim_metrics_begin(r.metrics);
     tsim_sched_run_until(r.sched, TSIM_S(10));
     CHECK(tsim_net_power(r.net, 2, false) && tsim_metrics_power(r.metrics, 2, false));
