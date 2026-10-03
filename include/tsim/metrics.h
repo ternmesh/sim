@@ -59,6 +59,7 @@ struct tsim_route_health {
     double route_requests_per_h;
     double gave_up_per_h;
     double seq_raised_per_h;
+    double route_replies_per_h; /* with demand routes: route requests answered */
     double unrouted_infeasible;
     double unrouted_empty;
 };
