@@ -24,6 +24,8 @@ struct tsim_node {
     struct tsim_ledger ledger;
     struct tsim_net_stats stats;
     struct tsim_timer *timers; /* every timer its plugins hold, so destroy can free them */
+    bool off;                  /* powered down: no plugins, no radio (MSH-59) */
+    bool air_orphaned;         /* the frame on the air was sent before a power cycle */
 };
 
 struct tsim_timer {
@@ -52,6 +54,8 @@ struct tsim_net {
     struct tsim_net_params params;
     const struct tsim_routing *routing;
     const struct tsim_mac *mac;
+    const void *routing_config; /* the caller's, for nodes powered up again */
+    const void *mac_config;
     uint32_t n;
     struct tsim_node *nodes;
     uint64_t next_handle;
@@ -99,6 +103,7 @@ static void on_marked(void *ctx, uint32_t node, const struct tsim_frame *frame,
             .carries = sent->tx.carries,
             .fate = fate,
             .rival = rival,
+            .start = frame->start,
         };
         net->hop(net->hop_ctx, &hop);
     }
@@ -109,6 +114,13 @@ static void on_tx_done(void *ctx, uint32_t node, const struct tsim_frame *frame)
     struct tsim_net *net = ctx;
     struct tsim_node *nd = &net->nodes[node];
     nd->sending = false;
+    if (nd->air_orphaned || nd->off) {
+        nd->air_orphaned = false; /* sent by plugins since gone */
+        if (!nd->off) {
+            net->mac->kick(nd->mac);
+        }
+        return;
+    }
     if (net->routing->tx_done) {
         net->routing->tx_done(nd->routing, nd->air.handle);
     }
@@ -140,6 +152,8 @@ struct tsim_net *tsim_net_create(struct tsim_sched *sched, const struct tsim_net
     net->params = *params;
     net->routing = routing;
     net->mac = mac;
+    net->routing_config = routing_config;
+    net->mac_config = mac_config;
     net->n = nodes;
     net->next_handle = 1;
     net->nodes = calloc(nodes, sizeof *net->nodes);
@@ -180,7 +194,9 @@ void tsim_net_start(struct tsim_net *net) {
     net->started = true;
     if (net->routing->start) {
         for (uint32_t i = 0; i < net->n; i++) {
-            net->routing->start(net->nodes[i].routing);
+            if (!net->nodes[i].off) { /* a node down starts when it comes back up */
+                net->routing->start(net->nodes[i].routing);
+            }
         }
     }
 }
@@ -212,6 +228,62 @@ void tsim_net_destroy(struct tsim_net *net) {
     free(net->messages);
     free(net->nodes);
     free(net);
+}
+
+static bool finish(struct tsim_net *net, uint64_t msg);
+
+bool tsim_net_power(struct tsim_net *net, uint32_t node, bool on) {
+    if (node >= net->n) {
+        return false;
+    }
+    struct tsim_node *nd = &net->nodes[node];
+    if (nd->off != on) {
+        return true;
+    }
+    if (!on) {
+        /* Nothing survives a power cycle: plugins, their timers, the queue, what it held. */
+        tsim_phy_power(net->phy, node, false);
+        nd->off = true;
+        nd->air_orphaned = nd->sending;
+        net->routing->destroy(nd->routing);
+        nd->routing = NULL;
+        net->mac->destroy(nd->mac);
+        nd->mac = NULL;
+        while (nd->timers) {
+            tsim_timer_destroy(nd->timers);
+        }
+        nd->queue_len = 0;
+        for (size_t i = 0; i < net->message_count; i++) {
+            struct record *rec = &net->messages[i];
+            rec->held[node / 8] &= (uint8_t) ~(1u << (node % 8));
+            if (rec->r.msg.src == node) {
+                finish(net, i + 1); /* its source has forgotten it */
+            }
+        }
+        return true;
+    }
+    nd->mac = net->mac->create(nd, net->mac_config);
+    nd->routing = nd->mac ? net->routing->create(nd, net->routing_config) : NULL;
+    if (!nd->routing) {
+        if (nd->mac) {
+            net->mac->destroy(nd->mac);
+            nd->mac = NULL;
+        }
+        while (nd->timers) {
+            tsim_timer_destroy(nd->timers);
+        }
+        return false;
+    }
+    nd->off = false;
+    tsim_phy_power(net->phy, node, true);
+    if (net->started && net->routing->start) {
+        net->routing->start(nd->routing);
+    }
+    return true;
+}
+
+bool tsim_net_on(const struct tsim_net *net, uint32_t node) {
+    return node < net->n && !net->nodes[node].off;
 }
 
 struct tsim_phy *tsim_net_phy(struct tsim_net *net) { return net->phy; }
@@ -247,7 +319,7 @@ static bool finish(struct tsim_net *net, uint64_t msg) {
 
 uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len) {
     if (src >= net->n || (dst >= net->n && dst != TSIM_BROADCAST) || dst == src ||
-        len > TSIM_FRAME_MAX) {
+        len > TSIM_FRAME_MAX || net->nodes[src].off) {
         return 0;
     }
     if (net->message_count == net->message_cap) {

@@ -467,7 +467,15 @@ struct tsim_distvec_config {
  * costs more the sooner it comes, every one wrong in a network where nothing dies: dead_hops 3
  * made 21% and 25%, 6 made 36% and 37%, 12 made 44% and 47%. Sensing never forgetting made 30%
  * and 13%. Whether 24 lost hops - a dozen messages from each neighbour sending through a dead
- * node - is soon enough waits on churn, which the simulator does not yet model. */
+ * node - is soon enough was measured under churn (MSH-59): a quarter of the 200 relays (cds)
+ * going down for 30 minutes after every 2 hours up, about 10 down at a time. Unicast on time fell
+ * from 66% to 50% at 0 dBm and from 70% to 45% at 20 dBm, and fewer dead_hops only made it worse
+ * - 48% and 44% at 12, 46% and 36% at 6, 35% and 22% at 3 - the false alarms outweighing the dead
+ * caught sooner. Either way data went on being sent to a relay down for 16 to 20 minutes, most of
+ * its time down: routes still led into it, relays' routes to each other reaching 79% and 63% of
+ * pairs against 95% and 100%. Forgetting on silence sooner fails worse, and without churn too:
+ * silent_max 60 min made 48% and 11% with every node up, 15 min 22% and 7%, live neighbours going
+ * that long unheard (MSH-60). A dead neighbour wants a signal that a live one never gives. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */

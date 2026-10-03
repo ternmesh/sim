@@ -29,7 +29,8 @@ struct tsim_net_params tsim_net_defaults(uint64_t seed);
 struct tsim_net;
 
 /* A network of `nodes` nodes, each with its own instance of `routing` and `mac`. Every link
- * starts with infinite loss; set them through tsim_net_phy(), then call tsim_net_start(). */
+ * starts with infinite loss; set them through tsim_net_phy(), then call tsim_net_start(). The
+ * configs must outlive it: a node powered up again is made from them. */
 struct tsim_net *tsim_net_create(struct tsim_sched *sched, const struct tsim_net_params *params,
                                  uint32_t nodes, const struct tsim_routing *routing,
                                  const void *routing_config, const struct tsim_mac *mac,
@@ -56,10 +57,20 @@ void *tsim_net_routing(struct tsim_net *net, uint32_t node);
 /* The routing every node runs, as tsim_net_create() was given it. */
 const struct tsim_routing *tsim_net_routing_plugin(const struct tsim_net *net);
 
+/* Powers a node down or up (MSH-59), as a power cycle would: down, its radio hears and sends
+ * nothing, and its routing and MAC are destroyed with their timers and queue - it holds no
+ * message, and those it originated are finished, its routing being gone - while a frame already
+ * on the air runs to its end; up, they are made again from the configs tsim_net_create() was
+ * given, and started if the network has been. Returns false for a node out of range, or when
+ * powering up runs out of memory, leaving it down. A node down has no routing to ask:
+ * tsim_net_routing() gives NULL for it. */
+bool tsim_net_power(struct tsim_net *net, uint32_t node, bool on);
+bool tsim_net_on(const struct tsim_net *net, uint32_t node);
+
 /* Makes a message at `src` and hands it to its routing. Returns its id, or 0 if a node is out of
- * range, `dst` is `src`, or `len` is over TSIM_FRAME_MAX. A message the routing refuses keeps its
- * record, marked refused: it stays in every delivery ratio's denominator, so a protocol that
- * cannot carry a workload's messages is charged for them rather than excused. */
+ * range or powered down, `dst` is `src`, or `len` is over TSIM_FRAME_MAX. A message the routing
+ * refuses keeps its record, marked refused: it stays in every delivery ratio's denominator, so a
+ * protocol that cannot carry a workload's messages is charged for them rather than excused. */
 uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len);
 
 /* Airtime a node has spent, by purpose. */
@@ -147,6 +158,7 @@ struct tsim_net_hop {
     uint64_t carries;
     enum tsim_phy_fate fate;
     int rival;
+    tsim_time start; /* when the frame began */
 };
 
 /* Called for each addressed frame as it ends, before its sender's routing hears it is done. For

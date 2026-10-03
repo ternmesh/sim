@@ -46,6 +46,7 @@ struct node {
     tsim_time header_due;  /* RECEIVE: when that frame's header is demodulated */
     tsim_time header_hold; /* see tsim_phy_hold_header(); 0 for none */
     tsim_time header_set;  /* with a hold: when the header flag was set, or -1 */
+    bool off;              /* powered down: hears nothing, sends nothing */
 };
 
 /* A frame a radio counted as missed, taken from it or cut short, but whose preamble is not yet
@@ -121,7 +122,7 @@ static double rx_dbm(const struct tsim_phy *phy, const struct tsim_frame *f, uin
 }
 
 static bool tuned_to(const struct node *nd, const struct tsim_frame *f) {
-    return nd->channel == f->channel && nd->tuned.sf == f->lora.sf &&
+    return !nd->off && nd->channel == f->channel && nd->tuned.sf == f->lora.sf &&
            nd->tuned.bw_hz == f->lora.bw_hz;
 }
 
@@ -681,7 +682,7 @@ void tsim_phy_set_losses(struct tsim_phy *phy, const struct tsim_channel_params 
 uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel,
                            const struct tsim_lora *lora, uint32_t len, double tx_dbm,
                            void *payload) {
-    if (node >= phy->n || phy->nodes[node].state == TRANSMIT) {
+    if (node >= phy->n || phy->nodes[node].state == TRANSMIT || phy->nodes[node].off) {
         return 0;
     }
     tsim_time airtime = tsim_lora_airtime(lora, len);
@@ -787,6 +788,29 @@ bool tsim_phy_tune(struct tsim_phy *phy, uint32_t node, uint16_t channel,
     return true;
 }
 
+void tsim_phy_power(struct tsim_phy *phy, uint32_t node, bool on) {
+    struct node *nd = &phy->nodes[node];
+    if (nd->off != on) {
+        return;
+    }
+    nd->off = !on;
+    if (on) {
+        if (nd->state == LISTEN) {
+            listen(nd);
+        }
+        return;
+    }
+    /* What it was receiving is lost; a frame it is sending, or a retune, runs to its end. */
+    if (nd->state == RECEIVE) {
+        count_reception(nd);
+        settle(nd, nd->frame, lock_by(phy, &find(phy, nd->frame)->f), &nd->stats.rx_aborted,
+               TSIM_PHY_DEAF, 0);
+        nd->state = LISTEN;
+    }
+}
+
+bool tsim_phy_on(const struct tsim_phy *phy, uint32_t node) { return !phy->nodes[node].off; }
+
 bool tsim_phy_mark(struct tsim_phy *phy, uint64_t frame, uint32_t node, int tag) {
     struct air *a = kept(phy, frame);
     if (!a || !a->on_air || tag < 0 || tag > 127) {
@@ -832,6 +856,9 @@ void tsim_phy_hold_header(struct tsim_phy *phy, uint32_t node, tsim_time hold) {
 
 bool tsim_phy_carrier(struct tsim_phy *phy, uint32_t node) {
     struct node *nd = &phy->nodes[node];
+    if (nd->off) {
+        return false;
+    }
     if (nd->header_hold == 0) {
         return nd->state == RECEIVE;
     }

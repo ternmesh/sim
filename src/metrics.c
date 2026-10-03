@@ -47,7 +47,40 @@ struct tsim_metrics {
     uint32_t *adj_at;
     uint32_t *adj;
     uint16_t **dist;
+    /* Power, once tsim_metrics_power() is first called: each node's times down, and for each the
+     * start of the last data hop sent to it while down. */
+    struct power *power;
+    uint32_t down_now;
+    tsim_time down_since; /* when down_now last changed */
+    double down_ns;       /* nodes down times time, since the window began */
+    struct tsim_churn churn;
 };
+
+struct span {
+    tsim_time down;
+    tsim_time up;       /* -1 while down */
+    tsim_time last_hit; /* -1 for none */
+};
+
+struct power {
+    struct span *spans;
+    size_t count;
+    size_t cap;
+};
+
+/* The time down that `t` falls in, or NULL: the latest first, where nearly every lookup ends. */
+static struct span *down_at(const struct power *p, tsim_time t) {
+    for (size_t i = p->count; i-- > 0;) {
+        struct span *sp = &p->spans[i];
+        if (t >= sp->down && (sp->up < 0 || t < sp->up)) {
+            return sp;
+        }
+        if (t >= sp->down) {
+            break;
+        }
+    }
+    return NULL;
+}
 
 #define FAR UINT16_MAX
 
@@ -177,6 +210,12 @@ static void hop_seen(void *ctx, const struct tsim_net_hop *hop) {
     if (hop->carries && (!rec || rec->msg.dst == TSIM_BROADCAST)) {
         return;
     }
+    /* By where the destination stood as the frame began, which the hop's end comes after. */
+    struct span *sp = hop->carries && m->power ? down_at(&m->power[hop->to], hop->start) : NULL;
+    if (sp) {
+        sp->last_hit = hop->start > sp->last_hit ? hop->start : sp->last_hit;
+        m->churn.hops_to_down += hop->start >= m->begun;
+    }
     m->hops[hop->carries ? 0 : 1][hop->fate]++;
     if (!hop->carries) {
         return;
@@ -238,6 +277,47 @@ bool tsim_metrics_links(struct tsim_metrics *m, const struct tsim_lora *lora, do
     return true;
 }
 
+bool tsim_metrics_churn(struct tsim_metrics *m) {
+    if (!m->power && !(m->power = calloc(tsim_net_nodes(m->net), sizeof *m->power))) {
+        return false;
+    }
+    m->churn.present = true;
+    return true;
+}
+
+bool tsim_metrics_power(struct tsim_metrics *m, uint32_t node, bool on) {
+    if (!tsim_metrics_churn(m)) {
+        return false;
+    }
+    struct power *p = &m->power[node];
+    bool down = p->count && p->spans[p->count - 1].up < 0;
+    if (down != on) {
+        return true; /* already as told */
+    }
+    tsim_time now = tsim_sched_now(tsim_net_sched(m->net));
+    if (!on && p->count == p->cap) {
+        size_t cap = p->cap ? 2 * p->cap : 4;
+        struct span *grown = realloc(p->spans, cap * sizeof *grown);
+        if (!grown) {
+            return false;
+        }
+        p->spans = grown;
+        p->cap = cap;
+    }
+    m->down_ns +=
+        (double)m->down_now * (double)(now - (m->down_since > m->begun ? m->down_since : m->begun));
+    m->down_since = now;
+    if (on) {
+        p->spans[p->count - 1].up = now;
+        m->down_now--;
+    } else {
+        p->spans[p->count++] = (struct span){.down = now, .up = -1, .last_hit = -1};
+        m->churn.downs += now >= m->begun;
+        m->down_now++;
+    }
+    return true;
+}
+
 struct tsim_metrics *tsim_metrics_create(struct tsim_net *net, tsim_time deadline) {
     struct tsim_metrics *m = calloc(1, sizeof *m);
     if (!m) {
@@ -268,6 +348,10 @@ void tsim_metrics_destroy(struct tsim_metrics *m) {
     free(m->adj_at);
     free(m->adj);
     free(m->base);
+    for (uint32_t i = 0; m->power && i < tsim_net_nodes(m->net); i++) {
+        free(m->power[i].spans);
+    }
+    free(m->power);
     free(m);
 }
 
@@ -284,14 +368,15 @@ static void count_routes(struct tsim_metrics *m) {
     for (uint32_t src = 0; src < n; src++) {
         for (uint32_t dst = 0; dst < n; dst++) {
             uint32_t at = src, next, hops = 0;
-            if (dst == src || !routing->next_hop(tsim_net_routing(net, src), dst, &next)) {
+            void *r = tsim_net_routing(net, src); /* NULL for a node powered down */
+            if (dst == src || !r || !routing->next_hop(r, dst, &next)) {
                 continue;
             }
             held++;
             do {
                 at = next;
-            } while (at != dst && ++hops < n - 1 && at < n &&
-                     routing->next_hop(tsim_net_routing(net, at), dst, &next));
+            } while (at != dst && ++hops < n - 1 && at < n && (r = tsim_net_routing(net, at)) &&
+                     routing->next_hop(r, dst, &next));
             reach += at == dst;
         }
     }
@@ -326,6 +411,8 @@ void tsim_metrics_begin(struct tsim_metrics *m) {
     memset(m->hops, 0, sizeof m->hops);
     memset(m->rivals, 0, sizeof m->rivals);
     memset(m->progress, 0, sizeof m->progress);
+    m->churn = (struct tsim_churn){.present = m->churn.present};
+    m->down_ns = 0;
     count_routes(m);
 }
 
@@ -393,7 +480,31 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
         d->delivered += rec->delivered;
         if (rec->msg.dst != TSIM_BROADCAST) {
             fate(m, rec, &r->losses, &wait_ns, &transit_ns, &late_sent);
+            if (m->power && down_at(&m->power[rec->msg.dst], rec->msg.created)) {
+                r->churn.to_down++;
+            }
         }
+    }
+    if (m->power) {
+        tsim_time now = tsim_sched_now(tsim_net_sched(net));
+        struct tsim_churn c = m->churn;
+        for (uint32_t i = 0; i < tsim_net_nodes(net); i++) {
+            for (size_t k = 0; k < m->power[i].count; k++) {
+                const struct span *sp = &m->power[i].spans[k];
+                if (sp->down >= m->begun && sp->last_hit >= 0) {
+                    c.routed_to++;
+                    c.repair_s += (double)(sp->last_hit - sp->down) / 1e9;
+                }
+            }
+        }
+        tsim_time since = m->down_since > m->begun ? m->down_since : m->begun;
+        double down_ns = m->down_ns + (double)m->down_now * (double)(now - since);
+        r->churn.present = true;
+        r->churn.downs = c.downs;
+        r->churn.hops_to_down = c.hops_to_down;
+        r->churn.routed_to = c.routed_to;
+        r->churn.repair_s = c.routed_to ? c.repair_s / (double)c.routed_to : 0;
+        r->churn.down_mean = r->elapsed > 0 ? down_ns / (double)r->elapsed : 0;
     }
     if (late_sent) {
         r->losses.late_wait_s = wait_ns / (double)late_sent / 1e9;

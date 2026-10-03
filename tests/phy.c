@@ -1207,6 +1207,40 @@ static struct marks mark_case(double dbm1, double dbm2, tsim_time at1, tsim_time
     return seen;
 }
 
+/* Powered down, a radio hears nothing and sends nothing, and what it was receiving is lost; up
+ * again, it hears as before. */
+static void a_radio_powered_down_neither_sends_nor_hears(void) {
+    struct world *w = world_new(2, NULL);
+    arrive(w, 1, 0, -86.0);
+    arrive(w, 0, 1, -86.0);
+    CHECK(tsim_phy_on(w->phy, 0));
+    tsim_phy_power(w->phy, 0, false);
+    CHECK(!tsim_phy_on(w->phy, 0));
+    CHECK_EQ_I64(tsim_phy_transmit(w->phy, 0, 0, &w->sf7, 16, TX_DBM, NULL), 0);
+    uint64_t lost = tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    CHECK(!tsim_phy_receiving(w->phy, 0) && !tsim_phy_cad(w->phy, 0));
+    tsim_sched_run_until(w->sched, TSIM_S(1));
+    CHECK(!received(w, 0, lost));
+    CHECK_EQ_U64(tsim_phy_stats(w->phy, 0)->rx_ok, 0);
+
+    tsim_phy_power(w->phy, 0, true);
+    uint64_t heard = tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_sched_run_until(w->sched, TSIM_S(2));
+    CHECK(received(w, 0, heard));
+    CHECK(tsim_phy_transmit(w->phy, 0, 0, &w->sf7, 16, TX_DBM, NULL) != 0);
+    tsim_sched_run_until(w->sched, TSIM_S(3));
+
+    /* Down part-way through a frame: lost, booked aborted. */
+    uint64_t cut = tsim_phy_transmit(w->phy, 1, 0, &w->sf7, 16, TX_DBM, NULL);
+    tsim_sched_run_until(w->sched, TSIM_S(3) + TSIM_MS(20));
+    CHECK(tsim_phy_receiving(w->phy, 0));
+    tsim_phy_power(w->phy, 0, false);
+    tsim_sched_run_until(w->sched, TSIM_S(4));
+    CHECK(!received(w, 0, cut));
+    CHECK_EQ_U64(tsim_phy_stats(w->phy, 0)->rx_aborted, 1);
+    world_free(w);
+}
+
 static void a_marked_frame_reports_its_fate_at_the_receiver(void) {
     struct marks m = mark_case(-86, NAN, 0, 0, -1);
     CHECK_EQ_I64(m.count, 1);
@@ -1356,6 +1390,7 @@ int main(void) {
     RUN(cad_has_a_margin_and_a_delay);
     RUN(create_refuses_bad_fading_and_cad);
     RUN(links_count_pairs_that_decode_both_ways);
+    RUN(a_radio_powered_down_neither_sends_nor_hears);
     RUN(a_marked_frame_reports_its_fate_at_the_receiver);
     RUN(a_pairwise_rival_is_the_frame_that_counted);
     RUN(a_summed_rival_comes_from_the_group_that_failed);

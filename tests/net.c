@@ -623,6 +623,67 @@ static void on_delivered(void *ctx, const struct tsim_message_record *rec, uint3
     s->delivered = rec->delivered;
 }
 
+/* Powered down, a node has no routing, makes no messages and hears nothing, and those it was
+ * working on are finished; powered up, its plugins are made and started afresh. */
+static void a_node_powered_down_comes_back_with_nothing(void) {
+    struct rig r;
+    struct tsim_net_params p = tsim_net_defaults(1);
+    memset(&r.log, 0, sizeof r.log);
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 3, &keeper, &r.log, &manual, &r.log);
+    tsim_phy_set_loss(tsim_net_phy(r.net), 0, 1, 100.0);
+    tsim_net_start(r.net);
+    tsim_net_observe_finished(r.net, on_finished, &r.log);
+    uint64_t m = tsim_net_originate(r.net, 1, 0, 5);
+    CHECK(!tsim_net_message(r.net, m)->finished);
+
+    CHECK(tsim_net_power(r.net, 1, false));
+    CHECK(!tsim_net_on(r.net, 1) && tsim_net_routing(r.net, 1) == NULL);
+    CHECK(tsim_net_message(r.net, m)->finished && r.log.finished == 1);
+    CHECK(tsim_net_power(r.net, 1, false)); /* already down */
+    CHECK_EQ_U64(tsim_net_originate(r.net, 1, 0, 5), 0);
+    tsim_node_send(tsim_net_node(r.net, 0), &(struct tsim_tx){
+                                                .lora = tsim_lora_default(7, 125000),
+                                                .tx_dbm = 14.0,
+                                                .len = 5,
+                                            });
+    CHECK(tsim_node_transmit(tsim_net_node(r.net, 0)));
+    run_for(&r, TSIM_S(1));
+    CHECK(r.log.rx[1] == 0);
+
+    CHECK(tsim_net_power(r.net, 1, true));
+    CHECK(tsim_net_on(r.net, 1) && tsim_net_routing(r.net, 1) != NULL);
+    tsim_node_send(tsim_net_node(r.net, 0), &(struct tsim_tx){
+                                                .lora = tsim_lora_default(7, 125000),
+                                                .tx_dbm = 14.0,
+                                                .len = 5,
+                                            });
+    CHECK(tsim_node_transmit(tsim_net_node(r.net, 0)));
+    run_for(&r, TSIM_S(1));
+    CHECK(r.log.rx[1] == 1);
+    CHECK(!tsim_net_power(r.net, 3, false));
+    tsim_net_observe_finished(r.net, NULL, NULL);
+    rig_close(&r);
+
+    /* The recorder counts its starts: one each at the start, and one more for the node back. */
+    rig_open(&r, tsim_net_defaults(1), 3);
+    CHECK(r.log.starts == 3);
+    CHECK(tsim_net_power(r.net, 2, false) && tsim_net_power(r.net, 2, true));
+    CHECK(r.log.starts == 4);
+    rig_close(&r);
+
+    /* Down before the network starts, a node is not started with it, but when it comes back. */
+    memset(&r.log, 0, sizeof r.log);
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 3, &recorder, &r.log, &manual, &r.log);
+    CHECK(tsim_net_power(r.net, 1, false));
+    tsim_net_start(r.net);
+    CHECK(r.log.starts == 2);
+    CHECK(tsim_net_power(r.net, 1, true));
+    CHECK(r.log.starts == 3);
+    rig_close(&r);
+}
+
 /* Once per delivery that counts, after the record has counted it, and not once removed. */
 /* A routing that does not report is done with a message when it has taken it, or refused it. */
 static void a_message_is_finished_once_by_its_source(void) {
@@ -875,6 +936,7 @@ int main(void) {
     RUN(timers_fire_once_at_their_time);
     RUN(a_timer_may_destroy_itself_when_it_fires);
     RUN(destroy_frees_timers_left_running);
+    RUN(a_node_powered_down_comes_back_with_nothing);
     RUN(destroy_leaves_the_scheduler_runnable);
     return CHECK_DONE();
 }

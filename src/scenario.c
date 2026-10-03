@@ -718,6 +718,8 @@ static void defaults(struct tsim_scenario *s) {
         .len_max = 32,
         .broadcast = 1.0,
         .reply_delay = TSIM_S(2 * 60),
+        .churn_up = TSIM_S(2 * 3600),
+        .churn_down = TSIM_S(15 * 60),
         .warmup = 0,
         .duration = TSIM_S(3600),
         .deadline = TSIM_S(60),
@@ -1002,6 +1004,28 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     }
     if (strcmp(key, "traffic.lead") == 0) {
         return parse_time(v, &s->lead) ? NULL : "expected a time, such as 3 h";
+    }
+    if (strcmp(key, "churn.share") == 0) {
+        return parse_fraction(v, &s->churn_share) ? NULL : "expected a fraction from 0 to 1";
+    }
+    if (strcmp(key, "churn.nodes") == 0) {
+        static const char *names[] = {"all", "relays", "leaves"};
+        for (uint8_t i = 0; i < sizeof names / sizeof *names; i++) {
+            if (strcmp(v, names[i]) == 0) {
+                s->churn_nodes = i;
+                return NULL;
+            }
+        }
+        return "expected all, relays or leaves";
+    }
+    if (strcmp(key, "churn.up") == 0) {
+        return parse_time(v, &s->churn_up) && s->churn_up > 0 ? NULL
+                                                              : "expected a time, such as 2 h";
+    }
+    if (strcmp(key, "churn.down") == 0) {
+        return parse_time(v, &s->churn_down) && s->churn_down > 0
+                   ? NULL
+                   : "expected a time, such as 15 min";
     }
     return "is not a setting";
 }
@@ -1411,18 +1435,23 @@ bool tsim_scenario_read_links(const struct tsim_scenario *s, const char *text,
 struct window {
     struct tsim_metrics *metrics;
     struct tsim_net *net;
-    const struct tsim_distvec_config *dv; /* NULL for other routing */
-    bool *relay;                          /* [node], with dv */
+    const struct tsim_distvec_config *dv;     /* NULL for other routing */
+    bool *relay;                              /* [node], with dv */
+    const struct tsim_distvec_stats *retired; /* books of routers since powered down */
     tsim_time begun;
     struct tsim_distvec_stats stats;
     double relay_reach;
 };
 
 /* Every distvec node's books, summed. */
-static void distvec_sum(struct tsim_net *net, struct tsim_distvec_stats *sum) {
-    *sum = (struct tsim_distvec_stats){0};
+static void distvec_sum(struct tsim_net *net, const struct tsim_distvec_stats *retired,
+                        struct tsim_distvec_stats *sum) {
+    *sum = retired ? *retired : (struct tsim_distvec_stats){0};
     for (uint32_t i = 0; i < tsim_net_nodes(net); i++) {
         struct tsim_distvec_stats s;
+        if (!tsim_net_routing(net, i)) {
+            continue; /* powered down */
+        }
         tsim_distvec_stats(tsim_net_routing(net, i), &s);
         for (int c = 0; c < TSIM_DISTVEC_DOWN_COUNT; c++) {
             sum->down[c] += s.down[c];
@@ -1453,7 +1482,7 @@ static double relay_reach(struct tsim_net *net, const bool *relay) {
             }
             pairs++;
             uint32_t at = src, next, hops = 0;
-            while (at != dst && hops++ < n &&
+            while (at != dst && hops++ < n && tsim_net_routing(net, at) &&
                    tsim_distvec_next(tsim_net_routing(net, at), dst, &next)) {
                 at = next;
             }
@@ -1469,7 +1498,7 @@ static void begin_window(struct tsim_sched *sched, void *ctx) {
     tsim_metrics_begin(w->metrics);
     w->begun = tsim_sched_now(sched);
     if (w->dv) {
-        distvec_sum(w->net, &w->stats);
+        distvec_sum(w->net, w->retired, &w->stats);
         w->relay_reach = relay_reach(w->net, w->relay);
     }
 }
@@ -1477,7 +1506,7 @@ static void begin_window(struct tsim_sched *sched, void *ctx) {
 /* Candidate 3's health over the window, from its books now against the window's start. */
 static void health(const struct window *w, tsim_time end, struct tsim_route_health *h) {
     struct tsim_distvec_stats now;
-    distvec_sum(w->net, &now);
+    distvec_sum(w->net, w->retired, &now);
     double hours = (double)(end - w->begun) / (double)TSIM_S(3600);
     double seconds = hours * 3600;
     uint32_t relays = 0;
@@ -1514,6 +1543,122 @@ static void health(const struct window *w, tsim_time end, struct tsim_route_heal
     h->relay_reach_end = relay_reach(w->net, w->relay);
 }
 
+/* --- Churn --- */
+
+struct churn;
+
+struct churner {
+    struct churn *churn;
+    uint32_t node;
+    struct tsim_rng rng;
+    bool down;
+};
+
+struct churn {
+    struct tsim_net *net;
+    struct tsim_metrics *metrics;
+    tsim_time up;
+    tsim_time down;
+    bool dv;
+    struct tsim_distvec_stats retired; /* what routers powered down had booked */
+    struct churner *churners;
+    uint32_t count;
+    bool failed;
+};
+
+/* An exponential draw of mean `mean`, at least 1 ms. */
+static tsim_time exponential(struct tsim_rng *rng, tsim_time mean) {
+    double t = -log1p(-tsim_rng_unit(rng)) * (double)mean;
+    return t < (double)TSIM_MS(1) ? TSIM_MS(1) : t > 1e18 ? (tsim_time)1e18 : (tsim_time)t;
+}
+
+static void churn_flip(struct tsim_sched *sched, void *ctx) {
+    struct churner *ch = ctx;
+    struct churn *c = ch->churn;
+    bool on = ch->down;
+    if (!on && c->dv) {
+        /* Its books go with it, but what it did stays done. */
+        struct tsim_distvec_stats st;
+        tsim_distvec_stats(tsim_net_routing(c->net, ch->node), &st);
+        for (int k = 0; k < TSIM_DISTVEC_DOWN_COUNT; k++) {
+            c->retired.down[k] += st.down[k];
+            c->retired.down_strong[k] += st.down_strong[k];
+        }
+        c->retired.outages += st.outages;
+        c->retired.unrouted_s += st.unrouted_s;
+        c->retired.urgent_s += st.urgent_s;
+        c->retired.seqno_requests += st.seqno_requests;
+        c->retired.route_requests += st.route_requests;
+        c->retired.gave_up += st.gave_up;
+        c->retired.seq_raised += st.seq_raised;
+        c->retired.route_replies += st.route_replies;
+    }
+    if (!tsim_net_power(c->net, ch->node, on) || !tsim_metrics_power(c->metrics, ch->node, on)) {
+        c->failed = true;
+        return;
+    }
+    ch->down = !on;
+    tsim_time next = exponential(&ch->rng, on ? c->up : c->down);
+    if (tsim_sched_after(sched, next, churn_flip, ch).slot == 0) {
+        c->failed = true;
+    }
+}
+
+/* Whether churn may take `node` down. */
+static bool churnable(const struct tsim_scenario *s, const struct tsim_distvec_config *dv,
+                      uint32_t node) {
+    if (s->churn_nodes == TSIM_CHURN_ALL) {
+        return true;
+    }
+    bool relay = true;
+    if (dv) {
+        relay = tsim_distvec_relay(dv, node);
+    } else if (s->routing->routing == &tsim_meshcore) {
+        const struct tsim_meshcore_config *mc = (const void *)s->routing_config;
+        relay = tsim_nodeset_contains(mc->relays, node) == 1;
+    }
+    return relay == (s->churn_nodes == TSIM_CHURN_RELAYS);
+}
+
+/* Picks round(share x eligible) nodes to churn, and schedules each one's first time down. */
+static bool churn_start(struct churn *c, const struct tsim_scenario *s,
+                        const struct tsim_distvec_config *dv, struct tsim_sched *sched) {
+    uint32_t n = s->nodes, eligible = 0;
+    uint32_t *pool = malloc(n * sizeof *pool);
+    if (!pool) {
+        return false;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        if (churnable(s, dv, i)) {
+            pool[eligible++] = i;
+        }
+    }
+    uint32_t k = (uint32_t)(s->churn_share * eligible + 0.5);
+    struct tsim_rng rng;
+    tsim_rng_init(&rng, s->seed, UINT64_C(0xC4) << 56);
+    for (uint32_t i = 0; i < k; i++) {
+        uint32_t j = i + (uint32_t)tsim_rng_below(&rng, eligible - i);
+        uint32_t t = pool[i];
+        pool[i] = pool[j];
+        pool[j] = t;
+    }
+    c->churners = calloc(k ? k : 1, sizeof *c->churners);
+    if (!c->churners) {
+        free(pool);
+        return false;
+    }
+    c->count = k;
+    bool ok = true;
+    for (uint32_t i = 0; i < k && ok; i++) {
+        struct churner *ch = &c->churners[i];
+        *ch = (struct churner){.churn = c, .node = pool[i]};
+        tsim_rng_init(&ch->rng, s->seed, UINT64_C(0xC5) << 56 | pool[i]);
+        ok = tsim_sched_after(sched, exponential(&ch->rng, c->up), churn_flip, ch).slot != 0;
+    }
+    free(pool);
+    return ok;
+}
+
 /* Sets every link's loss as the scenario says: from its links file, or the channel model. */
 static bool lay_links(struct tsim_phy *phy, const struct tsim_scenario *s,
                       const struct tsim_pos *pos) {
@@ -1542,6 +1687,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     uint32_t *parents = NULL;
     uint8_t *relay_set = NULL;
     struct window window = {0};
+    struct churn churn = {0};
     bool ok = false;
     /* The oracle's routes are the driver's to hand down: the plugin is given where they will be,
      * and they are built once the links are laid. So is the table leaves' parents are kept in. */
@@ -1653,13 +1799,25 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     if (!metrics || !traffic) {
         goto done;
     }
+    if (s->churn_share > 0) {
+        churn = (struct churn){.net = net,
+                               .metrics = metrics,
+                               .up = s->churn_up,
+                               .down = s->churn_down,
+                               .dv = dv != NULL};
+        window.retired = &churn.retired;
+        if (!tsim_metrics_churn(metrics) || !churn_start(&churn, s, dv, sched)) {
+            goto done;
+        }
+    }
     tsim_net_start(net);
     tsim_sched_run_until(sched, s->warmup + s->duration + s->deadline);
     tsim_metrics_report(metrics, report);
     if (window.dv) {
         health(&window, tsim_sched_now(sched), &report->health);
     }
-    ok = tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);
+    ok = !churn.failed &&
+         tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);
     if (ok && dv && (dv->relay_pick != TSIM_DISTVEC_PICK_LIST || strcmp(dv->relays, "all") != 0)) {
         ok = tsim_distvec_tier(tsim_net_phy(net), dv, &report->relays);
     }
@@ -1671,6 +1829,7 @@ done:
     tsim_distvec_oracle_free(&oracle);
     free(parents);
     free(relay_set);
+    free(churn.churners);
     free(window.relay);
     tsim_sched_destroy(sched);
     free(pos);

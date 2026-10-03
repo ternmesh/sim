@@ -76,6 +76,21 @@ struct tsim_relay_tier {
     double covered; /* the share of leaves with a relay as a neighbour */
 };
 
+/* Nodes powered down and up over the window (MSH-59), as the driver tells tsim_metrics_power():
+ * `present` once it has been told of any, or readied with tsim_metrics_churn(). A data hop is a
+ * frame carrying a unicast message, addressed to one node. */
+struct tsim_churn {
+    bool present;
+    uint64_t downs;        /* nodes powered down in the window */
+    double down_mean;      /* nodes down, on average over the window */
+    uint64_t to_down;      /* unicast messages of the window made for a node down at the time */
+    uint64_t hops_to_down; /* data hops in the window addressed to a node down */
+    /* Of the downs in the window, those that data hops were still addressed to after, and how long
+     * after, on average, the last of them was: how long the network took to route around it. */
+    uint64_t routed_to;
+    double repair_s;
+};
+
 /* Where a message was dropped: at its source, at the hop before its destination - meant for the
  * destination itself - or between. */
 enum tsim_place {
@@ -171,6 +186,7 @@ struct tsim_report {
 
     struct tsim_route_health health;
     struct tsim_relay_tier relays;
+    struct tsim_churn churn;
     struct tsim_losses losses;
 };
 
@@ -186,6 +202,15 @@ struct tsim_metrics *tsim_metrics_create(struct tsim_net *net, tsim_time deadlin
  * are worked out on its first data hop, in time and memory in proportion to the links, and kept.
  * Returns false when memory runs out or the modulation is invalid, leaving progress unbooked. */
 bool tsim_metrics_links(struct tsim_metrics *metrics, const struct tsim_lora *lora, double tx_dbm);
+
+/* Readies struct tsim_churn, reported from then on even if no node goes down. Returns false when
+ * memory runs out. */
+bool tsim_metrics_churn(struct tsim_metrics *metrics);
+
+/* Tells the metrics a node was just powered down or up (tsim_net_power()), for struct
+ * tsim_churn, readying it if need be. Returns false when memory runs out, leaving the churn
+ * report short of it. */
+bool tsim_metrics_power(struct tsim_metrics *metrics, uint32_t node, bool on);
 
 /* Stops watching and frees it. */
 void tsim_metrics_destroy(struct tsim_metrics *metrics);
