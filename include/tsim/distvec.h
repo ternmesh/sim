@@ -297,7 +297,6 @@ struct tsim_distvec_config {
     uint8_t ihu_rounds; /* of a neighbour's IHU rounds without naming this node it may go, 2..64 */
 
     uint32_t ref_len;  /* bytes of the reference frame the metric is reckoned in */
-    bool etx;          /* links cost their ETX times the reference frame; off, every one the same */
     double etx_max;    /* at least 1; links over it are not used */
     double hysteresis; /* 0 to 1 */
     double change;     /* 0 to 1 */
@@ -316,22 +315,25 @@ struct tsim_distvec_config {
     double bcast_window;
     uint8_t bcast_cancel; /* copies heard, its own first one included, 0 for never */
 
-    bool power;          /* power control, as above; off, all go at tx_dbm */
-    double tx_min_dbm;   /* the quietest a frame goes, a whole dBm at least below tx_dbm */
-    double margin_db;    /* above the quietest a neighbour decodes at, 0 to 60 */
-    double step_db;      /* added for each try a hop has lost, 0 to 60 */
+    bool etx;          /* links cost their ETX times the reference frame; off, every one the same */
+    bool power;        /* power control, as above; off, all go at tx_dbm */
+    double tx_min_dbm; /* the quietest a frame goes, a whole dBm at least below tx_dbm */
+    double margin_db;  /* above the quietest a neighbour decodes at, 0 to 60 */
+    double step_db;    /* added for each try a hop has lost, 0 to 60 */
     double snr_floor_db; /* the lowest SNR the modulation demodulates at */
     uint8_t power_k;     /* neighbours frames for all of them reach; 0 for tx_dbm */
 
     /* The oracle, below: off for the protocol itself. */
     bool oracle;
     uint8_t links;           /* enum tsim_distvec_links */
+    uint8_t dead_hops;       /* with links by strength: hops lost running that forget, 1..255 */
     double oracle_margin_db; /* a link's loss leaves at least this above the floor, both ways */
 
     /* With links by strength: a link comes up with this much margin each way, 0 to 60 dB, and goes
      * down below it less link_band_db, 0 to 60. */
     double link_margin_db;
     double link_band_db;
+    tsim_time silent_max; /* with links by strength: unheard this long, forgotten */
     const struct tsim_distvec_oracle
         *oracle_routes; /* with either: set by the driver, never parsed */
 };
@@ -369,16 +371,21 @@ struct tsim_distvec_config {
  * carries, in place of a receive rate, the margin it hears this node with: how far below tx_dbm
  * its floor lies, in whole dB. The link comes up once both margins are link_margin_db or more, and
  * goes down once either falls more than link_band_db below that. Every link up costs the same, as
- * with ETX off. A hop lost is a frame lost, not a link: it raises the power, and nothing more. The
- * IHU still expires as with sensing, and a neighbour unheard for neighbour_timeout is forgotten.
+ * with ETX off. A hop lost is a frame lost, not a link: it raises the power, and nothing more,
+ * until dead_hops of them in a row, with nothing heard from the neighbour between, say it is
+ * gone, and it is forgotten. Silence is not the signal: a neighbour is forgotten unheard only
+ * after silent_max. The IHU still expires as with sensing.
  *
- * Measured on the region (200 relays, parent_oracle, 3 seeds), unicast on time was 40% at 0 dBm
- * and 12% at 20 dBm, against 23% and 8% sensed; no link went down on strength, and the ones that
- * did were forgotten or lost their IHU when the neighbour forgot this node - likely, not yet
- * shown, because with power_k announces go quieter than data: a neighbour heard at tx_dbm before a
- * node knew its k nearest may go unheard once it does, though data still reaches it. With
- * neighbour_timeout 24 h - never, in that run - it was 51% and 53%, as the link oracle's 51% and
- * 67%. Sensing given the same timeout made 30% and 13%. */
+ * Measured on the region (200 relays, parent_oracle, 3 seeds), unicast on time was 50% at 0 dBm
+ * and 52% at 20 dBm, against 23% and 8% sensed and the link oracle's 51% and 67%; relays' routes
+ * to each other reached 68% and 94% of pairs. No link went down on strength. Forgetting on
+ * silence after neighbour_timeout, an hour, made 40% and 12%: neighbours loud enough to be heard
+ * each way, by the powers both ends announced at, went an hour unheard thousands of times an hour
+ * at 20 dBm, three in four of them links between leaves no route uses. Forgetting on lost hops
+ * costs more the sooner it comes, every one wrong in a network where nothing dies: dead_hops 3
+ * made 21% and 25%, 6 made 36% and 37%, 12 made 44% and 47%. Sensing never forgetting made 30%
+ * and 13%. Whether 24 lost hops - a dozen messages from each neighbour sending through a dead
+ * node - is soon enough waits on churn, which the simulator does not yet model. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */

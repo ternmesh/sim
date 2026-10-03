@@ -1537,6 +1537,51 @@ static void a_lost_hop_takes_no_link_down_by_strength(void) {
     rig_close(&r);
 }
 
+/* By strength, a neighbour is gone when dead_hops hops to it are lost with nothing heard from it
+ * between, not when it goes quiet: node 1, the middle of a line, falls silent, and node 0 keeps it
+ * until frames sent through it fail. A neighbour merely unheard is kept until silent_max. */
+static void by_strength_a_neighbour_is_gone_when_frames_to_it_fail(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.dead_hops = 3;
+    line(&r, 3, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(600));
+    uint32_t next = 0;
+    CHECK(route(&r, 0, 2, &next) && next == 1);
+    for (uint32_t i = 0; i < 3; i += 2) {
+        link(&r, 1, i, LOSS_NONE);
+    }
+    tsim_sched_run_until(r.sched, TSIM_S(600 + 3 * 3600)); /* past neighbour_timeout */
+    CHECK(route(&r, 0, 1, &next) && next == 1);
+    /* Each message here gives up on two hops. */
+    uint64_t m = tsim_net_originate(r.net, 0, 2, 40);
+    tsim_sched_run_until(r.sched, TSIM_S(900 + 3 * 3600));
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->drops[TSIM_DROP_RETRIES], 2);
+    CHECK(route(&r, 0, 1, &next)); /* two lost: not yet */
+    m = tsim_net_originate(r.net, 0, 2, 40);
+    tsim_sched_run_until(r.sched, TSIM_S(1200 + 3 * 3600));
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK(!route(&r, 0, 1, &next));
+    CHECK(!route(&r, 0, 2, &next));
+    struct tsim_distvec_stats st;
+    tsim_distvec_stats(at(&r, 0), &st);
+    CHECK_EQ_U64(st.down[TSIM_DISTVEC_DOWN_HOP], 1);
+    CHECK_EQ_U64(st.down[TSIM_DISTVEC_DOWN_TIMEOUT], 0);
+    /* Node 2 sent nothing through node 1: it keeps it until silent_max. */
+    CHECK(route(&r, 2, 1, &next) && next == 1);
+    tsim_sched_run_until(r.sched, TSIM_S(1200 + 25 * 3600));
+    CHECK(!route(&r, 2, 1, &next));
+    tsim_distvec_stats(at(&r, 2), &st);
+    CHECK_EQ_U64(st.down[TSIM_DISTVEC_DOWN_TIMEOUT], 1);
+    rig_close(&r);
+
+    struct tsim_distvec_config bad = r.rc;
+    bad.dead_hops = 0;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+}
+
 /* With power control, SF7 and 14 dBm: a neighbour at loss L is heard at SNR 131 - L, so its floor
  * is L - 124.5 dBm, and a frame to it goes at L - 114.5, rounded up, between -9 and 14. */
 static void power_rig(struct rig *r, uint32_t nodes, const double *losses) {
@@ -1716,6 +1761,7 @@ int main(void) {
     RUN(the_link_oracle_uses_its_links_and_no_others);
     RUN(links_by_strength_come_up_and_go_down_on_margin);
     RUN(a_lost_hop_takes_no_link_down_by_strength);
+    RUN(by_strength_a_neighbour_is_gone_when_frames_to_it_fail);
     RUN(a_near_neighbour_is_sent_to_quieter_than_a_far_one);
     RUN(a_relay_goes_loud_enough_for_the_hop_before);
     RUN(a_hop_lost_at_its_power_is_tried_again_louder);

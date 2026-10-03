@@ -615,6 +615,12 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "link_band") == 0) {
         return distvec_factor(value, 0, 60, &c->link_band_db);
     }
+    if (strcmp(key, "dead_hops") == 0) {
+        return distvec_count(value, 1, UINT8_MAX, &c->dead_hops);
+    }
+    if (strcmp(key, "silent_max") == 0) {
+        return distvec_time(value, false, &c->silent_max);
+    }
     if (strcmp(key, "oracle_margin") == 0) {
         return distvec_factor(value, 0, 60, &c->oracle_margin_db);
     }

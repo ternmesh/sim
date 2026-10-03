@@ -140,6 +140,7 @@ struct neighbour {
     uint16_t ihu_seq;  /* the announce that last named this node */
     double floor;      /* the quietest it decodes this node at, in dBm; NAN until known */
     bool up;           /* with links by strength: its margins, both ways, put it in use */
+    uint8_t lost;      /* with links by strength: hops lost to it since it was last heard */
     double boost;      /* power control: dB more for frames to it, for hops it has lost */
 };
 
@@ -319,6 +320,8 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .oracle_margin_db = 3,
         .link_margin_db = 3,
         .link_band_db = 3,
+        .dead_hops = 24,
+        .silent_max = TSIM_S(24 * 3600),
     };
 }
 
@@ -367,6 +370,9 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     if (!(c->link_margin_db >= 0 && c->link_margin_db <= 60 && c->link_band_db >= 0 &&
           c->link_band_db <= 60)) {
         return "link_margin or link_band is out of range";
+    }
+    if (c->dead_hops < 1 || c->silent_max <= 0) {
+        return "dead_hops is 0, or silent_max is not above 0";
     }
     bool oracle = c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE;
     if (oracle && !(c->oracle_margin_db >= 0 && c->oracle_margin_db <= 60)) {
@@ -1064,8 +1070,9 @@ static void reselect_through(struct router *r, uint16_t s) {
 
 static void trickle_reset(struct router *r);
 
-/* A neighbour is gone: unheard for too long, or a frame sent to it never arrived. */
-static void forget(struct router *r, uint16_t s) {
+/* A neighbour is gone, for `cause`: unheard for too long, or by strength, frames sent to it lost
+ * too many times running. */
+static void forget(struct router *r, uint16_t s, enum tsim_distvec_down cause) {
     struct neighbour *n = slot(r, s);
     if (!n->used) {
         return;
@@ -1073,7 +1080,7 @@ static void forget(struct router *r, uint16_t s) {
     uint16_t was = n->cost;
     n->used = false;
     n->cost = INF;
-    link_down(r, n, was, TSIM_DISTVEC_DOWN_TIMEOUT);
+    link_down(r, n, was, cause);
     r->slot_of[n->id] = 0;
     for (uint32_t d = 0; d < r->nodes; d++) {
         struct entry *e = d != r->self ? entry_by(&r->dest[d], s) : NULL;
@@ -1471,6 +1478,7 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     }
     n->last_seq = seq;
     n->heard = now(r);
+    n->lost = 0;
     n->infra = b[9] & FLAG_INFRA;
     n->promise = promise_time(get16(b + 10));
     if (r->config.power && r->truth) {
@@ -1605,6 +1613,12 @@ static void missed(struct router *r, uint16_t s) {
     struct neighbour *n = slot(r, s);
     double room = r->config.tx_dbm - r->config.tx_min_dbm;
     n->boost = n->boost + r->config.step_db > room ? room : n->boost + r->config.step_db;
+    /* By strength, a lost hop is a lost frame - until dead_hops of them, with nothing heard from
+     * it between: then the neighbour is gone. */
+    if (by_strength(r) && ++n->lost >= r->config.dead_hops) {
+        forget(r, s, TSIM_DISTVEC_DOWN_HOP);
+        return;
+    }
     n->history = (uint16_t)(n->history << HOP_MISS);
     n->span = HISTORY;
     uint16_t was = n->cost;
@@ -1728,6 +1742,7 @@ static void heard_from(struct router *r, uint16_t s, const uint8_t *power, doubl
     double floor = floor_of(r, sent_byte(r, power), snr);
     n->floor = isnan(n->floor) ? floor : 0.75 * n->floor + 0.25 * floor;
     n->heard = now(r);
+    n->lost = 0;
     uint16_t was = n->cost;
     judge(r, n);
     n->cost = link_cost(r, n);
@@ -2231,10 +2246,11 @@ static void house_fire(void *ctx) {
             continue;
         }
         /* Never before it has let two of its promises pass: a node may go quiet that long. And
-         * never with the link oracle, whose links stay. */
-        if (!r->truth && t - n->heard > r->config.neighbour_timeout &&
-            t - n->heard > 2 * n->promise) {
-            forget(r, s);
+         * never with the link oracle, whose links stay; by strength, only after silent_max, its
+         * frames lost telling sooner if it is gone. */
+        tsim_time timeout = by_strength(r) ? r->config.silent_max : r->config.neighbour_timeout;
+        if (!r->truth && t - n->heard > timeout && t - n->heard > 2 * n->promise) {
+            forget(r, s, TSIM_DISTVEC_DOWN_TIMEOUT);
             continue;
         }
         uint16_t was = n->cost;
