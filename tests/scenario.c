@@ -241,6 +241,18 @@ static void problems_say_where_they_are(void) {
          "all, relays or leaves"},
         {"nodes = 2\nrouting = flood\nmac = aloha\nchurn.up = 0 s\n", 4, "expected a time"},
         {"nodes = 2\nrouting = flood\nmac = aloha\nchurn.down = never\n", 4, "expected a time"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nmove.share = -1\n", 4, "fraction"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nmove.nodes = cars\n", 4,
+         "all, relays or leaves"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nmove.speed_min = 0\n", 4, "above 0"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nmove.step = 0 s\n", 4, "expected a time"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nmove.share = 1\nmove.speed_min = 3\n"
+         "move.speed_max = 2\n",
+         0, "move.speed_min is above move.speed_max"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nmove.share = 1\nlinks = l.txt\n", 0,
+         "move.share needs positions"},
+        {"nodes = 2\nrouting = distvec\nmac = aloha\nmove.share = 1\nrouting.oracle = yes\n", 0,
+         "built once"},
         {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.closed = sometimes\n", 4, "yes or no"},
         {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.peers = -1\n", 4, "count of nodes"},
         {"nodes = 3\nrouting = flood\nmac = aloha\ntraffic.peers = 3\n", 0,
@@ -477,6 +489,28 @@ static void a_run_reports_its_links(void) {
     CHECK(tsim_scenario_run(&s, &rep));
     CHECK(rep.links.degree_mean == 0.0);
     CHECK_EQ_I64(rep.links.component_max, 1);
+}
+
+/* Nodes that move have their links set again (MSH-59): barely moving, from the channel model to
+ * the same losses, so the same links; moving fast, to others. */
+static void a_moved_node_s_links_change(void) {
+    struct tsim_scenario s;
+    const char *text = "nodes = 40\narea = 20000 x 20000\nrouting = flood\nmac = aloha\n"
+                       "traffic.interval = none\nduration = 1 h\nmove.nodes = all\n%s";
+    char buf[256];
+    struct tsim_report still, crawl, fast;
+    snprintf(buf, sizeof buf, text, "");
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &still));
+    snprintf(buf, sizeof buf, text,
+             "move.share = 1\nmove.speed_min = 1e-9\nmove.speed_max = 1e-9\n");
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &crawl));
+    CHECK(crawl.links.degree_mean == still.links.degree_mean);
+    snprintf(buf, sizeof buf, text, "move.share = 1\nmove.speed_min = 20\nmove.speed_max = 30\n");
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &fast));
+    CHECK(fast.links.degree_mean != still.links.degree_mean);
 }
 
 /* Forty radios at 1 Hz, SF12 and a 65535-symbol preamble send frames years long, and between
@@ -741,6 +775,7 @@ int main(void) {
     RUN(a_send_as_the_warmup_ends_is_in_the_window);
     RUN(traffic_in_the_warmup_is_not_counted);
     RUN(a_run_reports_its_links);
+    RUN(a_moved_node_s_links_change);
     RUN(a_run_talks_to_its_peers_and_answers);
     RUN(a_meshtastic_run_floods_a_line);
     RUN(a_run_repeats_with_its_seed);

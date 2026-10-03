@@ -209,6 +209,41 @@ static void louder_frame_after_lock_destroys_but_is_not_heard(void) {
     world_free(w);
 }
 
+struct move_away {
+    struct world *w;
+    uint32_t from;
+};
+
+static void move_away_now(struct tsim_sched *s, void *ctx) {
+    (void)s;
+    struct move_away *m = ctx;
+    tsim_phy_set_loss(m->w->phy, m->from, 0, INFINITY);
+}
+
+/* An interferer whose sender moves out of reach part-way through still brings what it brought
+ * before (MSH-59): with its losses kept, the frame under it is lost just as if it had stayed,
+ * where reading the losses at the end would reach back and wipe its interference out. A frame it
+ * sends afterwards meets the new loss. */
+static void a_frame_keeps_its_losses_when_they_change(void) {
+    for (int keep = 0; keep <= 1; keep++) {
+        struct world *w = world_new(3, NULL);
+        tsim_phy_keep_losses(w->phy, keep);
+        arrive(w, 1, 0, -80.0);
+        arrive(w, 2, 0, -70.0);
+        struct send a, b, c;
+        struct move_away m = {w, 2};
+        send_at(w, &a, 0, 1, &w->sf7);
+        send_at(w, &b, TSIM_MS(20), 2, &w->sf7);
+        tsim_sched_at(w->sched, TSIM_MS(40), move_away_now, &m);
+        send_at(w, &c, TSIM_MS(200), 2, &w->sf7);
+        tsim_sched_run_until(w->sched, TSIM_S(1));
+        CHECK(received(w, 0, 1) == !keep);
+        CHECK(!received(w, 0, 3));
+        CHECK_EQ_I64(w->log.count, keep ? 0 : 1);
+        world_free(w);
+    }
+}
+
 static void louder_frame_during_the_preamble_takes_the_receiver(void) {
     struct world *w = world_new(3, NULL);
     arrive(w, 1, 0, -80.0);
@@ -1400,6 +1435,7 @@ int main(void) {
     RUN(half_duplex);
     RUN(louder_frame_after_lock_destroys_but_is_not_heard);
     RUN(louder_frame_during_the_preamble_takes_the_receiver);
+    RUN(a_frame_keeps_its_losses_when_they_change);
     RUN(slightly_louder_frame_does_not_take_the_receiver);
     RUN(missed_counts_only_frames_it_could_have_decoded);
     RUN(a_frame_caught_after_all_is_not_missed);

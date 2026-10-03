@@ -124,6 +124,18 @@ struct tsim_scenario {
     tsim_time churn_up;
     tsim_time churn_down;
 
+    /* Movement (MSH-59): this share of the nodes `move_nodes` names (the same kinds as churn's)
+     * move for the whole run, as tsim_mover_step() does it, over the map's box: the placement's
+     * rectangle, or for other placements the smallest box that holds every node. Every `move_step`
+     * each one that moved has its links' losses set again from the channel model. A share of 0 is
+     * none. */
+    double move_share;
+    uint8_t move_nodes;    /* enum tsim_churn_nodes */
+    double move_speed_min; /* m/s */
+    double move_speed_max;
+    tsim_time move_pause;
+    tsim_time move_step;
+
     bool report_announces; /* struct tsim_announces, for distvec: slow */
     struct tsim_send sends[TSIM_SENDS_MAX];
     uint32_t send_count;
