@@ -602,10 +602,18 @@ static const char *distvec_set(void *config, const char *key, const char *value)
             c->links = TSIM_DISTVEC_LINKS_SENSED;
         } else if (strcmp(value, "oracle") == 0) {
             c->links = TSIM_DISTVEC_LINKS_ORACLE;
+        } else if (strcmp(value, "strength") == 0) {
+            c->links = TSIM_DISTVEC_LINKS_STRENGTH;
         } else {
-            return "expected sensed or oracle";
+            return "expected sensed, oracle or strength";
         }
         return NULL;
+    }
+    if (strcmp(key, "link_margin") == 0) {
+        return distvec_factor(value, 0, 60, &c->link_margin_db);
+    }
+    if (strcmp(key, "link_band") == 0) {
+        return distvec_factor(value, 0, 60, &c->link_band_db);
     }
     if (strcmp(key, "oracle_margin") == 0) {
         return distvec_factor(value, 0, 60, &c->oracle_margin_db);

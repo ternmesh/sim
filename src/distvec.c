@@ -139,6 +139,7 @@ struct neighbour {
     tsim_time promise; /* how soon it said it would announce again */
     uint16_t ihu_seq;  /* the announce that last named this node */
     double floor;      /* the quietest it decodes this node at, in dBm; NAN until known */
+    bool up;           /* with links by strength: its margins, both ways, put it in use */
     double boost;      /* power control: dB more for frames to it, for hops it has lost */
 };
 
@@ -316,6 +317,8 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .snr_floor_db = -7.5 - 2.5 * (lora->sf - 7), /* Semtech's */
         .power_k = 8,
         .oracle_margin_db = 3,
+        .link_margin_db = 3,
+        .link_band_db = 3,
     };
 }
 
@@ -358,8 +361,12 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
         return "with power control, tx_dbm and tx_min_dbm are not whole dBm apart within -128 to "
                "127, or a margin is out of range";
     }
-    if (c->links > TSIM_DISTVEC_LINKS_ORACLE) {
-        return "links is not sensed or oracle";
+    if (c->links > TSIM_DISTVEC_LINKS_STRENGTH) {
+        return "links is not sensed, oracle or strength";
+    }
+    if (!(c->link_margin_db >= 0 && c->link_margin_db <= 60 && c->link_band_db >= 0 &&
+          c->link_band_db <= 60)) {
+        return "link_margin or link_band is out of range";
     }
     bool oracle = c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE;
     if (oracle && !(c->oracle_margin_db >= 0 && c->oracle_margin_db <= 60)) {
@@ -522,10 +529,46 @@ static bool true_link(const struct router *r, uint32_t id) {
            o->need[(size_t)id * r->nodes + r->self] <= o->top;
 }
 
+/* Whether links are judged by strength. */
+static bool by_strength(const struct router *r) {
+    return r->config.links == TSIM_DISTVEC_LINKS_STRENGTH && !r->oracle;
+}
+
+/* What a frame says it went at, as a floor reckons it: its power byte, or without power control,
+ * tx_dbm as power_byte() rounds it. */
+static uint8_t sent_byte(const struct router *r, const uint8_t *power) {
+    return r->config.power ? *power : power_byte(r->config.tx_dbm);
+}
+
+/* With links by strength, an IHU's byte is the margin its sender hears this node with, in whole
+ * dB, offset by 128 and kept off 0, which no IHU has. */
+#define MARGIN_ZERO 128
+
+static uint8_t margin_byte(double m) {
+    double v = round(m) + MARGIN_ZERO;
+    return (uint8_t)(v < 1 ? 1 : v > UINT8_MAX ? UINT8_MAX : v);
+}
+
+/* With links by strength, the margin of a link: the least of how far below tx_dbm this node's
+ * floor at the neighbour lies, and of the margin its IHU reports - -INFINITY without either. */
+static double margin(const struct router *r, const struct neighbour *n) {
+    double ours = isnan(n->floor) ? -INFINITY : r->config.tx_dbm - n->floor;
+    double theirs = n->dr ? (double)n->dr - MARGIN_ZERO : -INFINITY;
+    return ours < theirs ? ours : theirs;
+}
+
+/* With links by strength, whether the link is in use: once up with link_margin_db each way, until
+ * it falls more than link_band_db below that. */
+static void judge(const struct router *r, struct neighbour *n) {
+    double m = margin(r, n), want = r->config.link_margin_db;
+    n->up = m >= (n->up ? want - r->config.link_band_db : want);
+}
+
 static uint16_t link_cost(const struct router *r, const struct neighbour *n) {
-    if (r->truth) {
+    if (r->truth || by_strength(r)) {
         double cost = ceil(r->ref_ms); /* an ETX of 1 */
-        return !true_link(r, n->id) ? INF : cost < 1 ? 1 : cost >= INF ? INF - 1 : (uint16_t)cost;
+        bool up = r->truth ? true_link(r, n->id) : n->up;
+        return !up ? INF : cost < 1 ? 1 : cost >= INF ? INF - 1 : (uint16_t)cost;
     }
     uint8_t got = heard_rate(r, n);
     if (n->dr == 0 || got == 0) {
@@ -562,9 +605,11 @@ static void choose_parent(struct router *r) {
         if (!n->used || !n->infra || n->cost == INF) {
             continue;
         }
-        /* With the link oracle, the margin the link has: above 0 for any it uses. */
-        double q =
-            r->truth ? r->truth->top - true_need(r, n->id) + 1 : (double)heard_rate(r, n) * n->dr;
+        /* With the link oracle or by strength, the margin the link has: above 0 for any used. */
+        double q = r->truth ? r->truth->top - true_need(r, n->id) + 1
+                   : by_strength(r)
+                       ? margin(r, n) - r->config.link_margin_db + r->config.link_band_db + 1
+                       : (double)heard_rate(r, n) * n->dr;
         if (n == cur) {
             cur_q = q;
         }
@@ -1266,7 +1311,7 @@ static uint32_t build(struct router *r, uint8_t *b) {
             }
             n->ihu_owed = pass == 0; /* listed in this frame, so skipped by the second pass */
             put32(b + i, n->id);
-            b[i + 4] = heard_rate(r, n);
+            b[i + 4] = by_strength(r) ? margin_byte(r->config.tx_dbm - n->floor) : heard_rate(r, n);
             i += IHU_LEN;
             ihus++;
             if (pass) {
@@ -1430,8 +1475,8 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     n->promise = promise_time(get16(b + 10));
     if (r->config.power && r->truth) {
         n->floor = true_need(r, from);
-    } else if (r->config.power) {
-        double floor = floor_of(r, b[16], snr);
+    } else if (r->config.power || by_strength(r)) {
+        double floor = floor_of(r, sent_byte(r, b + 16), snr);
         n->floor = isnan(n->floor) ? floor : 0.75 * n->floor + 0.25 * floor;
     }
     if (fresh) {
@@ -1462,6 +1507,7 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
 
     r->changed = fresh;
     uint16_t was = n->cost;
+    judge(r, n);
     n->cost = link_cost(r, n);
     link_down(r, n, was, n->dr == 0 ? TSIM_DISTVEC_DOWN_IHU : TSIM_DISTVEC_DOWN_RATE);
     bool flipped = (was == INF) != (n->cost == INF);
@@ -1675,11 +1721,33 @@ static void withdrawn(struct router *r, uint64_t handle) {
     }
 }
 
+/* With links by strength, a frame heard from the neighbour in slot `s`, at `snr`, that went at
+ * the power byte at `power`: as an announce's, its strength is the link's, and it is heard. */
+static void heard_from(struct router *r, uint16_t s, const uint8_t *power, double snr) {
+    struct neighbour *n = slot(r, s);
+    double floor = floor_of(r, sent_byte(r, power), snr);
+    n->floor = isnan(n->floor) ? floor : 0.75 * n->floor + 0.25 * floor;
+    n->heard = now(r);
+    uint16_t was = n->cost;
+    judge(r, n);
+    n->cost = link_cost(r, n);
+    link_down(r, n, was, TSIM_DISTVEC_DOWN_RATE);
+    if ((was == INF) != (n->cost == INF)) {
+        n->cost_used = n->cost;
+        r->changed = true;
+        reselect_through(r, s);
+        choose_parent(r);
+        trickle_reset(r);
+        r->changed = false;
+    }
+}
+
 /* Something passed on what a hop of this node's was waiting to hear: a data or acknowledgement
- * frame, one hop further on. */
-static void overheard(struct router *r, const uint8_t *b) {
+ * frame, one hop further on, heard at `snr`. */
+static void overheard(struct router *r, const uint8_t *b, double snr) {
     uint8_t type = b[0], hops = b[17];
     uint32_t src = get32(b + 5), dst = get32(b + 9), id = get32(b + 13);
+    uint32_t from = TSIM_BROADCAST; /* who passed it on */
     for (size_t i = 0; i < r->hop_count;) {
         struct hop *h = &r->hops[i];
         bool passed = h->type == type && h->src == src && h->id == id && hops + 1 == h->hops;
@@ -1690,6 +1758,7 @@ static void overheard(struct router *r, const uint8_t *b) {
                 withdrawn(r, h->handle);
             }
             uint16_t s = r->slot_of[h->next];
+            from = h->next;
             if (s && slot(r, s)->boost > 0) {
                 slot(r, s)->boost = slot(r, s)->boost > 1 ? slot(r, s)->boost - 1 : 0;
             }
@@ -1699,6 +1768,9 @@ static void overheard(struct router *r, const uint8_t *b) {
         i++;
     }
     arm_hops(r);
+    if (by_strength(r) && from < r->nodes && r->slot_of[from]) {
+        heard_from(r, r->slot_of[from], b + 18, snr);
+    }
 }
 
 /* --- Messages --- */
@@ -1986,7 +2058,7 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
     if (src >= r->nodes || dst >= r->nodes) {
         return;
     }
-    overheard(r, b);
+    overheard(r, b, snr);
     if (type == TYPE_ACK && dst == r->self) {
         for (struct awaiting *a = r->awaiting; a; a = a->next) {
             if (a->id == id && a->dst == src) {
