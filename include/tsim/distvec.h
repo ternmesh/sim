@@ -374,11 +374,11 @@ struct tsim_distvec_config {
  *
  * Measured on the region (200 relays, parent_oracle, 3 seeds), unicast on time was 40% at 0 dBm
  * and 12% at 20 dBm, against 23% and 8% sensed; no link went down on strength, and the ones that
- * did were forgotten or lost their IHU when the neighbour forgot this node. With power_k,
- * announces go quieter than data: a neighbour heard at tx_dbm before a node knew its k nearest goes
- * unheard once it does, though data still reaches it. With neighbour_timeout 24 h - never, in that
- * run - it was 51% and 53%, as the link oracle's 51% and 67%. Sensing given the same timeout made
- * 30% and 13%. */
+ * did were forgotten or lost their IHU when the neighbour forgot this node - likely, not yet
+ * shown, because with power_k announces go quieter than data: a neighbour heard at tx_dbm before a
+ * node knew its k nearest may go unheard once it does, though data still reaches it. With
+ * neighbour_timeout 24 h - never, in that run - it was 51% and 53%, as the link oracle's 51% and
+ * 67%. Sensing given the same timeout made 30% and 13%. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */
