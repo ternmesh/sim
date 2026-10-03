@@ -181,7 +181,14 @@ static void print_report(const char *path, const struct tsim_scenario *s,
                ", \"lost\": ",
                a->silences, a->silence_mean_s, a->unsent, a->quiet);
         print_counts(fates, a->lost, TSIM_PHY_FATE_COUNT);
-        printf(", \"silent_end\": %" PRIu64 "},\n", a->silent_end);
+        printf(", \"silent_end\": %" PRIu64 ",\n", a->silent_end);
+        for (int t = 0; t < 2; t++) {
+            printf("%s\"sensed_%s\": {\"both\": %" PRIu32 ", \"not_true\": %" PRIu32
+                   ", \"unused\": %" PRIu32 "}",
+                   t ? ", " : "                ", t ? "end" : "begin", a->sensed[t][0],
+                   a->sensed[t][1], a->sensed[t][2]);
+        }
+        printf("},\n");
     }
     if (r->churn.present) {
         printf("  \"churn\": {\"downs\": %" PRIu64 ", \"down_mean\": %.6g, \"to_down\": %" PRIu64

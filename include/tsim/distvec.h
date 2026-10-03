@@ -594,6 +594,9 @@ struct tsim_distvec_stats {
 /* The node's books, up to now. */
 void tsim_distvec_stats(const void *self, struct tsim_distvec_stats *stats);
 
+/* Whether the node can use its link to `nb`: heard both ways, within etx_max. */
+bool tsim_distvec_uses(const void *self, uint32_t nb);
+
 /* How many neighbours the node can use: heard both ways, within etx_max. */
 uint32_t tsim_distvec_neighbours(const void *self);
 

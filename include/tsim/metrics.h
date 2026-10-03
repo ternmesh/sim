@@ -108,6 +108,9 @@ struct tsim_announces {
     uint64_t quiet;                     /* the rest, all it sent too weak at the second */
     uint64_t lost[TSIM_PHY_FATE_COUNT]; /* frames sent in the others, by fate */
     uint64_t silent_end;                /* pairs in silence as the window ends */
+    /* The links relays use against the oracle's, ordered pairs, as the window begins [0] and ends
+     * [1]: used and the oracle's, used but not the oracle's, the oracle's but not used. */
+    uint32_t sensed[2][3];
 };
 
 /* Where a message was dropped: at its source, at the hop before its destination - meant for the

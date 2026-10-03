@@ -1539,6 +1539,22 @@ static bool announces_start(struct announces *a, struct tsim_net *net,
     return true;
 }
 
+/* Counts the links relays use against the oracle's. */
+static void sensed_links(const struct announces *a, struct tsim_net *net, uint32_t out[3]) {
+    out[0] = out[1] = out[2] = 0;
+    for (uint32_t x = 0; x < a->n; x++) {
+        const void *r = tsim_net_routing(net, x);
+        for (uint32_t y = 0; r && a->watch[x] && y < a->n; y++) {
+            if (x == y || !a->watch[y]) {
+                continue;
+            }
+            bool used = tsim_distvec_uses(r, y);
+            bool true_link = a->linked[(size_t)a->index[x] * a->relays + a->index[y]];
+            out[used && true_link ? 0 : used ? 1 : 2] += used || true_link;
+        }
+    }
+}
+
 static void announces_report(struct announces *a, tsim_time begun, tsim_time end,
                              struct tsim_announces *out) {
     for (size_t k = 0; k < (size_t)a->relays * a->relays; k++) {
@@ -1636,6 +1652,8 @@ static void begin_window(struct tsim_sched *sched, void *ctx) {
     }
     if (w->announces && !announces_start(w->announces, w->net, w->dv, w->begun)) {
         w->failed = true;
+    } else if (w->announces) {
+        sensed_links(w->announces, w->net, w->announces->report.sensed[0]);
     }
 }
 
@@ -1955,6 +1973,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         health(&window, tsim_sched_now(sched), &report->health);
     }
     if (window.announces && !window.failed) {
+        sensed_links(&announces, net, announces.report.sensed[1]);
         announces_report(&announces, window.begun, tsim_sched_now(sched), &report->announces);
     }
     ok = !churn.failed && !window.failed &&
