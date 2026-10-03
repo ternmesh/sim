@@ -1613,6 +1613,96 @@ static void by_strength_a_neighbour_is_gone_when_frames_to_it_fail(void) {
     CHECK(tsim_distvec_check(&bad) == NULL);
 }
 
+/* The liveness probe (MSH-61): node 1, the middle of a line, falls silent, and a message node 0
+ * sends through it gives up on its hops. Node 0 then asks node 1 whether it is there, and with
+ * probe_tries left unanswered takes the link out of use, long before dead_hops would forget it -
+ * until node 1 is heard again. */
+static void an_unanswered_probe_takes_the_link_out_of_use(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.probe_hops = 1;
+    r.rc.probe_tries = 3;
+    r.rc.probe_wait = TSIM_S(5);
+    CHECK(tsim_distvec_check(&r.rc) == NULL);
+    line(&r, 3, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(600));
+    uint32_t next = 0;
+    CHECK(route(&r, 0, 2, &next) && next == 1);
+    for (uint32_t i = 0; i < 3; i += 2) {
+        link(&r, 1, i, LOSS_NONE);
+    }
+    uint64_t m = tsim_net_originate(r.net, 0, 2, 40);
+    tsim_sched_run_until(r.sched, TSIM_S(700));
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK(!route(&r, 0, 1, &next));
+    CHECK(!route(&r, 0, 2, &next));
+    struct tsim_distvec_stats st;
+    tsim_distvec_stats(at(&r, 0), &st);
+    CHECK_EQ_U64(st.down[TSIM_DISTVEC_DOWN_PROBE], 1);
+    CHECK_EQ_U64(st.down[TSIM_DISTVEC_DOWN_HOP], 0);
+    CHECK_EQ_U64(st.probes, 3);
+    CHECK_EQ_U64(st.probes_answered, 0);
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_CONTROL) >= 3, 1);
+    CHECK(!tsim_distvec_uses(at(&r, 0), 1));
+    for (uint32_t i = 0; i < 3; i += 2) {
+        link(&r, 1, i, LOSS_LOUD);
+    }
+    tsim_sched_run_until(r.sched, TSIM_S(700 + 3600)); /* node 1 announces again */
+    CHECK(tsim_distvec_uses(at(&r, 0), 1));
+    CHECK(route(&r, 0, 2, &next) && next == 1);
+    rig_close(&r);
+
+    struct tsim_distvec_config bad = r.rc;
+    bad.probe_tries = 0;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.probe_tries = 33;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.probe_tries = 6;
+    bad.probe_wait = 0;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.probe_hops = 0; /* off: never read */
+    CHECK(tsim_distvec_check(&bad) == NULL);
+}
+
+/* A live neighbour answers: node 1 goes deaf to node 0 long enough for a message's hops to fail,
+ * so node 0 probes it; once node 1 hears again, it answers a probe, and node 0 keeps it. */
+static void a_live_neighbour_answers_the_probe(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.probe_hops = 1;
+    r.rc.probe_tries = 32;
+    r.rc.probe_wait = TSIM_S(20);
+    line(&r, 2, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    uint32_t next = 0;
+    CHECK(route(&r, 0, 1, &next) && next == 1);
+    tsim_phy_set_loss_from(tsim_net_phy(r.net), 0, 1, LOSS_NONE);
+    uint64_t m = tsim_net_originate(r.net, 0, 1, 40);
+    tsim_sched_run_until(r.sched, TSIM_S(420));
+    CHECK(tsim_net_message(r.net, m)->finished);
+    struct tsim_distvec_stats st;
+    tsim_distvec_stats(at(&r, 0), &st);
+    CHECK(st.probes >= 1);
+    CHECK_EQ_U64(st.probes_answered, 0);
+    tsim_phy_set_loss_from(tsim_net_phy(r.net), 0, 1, LOSS_LOUD);
+    tsim_sched_run_until(r.sched, TSIM_S(480));
+    tsim_distvec_stats(at(&r, 0), &st);
+    CHECK_EQ_U64(st.probes_answered, 1);
+    for (int c = 0; c < TSIM_DISTVEC_DOWN_COUNT; c++) {
+        CHECK_EQ_U64(st.down[c], 0);
+    }
+    uint64_t probes = st.probes;
+    tsim_distvec_stats(at(&r, 1), &st);
+    CHECK(st.probe_acks >= 1);
+    CHECK(route(&r, 0, 1, &next) && next == 1);
+    tsim_sched_run_until(r.sched, TSIM_S(900)); /* answered: no more probes */
+    tsim_distvec_stats(at(&r, 0), &st);
+    CHECK_EQ_U64(st.probes, probes);
+    rig_close(&r);
+}
+
 /* By strength, housekeeping keeps time with silent_max, not neighbour_timeout: two nodes heard
  * early, while their promises are short, fall silent, and are forgotten soon after silent_max -
  * within 300 s here, where looking every 15 min, as neighbour_timeout would, took until 900 s. */
@@ -1950,6 +2040,8 @@ int main(void) {
     RUN(a_lost_hop_takes_no_link_down_by_strength);
     RUN(by_strength_a_neighbour_is_gone_when_frames_to_it_fail);
     RUN(by_strength_silence_is_checked_as_often_as_silent_max_needs);
+    RUN(an_unanswered_probe_takes_the_link_out_of_use);
+    RUN(a_live_neighbour_answers_the_probe);
     RUN(a_near_neighbour_is_sent_to_quieter_than_a_far_one);
     RUN(a_relay_goes_loud_enough_for_the_hop_before);
     RUN(a_hop_lost_at_its_power_is_tried_again_louder);

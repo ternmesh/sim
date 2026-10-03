@@ -654,6 +654,15 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "silent_max") == 0) {
         return distvec_time(value, false, &c->silent_max);
     }
+    if (strcmp(key, "probe_hops") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->probe_hops);
+    }
+    if (strcmp(key, "probe_tries") == 0) {
+        return distvec_count(value, 1, 32, &c->probe_tries);
+    }
+    if (strcmp(key, "probe_wait") == 0) {
+        return distvec_time(value, false, &c->probe_wait);
+    }
     if (strcmp(key, "oracle_margin") == 0) {
         return distvec_factor(value, 0, 60, &c->oracle_margin_db);
     }
@@ -1619,6 +1628,9 @@ static void distvec_sum(struct tsim_net *net, const struct tsim_distvec_stats *r
         sum->gave_up += s.gave_up;
         sum->seq_raised += s.seq_raised;
         sum->route_replies += s.route_replies;
+        sum->probes += s.probes;
+        sum->probes_answered += s.probes_answered;
+        sum->probe_acks += s.probe_acks;
         sum->unrouted_infeasible += s.unrouted_infeasible;
         sum->unrouted_empty += s.unrouted_empty;
     }
@@ -1693,6 +1705,9 @@ static void health(const struct window *w, tsim_time end, struct tsim_route_heal
         h->gave_up_per_h = (double)(now.gave_up - w->stats.gave_up) / hours;
         h->seq_raised_per_h = (double)(now.seq_raised - w->stats.seq_raised) / hours;
         h->route_replies_per_h = (double)(now.route_replies - w->stats.route_replies) / hours;
+        h->probes_per_h = (double)(now.probes - w->stats.probes) / hours;
+        h->probes_answered_per_h = (double)(now.probes_answered - w->stats.probes_answered) / hours;
+        h->probe_acks_per_h = (double)(now.probe_acks - w->stats.probe_acks) / hours;
     }
     if (relays) {
         h->unrouted_infeasible = (double)now.unrouted_infeasible / relays;
@@ -1751,6 +1766,9 @@ static void churn_flip(struct tsim_sched *sched, void *ctx) {
         c->retired.gave_up += st.gave_up;
         c->retired.seq_raised += st.seq_raised;
         c->retired.route_replies += st.route_replies;
+        c->retired.probes += st.probes;
+        c->retired.probes_answered += st.probes_answered;
+        c->retired.probe_acks += st.probe_acks;
     }
     if (!tsim_net_power(c->net, ch->node, on) || !tsim_metrics_power(c->metrics, ch->node, on)) {
         c->failed = true;
