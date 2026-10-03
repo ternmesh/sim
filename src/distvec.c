@@ -296,6 +296,7 @@ struct router {
     size_t ask_cap;
     struct tsim_timer *ask_timer;
     struct tsim_timer *seq_timer;
+    struct tsim_timer *park_timer; /* with demand routes: when parked frames next look for routes */
     struct parked *parked;
     size_t parked_count;
 };
@@ -361,8 +362,9 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     if (c->leaves > TSIM_DISTVEC_LEAVES_PARENT_ORACLE) {
         return "leaves is not routed or parent_oracle";
     }
-    if (c->routes > TSIM_DISTVEC_ROUTES_DEMAND || c->route_ttl <= 0 || c->req_hops < 1) {
-        return "routes is not proactive or demand, route_ttl is not above 0, or req_hops is 0";
+    /* Frames carry a route's life in whole seconds: under one, it would go as none. */
+    if (c->routes > TSIM_DISTVEC_ROUTES_DEMAND || c->route_ttl < TSIM_S(1) || c->req_hops < 1) {
+        return "routes is not proactive or demand, route_ttl is under 1 s, or req_hops is 0";
     }
     if (tsim_lora_airtime(&c->lora, c->ref_len) < 0) {
         return "ref_len has no airtime at the radio's modulation";
@@ -706,22 +708,24 @@ static bool alive(const struct router *r, const struct entry *e) {
     return e->until == 0 || e->until > now(r);
 }
 
-/* The selected route to `d`, or NULL for none or one past its time. Nothing is changed: a route
- * past its time stays selected until something next reselects, but is never followed. */
-static const struct entry *live_sel(const struct router *r, uint32_t d) {
-    const struct dest *ds = &r->dest[d];
-    for (int i = 0; ds->sel && i < ROUTES; i++) {
-        if (ds->e[i].slot == ds->sel) {
-            return alive(r, &ds->e[i]) ? &ds->e[i] : NULL;
-        }
+static void reselect(struct router *r, uint32_t d);
+
+/* The selected route to `d`, or NULL for none. One past its time is reselected first, so a live
+ * route cached beside it takes its place. */
+static const struct entry *live_sel(struct router *r, uint32_t d) {
+    struct dest *ds = &r->dest[d];
+    const struct entry *e = ds->sel ? entry_by(ds, ds->sel) : NULL;
+    if (e && !alive(r, e)) {
+        reselect(r, d);
+        e = ds->sel ? entry_by(ds, ds->sel) : NULL;
     }
-    return NULL;
+    return e && alive(r, e) ? e : NULL;
 }
 
 /* The node whose route a frame for `dst` follows: `dst`, or with parent_oracle, the parent of a
  * leaf this node has no route to - TSIM_DISTVEC_NO_PARENT if it has none, and this node itself if
  * it is the parent but cannot reach the leaf. */
-static uint32_t target_of(const struct router *r, uint32_t dst) {
+static uint32_t target_of(struct router *r, uint32_t dst) {
     if (!by_parent(r) || live_sel(r, dst)) {
         return dst;
     }
@@ -2255,6 +2259,9 @@ static bool park(struct router *r, uint32_t target, const uint8_t *b, uint32_t l
     p->back = back;
     p->len = len;
     memcpy(p->bytes, b, len);
+    if (!tsim_timer_pending(r->park_timer)) {
+        tsim_timer_start(r->park_timer, r->config.request_interval);
+    }
     return true;
 }
 
@@ -2444,6 +2451,35 @@ static void found(struct router *r, uint32_t t) {
             tsim_timer_stop(a->timer);
             send_attempt(a);
         }
+    }
+}
+
+/* A request_interval after a frame was parked: frames whose route has come since, from a reply or
+ * from passing traffic, go; for the rest the route is asked for again - a request the cap had no
+ * room for, or one never answered. */
+static void park_fire(void *ctx) {
+    struct router *r = ctx;
+    unpark_expired(r);
+    uint32_t targets[PARKED_MAX];
+    size_t n = 0;
+    for (size_t i = 0; i < r->parked_count; i++) {
+        size_t j = 0;
+        while (j < n && targets[j] != r->parked[i].target) {
+            j++;
+        }
+        if (j == n) {
+            targets[n++] = r->parked[i].target;
+        }
+    }
+    for (size_t j = 0; j < n; j++) {
+        if (live_sel(r, targets[j])) {
+            found(r, targets[j]);
+        } else {
+            discover(r, targets[j]);
+        }
+    }
+    if (r->parked_count) {
+        tsim_timer_start(r->park_timer, r->config.request_interval);
     }
 }
 
@@ -2645,6 +2681,7 @@ static void router_destroy(void *self) {
     tsim_timer_destroy(r->request_timer);
     tsim_timer_destroy(r->ask_timer);
     tsim_timer_destroy(r->seq_timer);
+    tsim_timer_destroy(r->park_timer);
     free(r->starving);
     free(r->asks);
     free(r->dest);
@@ -2706,8 +2743,10 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->request_timer = tsim_timer_create(node, request_fire, r);
     r->ask_timer = tsim_timer_create(node, ask_fire, r);
     r->seq_timer = tsim_timer_create(node, seq_fire, r);
-    if (!r->seq_timer || !r->dest || !r->slot_of || !r->trickle || !r->cap_timer || !r->hop_timer ||
-        !r->out_timer || !r->house || !r->request_timer || !r->ask_timer) {
+    r->park_timer = tsim_timer_create(node, park_fire, r);
+    if (!r->seq_timer || !r->park_timer || !r->dest || !r->slot_of || !r->trickle ||
+        !r->cap_timer || !r->hop_timer || !r->out_timer || !r->house || !r->request_timer ||
+        !r->ask_timer) {
         router_destroy(r);
         return NULL;
     }
