@@ -369,15 +369,15 @@ struct tsim_distvec_config {
  * hears the other, not how often. A neighbour's floor is reckoned, as power control reckons it,
  * from every announce of its heard and every frame of this node's it is heard passing on; its IHU
  * carries, in place of a receive rate, the margin it hears this node with: how far below tx_dbm
- * its floor lies, in whole dB. The link comes up once both margins are link_margin_db or more, and
- * goes down once either falls more than link_band_db below that. Every link up costs the same, as
- * with ETX off. A hop lost is a frame lost, not a link: it raises the power, and nothing more,
- * until dead_hops of them in a row, with nothing heard from the neighbour between, say it is
- * gone, and it is forgotten. Silence is not the signal: a neighbour is forgotten unheard only
- * after silent_max. The IHU still expires as with sensing.
+ * its floor lies, in whole dB rounded down. The link comes up once both margins are link_margin_db
+ * or more, and goes down once either falls more than link_band_db below that. Every link up costs
+ * the same, as with ETX off. A hop lost is a frame lost, not a link: it raises the power, and
+ * nothing more, until dead_hops of them in a row, with nothing heard from the neighbour between,
+ * say it is gone, and it is forgotten. Silence is not the signal: a neighbour is forgotten unheard
+ * only after silent_max. The IHU still expires as with sensing.
  *
  * Measured on the region (200 relays, parent_oracle, 3 seeds), unicast on time was 50% at 0 dBm
- * and 51% at 20 dBm, against 23% and 8% sensed and the link oracle's 51% and 67%; relays' routes
+ * and 52% at 20 dBm, against 23% and 8% sensed and the link oracle's 51% and 67%; relays' routes
  * to each other reached 70% and 93% of pairs. No link went down on strength. Forgetting on
  * silence after neighbour_timeout, an hour, made 40% and 12%: neighbours loud enough to be heard
  * each way, by the powers both ends announced at, went an hour unheard thousands of times an hour

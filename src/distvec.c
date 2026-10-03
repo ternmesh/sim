@@ -547,11 +547,12 @@ static double sent_dbm(const struct router *r, const uint8_t *power) {
 }
 
 /* With links by strength, an IHU's byte is the margin its sender hears this node with, in whole
- * dB, offset by 128 and kept off 0, which no IHU has. */
+ * dB rounded down - never more than it measured - offset by 128 and kept off 0, which no IHU has.
+ */
 #define MARGIN_ZERO 128
 
 static uint8_t margin_byte(double m) {
-    double v = round(m) + MARGIN_ZERO;
+    double v = floor(m) + MARGIN_ZERO;
     return (uint8_t)(v < 1 ? 1 : v > UINT8_MAX ? UINT8_MAX : v);
 }
 

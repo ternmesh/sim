@@ -1508,6 +1508,19 @@ static void links_by_strength_come_up_and_go_down_on_margin(void) {
     CHECK(!route(&r, 1, 0, &next));
     rig_close(&r);
 
+    /* One way 4.5 dB, the other 2.6: the end hearing 2.6 reports 2, never 3, so neither end takes
+     * the link up. */
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    build(&r, 2, 1);
+    tsim_phy_set_loss_from(tsim_net_phy(r.net), 0, 1, 134);
+    tsim_phy_set_loss_from(tsim_net_phy(r.net), 1, 0, 135.9);
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(1800));
+    CHECK(!route(&r, 0, 1, &next));
+    CHECK(!route(&r, 1, 0, &next));
+    rig_close(&r);
+
     /* Without power control, a floor is reckoned from tx_dbm itself, not tx_dbm rounded to a power
      * byte: at 14.5 dBm, a loss of 135.75 leaves 3.25 dB, up, where 15 dBm would leave 2.75. */
     rig_init(&r);
