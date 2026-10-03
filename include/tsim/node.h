@@ -62,6 +62,10 @@ struct tsim_tx {
      * SNR a relayed frame was heard at, say. The network never reads it, and a MAC written for
      * no routing in particular ignores it. */
     uint32_t hint;
+    /* Not on the air either: if `addressed`, the node this frame is meant for - its next hop. Only
+     * the report reads it, to book what became of the frame there (tsim/metrics.h). */
+    bool addressed;
+    uint32_t to;
     /* The message this frame carries, whose content is at bytes[carries_at], or 0 for none. The
      * sender must hold it. Receivers that decode the frame then hold it too. */
     uint64_t carries;
@@ -186,6 +190,24 @@ bool tsim_node_cancel(struct tsim_node *node, uint64_t handle);
 /* Hands a message to this node's application. Returns true if this delivered it: the node holds
  * the message, is one of its destinations, and had not had it yet. */
 bool tsim_node_deliver(struct tsim_node *node, uint64_t msg);
+
+/* Why a node let go of a message it held without passing it on. */
+enum tsim_drop {
+    TSIM_DROP_NO_ROUTE,  /* it had nowhere to send it */
+    TSIM_DROP_RETRIES,   /* the next hop never confirmed it, however often it was sent */
+    TSIM_DROP_HOP_LIMIT, /* it had come as many hops as it was allowed */
+    TSIM_DROP_QUEUE,     /* the queue was full: booked by the network, see below */
+    TSIM_DROP_OTHER,
+    TSIM_DROP_COUNT,
+};
+
+/* Tells the books that this node let go of a message it holds without passing it on - a copy of
+ * it, or one of its source's attempts - and why, with the next hop it was meant for, or
+ * TSIM_BROADCAST for none. Only the report reads it (tsim/metrics.h); nothing in the network
+ * changes. A frame carrying a message that a full queue refuses is booked as TSIM_DROP_QUEUE
+ * without it. Returns false, booking nothing, for a message the node does not hold or a cause out
+ * of range. */
+bool tsim_node_drop(struct tsim_node *node, uint64_t msg, enum tsim_drop cause, uint32_t next);
 
 /* Tells the application that this node's routing is done with a message the node originated: it
  * was acknowledged, or the routing gave up on it. Only for a routing that reports_finished; the

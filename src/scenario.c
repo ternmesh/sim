@@ -1523,6 +1523,9 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     }
 
     metrics = tsim_metrics_create(net, s->deadline);
+    if (metrics && !tsim_metrics_links(metrics, &s->radio.lora, s->radio.tx_dbm)) {
+        goto done;
+    }
     window.metrics = metrics;
     window.net = net;
     if (dv && !dv->oracle) {

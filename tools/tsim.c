@@ -80,6 +80,49 @@ static void print_delivery(const char *name, const struct tsim_delivery *d, cons
            seconds(d->latency_p50), seconds(d->latency_p95), seconds(d->latency_max), tail);
 }
 
+static void print_counts(const char *const *names, const uint64_t *counts, int count) {
+    printf("{");
+    for (int i = 0; i < count; i++) {
+        printf("%s\"%s\": %" PRIu64, i ? ", " : "", names[i], counts[i]);
+    }
+    printf("}");
+}
+
+static void print_losses(const struct tsim_losses *l) {
+    static const char *drops[TSIM_DROP_COUNT] = {"no_route", "retries", "hop_limit", "queue",
+                                                 "other"};
+    static const char *places[TSIM_PLACE_COUNT] = {"source", "partway", "last_hop"};
+    static const char *fates[TSIM_PHY_FATE_COUNT] = {"decoded", "weak", "interfered",
+                                                     "taken",   "busy", "deaf"};
+    static const char *rivals[TSIM_PURPOSE_COUNT + 1] = {"data", "relay", "control", "announce",
+                                                         "none"};
+    static const char *progress[TSIM_PROGRESS_COUNT] = {"closer", "level", "farther", "not_a_link"};
+    printf("  \"losses\": {\"on_time\": %" PRIu64 ", \"late\": %" PRIu64 ", \"refused\": %" PRIu64
+           ", \"unheard\": %" PRIu64 ", \"vanished\": %" PRIu64 ", \"pending\": %" PRIu64 ",\n",
+           l->on_time, l->late, l->refused, l->unheard, l->vanished, l->pending);
+    printf("             \"dropped\": {");
+    for (int c = 0; c < TSIM_DROP_COUNT; c++) {
+        printf("%s\"%s\": ", c ? ", " : "", drops[c]);
+        print_counts(places, l->dropped[c], TSIM_PLACE_COUNT);
+    }
+    printf("},\n             \"drops\": ");
+    print_counts(drops, l->drops, TSIM_DROP_COUNT);
+    printf(", \"late_wait_s\": %.6g, \"late_transit_s\": %.6g,\n", l->late_wait_s,
+           l->late_transit_s);
+    printf("             \"hops\": {\"data\": ");
+    print_counts(fates, l->hops[0], TSIM_PHY_FATE_COUNT);
+    printf(", \"control\": ");
+    print_counts(fates, l->hops[1], TSIM_PHY_FATE_COUNT);
+    printf("},\n             \"rivals\": {");
+    for (int f = TSIM_PHY_INTERFERED; f < TSIM_PHY_FATE_COUNT; f++) {
+        printf("%s\"%s\": ", f > TSIM_PHY_INTERFERED ? ", " : "", fates[f]);
+        print_counts(rivals, l->rivals[f], TSIM_PURPOSE_COUNT + 1);
+    }
+    printf("},\n             \"progress\": ");
+    print_counts(progress, l->progress, TSIM_PROGRESS_COUNT);
+    printf("},\n");
+}
+
 static void print_report(const char *path, const struct tsim_scenario *s,
                          const struct tsim_report *r) {
     static const char *purposes[TSIM_PURPOSE_COUNT] = {"data", "relay", "control", "announce"};
@@ -119,6 +162,7 @@ static void print_report(const char *path, const struct tsim_scenario *s,
                h->route_requests_per_h, h->gave_up_per_h, h->seq_raised_per_h,
                h->unrouted_infeasible, h->unrouted_empty);
     }
+    print_losses(&r->losses);
     printf("  \"on_time_per_airtime_s\": %.6g,\n", r->on_time_per_airtime_s);
     printf("  \"duty_max\": %.6g, \"duty_max_node\": %" PRIu32 ", \"duty_mean\": %.6g,\n",
            r->duty_max, r->duty_max_node, r->duty_mean);

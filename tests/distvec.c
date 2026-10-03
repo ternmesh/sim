@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "tsim/meshcore.h"
+#include "tsim/metrics.h"
 #include "tsim/net.h"
 #include "tsim/rng.h"
 
@@ -1561,6 +1562,44 @@ static void power_settings_are_checked(void) {
     CHECK(tsim_distvec_check(&bad) == NULL);
 }
 
+/* Each message's loss is booked where it happened: across a whole line, on time, every hop
+ * closer; with the last link cut, given up at the hop before the destination; and once the line
+ * has learnt of the cut, without a route at the source. */
+static void a_lost_message_is_booked_where_it_was_lost(void) {
+    struct rig r;
+    rig_init(&r);
+    line(&r, 4, 1);
+    struct tsim_lora l = tsim_lora_default(7, 125000);
+    struct tsim_metrics *m = tsim_metrics_create(r.net, TSIM_S(60));
+    CHECK(tsim_metrics_links(m, &l, 14.0));
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    tsim_net_originate(r.net, 0, 3, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(400));
+    link(&r, 2, 3, LOSS_NONE);
+    tsim_net_originate(r.net, 0, 3, 20);
+    tsim_time forgotten = TSIM_S(400) + r.rc.neighbour_timeout + r.rc.neighbour_timeout / 4;
+    tsim_sched_run_until(r.sched, forgotten);
+    tsim_net_originate(r.net, 0, 3, 20);
+    tsim_sched_run_until(r.sched, forgotten + TSIM_S(100));
+    struct tsim_report rep;
+    tsim_metrics_report(m, &rep);
+    const struct tsim_losses *ls = &rep.losses;
+    CHECK_EQ_U64(rep.unicast.messages, 3);
+    CHECK_EQ_U64(ls->on_time, 1);
+    CHECK_EQ_U64(ls->dropped[TSIM_DROP_RETRIES][TSIM_PLACE_LAST_HOP], 1);
+    CHECK_EQ_U64(ls->dropped[TSIM_DROP_NO_ROUTE][TSIM_PLACE_SOURCE], 1);
+    CHECK(ls->drops[TSIM_DROP_NO_ROUTE] >= 1);
+    CHECK_EQ_U64(ls->progress[TSIM_PROGRESS_LEVEL] + ls->progress[TSIM_PROGRESS_FARTHER] +
+                     ls->progress[TSIM_PROGRESS_NOT_A_LINK],
+                 0);
+    CHECK(ls->progress[TSIM_PROGRESS_CLOSER] >= 3 + 2);
+    CHECK(ls->hops[0][TSIM_PHY_WEAK] >= 1); /* sent across the cut */
+    CHECK(ls->hops[0][TSIM_PHY_DECODED] >= 3 + 2);
+    CHECK(ls->hops[1][TSIM_PHY_DECODED] >= 3); /* the acknowledgement */
+    tsim_metrics_destroy(m);
+    rig_close(&r);
+}
+
 int main(void) {
     RUN(a_line_converges_on_its_one_path);
     RUN(the_oracle_routes_by_the_fewest_hops_and_announces_nothing);
@@ -1606,6 +1645,7 @@ int main(void) {
     RUN(a_lost_hop_makes_no_route_dearer);
     RUN(a_link_lost_and_the_routes_across_it_are_booked);
     RUN(seq_period_raises_the_seq_unasked);
+    RUN(a_lost_message_is_booked_where_it_was_lost);
     RUN(routes_stay_loop_free_while_links_change);
     RUN(a_broadcast_reaches_the_line_once_per_relay);
     RUN(the_config_is_checked);

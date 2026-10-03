@@ -63,6 +63,56 @@ struct tsim_route_health {
     double unrouted_empty;
 };
 
+/* Where a message was dropped: at its source, at the hop before its destination - meant for the
+ * destination itself - or between. */
+enum tsim_place {
+    TSIM_PLACE_SOURCE,
+    TSIM_PLACE_PARTWAY,
+    TSIM_PLACE_LAST_HOP,
+    TSIM_PLACE_COUNT,
+};
+
+/* Where a data hop pointed, against the links at the radio's power (tsim_metrics_links()): to a
+ * node fewer hops from the destination than its sender, as many, more, or one that is no link of
+ * the sender's at all. */
+enum tsim_progress {
+    TSIM_PROGRESS_CLOSER,
+    TSIM_PROGRESS_LEVEL,
+    TSIM_PROGRESS_FARTHER,
+    TSIM_PROGRESS_NOT_A_LINK,
+    TSIM_PROGRESS_COUNT,
+};
+
+/* Where unicast was lost (MSH-55). Each unicast message of the window has exactly one fate:
+ * on_time, late, refused, dropped - by the cause and place of its first drop, see struct
+ * tsim_message_record - unheard, vanished or pending; they sum to unicast.messages. The drops are
+ * whatever a routing books with tsim_node_drop(), so a routing that books none has its lost
+ * messages vanished or pending. The rest is the network's own: what became of addressed frames
+ * at the node meant to have them, whatever the routing. */
+struct tsim_losses {
+    uint64_t on_time;
+    uint64_t late;
+    uint64_t refused;
+    uint64_t dropped[TSIM_DROP_COUNT][TSIM_PLACE_COUNT];
+    uint64_t unheard;  /* every drop was of a hop whose next node had it: only the confirmation */
+    uint64_t vanished; /* never delivered, no drop booked, and its source is done with it */
+    uint64_t pending;  /* never delivered, no drop booked, and its source still working on it */
+    /* Every drop booked for these messages, delivered or not. */
+    uint64_t drops[TSIM_DROP_COUNT];
+    /* Late deliveries, on average: from origination to the source's first frame carrying it, and
+     * from there to the destination. */
+    double late_wait_s;
+    double late_transit_s;
+    /* Addressed frames in the window, by fate at the node they were meant for: [0] those carrying
+     * a unicast message, [1] those carrying none. */
+    uint64_t hops[2][TSIM_PHY_FATE_COUNT];
+    /* Of the first, by fate and by the purpose of the frame that cost them; the last column is
+     * none known. */
+    uint64_t rivals[TSIM_PHY_FATE_COUNT][TSIM_PURPOSE_COUNT + 1];
+    /* Of the first, where they pointed; all 0 without tsim_metrics_links(). */
+    uint64_t progress[TSIM_PROGRESS_COUNT];
+};
+
 struct tsim_report {
     tsim_time elapsed; /* the measured window so far, which every duty cycle is a fraction of */
     tsim_time deadline;
@@ -107,6 +157,7 @@ struct tsim_report {
     struct tsim_phy_links links;
 
     struct tsim_route_health health;
+    struct tsim_losses losses;
 };
 
 struct tsim_metrics;
@@ -114,6 +165,13 @@ struct tsim_metrics;
 /* Starts watching `net` for deliveries, which must outlive it. Create it before the first message
  * is originated: a delivery it did not see has no latency. Returns NULL when memory runs out. */
 struct tsim_metrics *tsim_metrics_create(struct tsim_net *net, tsim_time deadline);
+
+/* Sets the links data hops are judged against (struct tsim_losses.progress): every pair of nodes
+ * that each decode the other at `lora` and `tx_dbm` with nothing else on the air, as
+ * tsim_phy_links() counts them, from the losses the network has now. Hop counts to a destination
+ * are worked out on its first data hop, in time and memory in proportion to the links, and kept.
+ * Returns false when memory runs out or the modulation is invalid, leaving progress unbooked. */
+bool tsim_metrics_links(struct tsim_metrics *metrics, const struct tsim_lora *lora, double tx_dbm);
 
 /* Stops watching and frees it. */
 void tsim_metrics_destroy(struct tsim_metrics *metrics);

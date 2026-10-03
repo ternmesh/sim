@@ -1624,6 +1624,9 @@ static void hop_fire(void *ctx) {
             continue;
         }
         uint32_t next = h->next;
+        if (h->tx.carries) {
+            tsim_node_drop(r->node, h->tx.carries, TSIM_DROP_RETRIES, next);
+        }
         drop_hop(r, i);
         if (r->slot_of[next]) {
             missed(r, r->slot_of[next]);
@@ -1703,6 +1706,8 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
                               type == TYPE_ACK               ? PRIORITY_CONTROL
                               : purpose == TSIM_PURPOSE_DATA ? PRIORITY_DATA
                                                              : PRIORITY_RELAY);
+    tx.addressed = true;
+    tx.to = next;
     tx.bytes[0] = type;
     put32(tx.bytes + 1, next);
     put32(tx.bytes + 5, src);
@@ -1784,6 +1789,7 @@ static void send_attempt(struct awaiting *a) {
         }
         /* Refused by a full queue: tried again after the wait, as if it had been lost. */
     } else {
+        tsim_node_drop(r->node, a->id, TSIM_DROP_NO_ROUTE, TSIM_BROADCAST);
         no_route(r, a->dst, true); /* a message waits on it: ask now */
     }
     tsim_timer_start(a->timer, wait);
@@ -1976,6 +1982,10 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
         return;
     }
     if (!r->infra || hops <= 1) {
+        if (type == TYPE_DATA) {
+            tsim_node_drop(r->node, id, r->infra ? TSIM_DROP_HOP_LIMIT : TSIM_DROP_OTHER,
+                           TSIM_BROADCAST);
+        }
         return;
     }
     uint64_t key = frame_key(type, src, id);
@@ -1987,6 +1997,9 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
     if (!route_frame(r, type, src, dst, id, (uint8_t)(hops - 1), b + r->data_head,
                      len - r->data_head, data ? TSIM_PURPOSE_RELAY : TSIM_PURPOSE_CONTROL,
                      data ? id : 0, back, NULL)) {
+        if (data) {
+            tsim_node_drop(r->node, id, TSIM_DROP_NO_ROUTE, TSIM_BROADCAST);
+        }
         /* Sent here, so the hop before still has the route: if it had it from this node, its
          * retraction never got there. Say it again. */
         uint32_t t = target_of(r, dst);
