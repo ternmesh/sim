@@ -586,6 +586,59 @@ static void announce_as(struct rig *r, uint32_t sender, uint16_t ann_seq, uint32
     announce_as_then(r, sender, ann_seq, dst, seq, metric, TSIM_S(5));
 }
 
+/* Node 5, heard only through node 1's radio, announces with a round of `rotation` frames, naming
+ * node 0 in its IHUs or not. */
+static void announce_round(struct rig *r, uint16_t ann_seq, uint16_t rotation, bool name) {
+    struct tsim_tx tx = {
+        .lora = r->rc.lora,
+        .tx_dbm = r->rc.tx_dbm,
+        .purpose = TSIM_PURPOSE_ANNOUNCE,
+    };
+    uint8_t head[] = {0x01, 5, 0,    0,    0,    (uint8_t)ann_seq,  (uint8_t)(ann_seq >> 8),
+                      0,    0, 0x01, 0x58, 0x02, (uint8_t)rotation, (uint8_t)(rotation >> 8),
+                      name, 0};
+    memcpy(tx.bytes, head, sizeof head);
+    uint8_t ihu[] = {0, 0, 0, 0, 255};
+    memcpy(tx.bytes + sizeof head, ihu, sizeof ihu);
+    tx.len = (uint32_t)sizeof head + (name ? (uint32_t)sizeof ihu : 0);
+    CHECK(tsim_node_send(tsim_net_node(r->net, 1), &tx) != 0);
+    tsim_sched_run_until(r->sched, tsim_sched_now(r->sched) + TSIM_S(5));
+}
+
+/* With a round of 4 frames, node 0 keeps its link to node 5 through ihu_rounds rounds and one more
+ * frame without an IHU, and takes it away at the next: 9 frames for 2 rounds, 33 for 8. */
+static void links_last_ihu_rounds_of_unnamed_announces(uint8_t rounds) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.ihu_rounds = rounds;
+    build(&r, 6, 1);
+    link(&r, 0, 1, LOSS_LOUD);
+    tsim_net_start(r.net);
+    announce_round(&r, 1, 4, true);
+    uint32_t next;
+    CHECK(route(&r, 0, 5, &next) && next == 5);
+    uint16_t allowed = (uint16_t)(rounds * 4 + 1);
+    for (uint16_t k = 1; k < allowed; k++) {
+        announce_round(&r, (uint16_t)(1 + k), 4, false);
+    }
+    CHECK(route(&r, 0, 5, &next));
+    announce_round(&r, (uint16_t)(1 + allowed), 4, false);
+    CHECK(!route(&r, 0, 5, &next));
+    rig_close(&r);
+}
+
+static void a_link_lasts_its_ihu_rounds(void) {
+    links_last_ihu_rounds_of_unnamed_announces(2);
+    links_last_ihu_rounds_of_unnamed_announces(8);
+    struct rig r;
+    rig_init(&r);
+    CHECK_EQ_U64(r.rc.ihu_rounds, 8);
+    r.rc.ihu_rounds = 1;
+    CHECK(tsim_distvec_check(&r.rc) != NULL);
+    r.rc.ihu_rounds = 65;
+    CHECK(tsim_distvec_check(&r.rc) != NULL);
+}
+
 /* Node 1 sends node 0 a seqno request for node 0's own route, at `seq`, as if passed on from
  * further away. */
 static void ask_for(struct rig *r, uint16_t seq) {
@@ -1366,6 +1419,7 @@ int main(void) {
     RUN(a_one_way_link_is_never_used);
     RUN(every_neighbour_hears_its_ihu_in_turn);
     RUN(an_ihu_lost_is_sent_again_in_turn);
+    RUN(a_link_lasts_its_ihu_rounds);
     RUN(a_link_gone_one_way_is_dropped_by_the_side_still_hearing);
     RUN(a_retraction_the_queue_refused_goes_later);
     RUN(a_retraction_lost_on_the_air_is_repeated);
