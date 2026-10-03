@@ -100,7 +100,7 @@ misleading.
 | `churn.up` | 2 h | mean time a churning node stays up |
 | `churn.down` | 15 min | mean time a churning node stays down |
 | `move.share` | 0 | movement (MSH-59): the share of the nodes `move.nodes` names that move over the whole run, by random waypoint - in a straight line to a point drawn uniformly over the map, at a speed drawn uniformly from `move.speed_min` to `move.speed_max`, then a stay drawn from an exponential of mean `move.pause`, then the next. The map is `area` for uniform placement, otherwise the smallest box that holds every node. Every `move.step`, each node that moved has its links' losses set again from the channel model: the shared shadowing follows it over the ground, its links' own part stays. Not with `links`, nor with `distvec`'s oracle (`routing.oracle`, `routing.links` oracle), whose routes are built from where the nodes start; relay picking and the links `progress` is judged against are from there too. 0 is none |
-| `move.nodes` | `leaves` | which nodes move, the same kinds as `churn.nodes` |
+| `move.nodes` | `leaves` | which nodes move, the same kinds as `churn.nodes`. Routing without tiers has no leaves, so nothing moves there unless this is `all` |
 | `move.speed_min` | 0.5 | slowest a mover goes, in m/s, above 0; 5 to 20 is driving |
 | `move.speed_max` | 2 | fastest |
 | `move.pause` | 5 min | mean stay at each waypoint |
