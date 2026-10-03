@@ -160,6 +160,13 @@ void tsim_phy_set_loss(struct tsim_phy *phy, uint32_t a, uint32_t b, double loss
 void tsim_phy_set_loss_from(struct tsim_phy *phy, uint32_t from, uint32_t to, double loss_db);
 double tsim_phy_loss(const struct tsim_phy *phy, uint32_t a, uint32_t b);
 
+/* For losses that change while frames are on the air (MSH-59): on, each frame begun from then on
+ * keeps the losses from its sender as they were when it went on the air, for everything it is
+ * judged by - whether a radio locks on, what it brings as interference, CAD - so a change mid-frame
+ * neither cuts a reception short nor reaches back over the part already heard. Off, every frame
+ * reads the losses as they are. Off by default; the same results either way while they hold. */
+void tsim_phy_keep_losses(struct tsim_phy *phy, bool on);
+
 /* How many radios it has. */
 uint32_t tsim_phy_nodes(const struct tsim_phy *phy);
 

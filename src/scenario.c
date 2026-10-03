@@ -1980,6 +1980,7 @@ static bool move_start(struct moving *mv, const struct tsim_scenario *s,
             mv->own[(size_t)i * n + b] = b == a ? 0 : tsim_channel_own(&mv->channel, a, b);
         }
     }
+    tsim_phy_keep_losses(phy, true);
     return tsim_sched_after(sched, mv->step, move_step, mv).slot != 0;
 }
 

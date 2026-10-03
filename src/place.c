@@ -67,9 +67,12 @@ bool tsim_mover_step(struct tsim_mover *m, const struct tsim_move_params *p, tsi
             break;
         }
         m->at = m->to;
+        if (p->x_min == p->x_max && p->y_min == p->y_max) {
+            break; /* a box of one point: nowhere left to go */
+        }
         tsim_time took = (tsim_time)(far / m->speed * (double)TSIM_S(1));
         dt -= took < dt ? took : dt;
-        /* Arrived: at least 1 ms, so even a box of one point lets the time run out. */
+        /* Arrived: at least 1 ms, so legs of no length still let the time run out. */
         double t = -log1p(-tsim_rng_unit(&m->rng)) * (double)p->pause;
         m->rest = t < (double)TSIM_MS(1) ? TSIM_MS(1) : t > 1e18 ? (tsim_time)1e18 : (tsim_time)t;
     }

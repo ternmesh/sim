@@ -26,6 +26,9 @@ struct air {
     uint8_t fate;
     uint64_t rival;
     uint8_t *fates; /* with tsim_phy_watch(): each node's fate so far, or NULL */
+    /* With tsim_phy_keep_losses(): the loss from the sender to each node as the frame went on
+     * the air, or NULL to read the medium's. */
+    double *loss;
 };
 
 struct node {
@@ -71,7 +74,8 @@ struct tsim_phy {
     struct tsim_phy_hooks hooks;
     uint32_t n;
     struct node *nodes;
-    double *loss; /* n * n: from the row's node to the column's */
+    double *loss;     /* n * n: from the row's node to the column's */
+    bool keep_losses; /* tsim_phy_keep_losses() */
     struct outcome *outcomes;
 
     struct air *air;
@@ -124,7 +128,11 @@ static double fade(const struct tsim_phy *phy, uint64_t frame, uint32_t node) {
 }
 
 static double rx_dbm(const struct tsim_phy *phy, const struct tsim_frame *f, uint32_t node) {
-    double dbm = f->tx_dbm - phy->loss[(size_t)f->src * phy->n + node];
+    const struct air *a = f->id >= phy->first_id && f->id - phy->first_id < phy->count
+                              ? &phy->air[phy->head + (f->id - phy->first_id)]
+                              : NULL;
+    double loss = a && a->loss ? a->loss[node] : phy->loss[(size_t)f->src * phy->n + node];
+    double dbm = f->tx_dbm - loss;
     return phy->params.fading_db > 0 ? dbm - fade(phy, f->id, node) : dbm;
 }
 
@@ -408,6 +416,7 @@ static void prune(struct tsim_phy *phy) {
         }
     }
     while (phy->count > 0 && !phy->air[phy->head].on_air && phy->air[phy->head].f.end <= cutoff) {
+        free(phy->air[phy->head].loss);
         phy->head++;
         phy->count--;
         phy->first_id++;
@@ -473,6 +482,12 @@ static void frame_end(struct tsim_sched *sched, void *ctx) {
     for (size_t k = 0; k < done; k++) {
         listen(&phy->nodes[phy->outcomes[k].node]);
     }
+    /* Never engaged, as tsim_phy_mark() books it: settled while the frame's losses are kept. */
+    for (uint32_t i = 0; fates && phy->heard && i < phy->n; i++) {
+        if (i != f.src && phy->heard_by[i] && fates[i] == PENDING) {
+            fates[i] = decodable(phy, &f, rx_dbm(phy, &f, i)) ? TSIM_PHY_DEAF : TSIM_PHY_WEAK;
+        }
+    }
     prune(phy);
 
     if (phy->hooks.rx) {
@@ -489,14 +504,9 @@ static void frame_end(struct tsim_sched *sched, void *ctx) {
     }
     if (fates) {
         for (uint32_t i = 0; phy->heard && i < phy->n; i++) {
-            if (i == f.src || !phy->heard_by[i]) {
-                continue;
+            if (i != f.src && phy->heard_by[i]) {
+                phy->heard(phy->heard_ctx, i, &f, (enum tsim_phy_fate)fates[i]);
             }
-            uint8_t fi = fates[i];
-            if (fi == PENDING) { /* as tsim_phy_mark() books it: never engaged */
-                fi = decodable(phy, &f, rx_dbm(phy, &f, i)) ? TSIM_PHY_DEAF : TSIM_PHY_WEAK;
-            }
-            phy->heard(phy->heard_ctx, i, &f, (enum tsim_phy_fate)fi);
         }
         free(fates);
     }
@@ -606,6 +616,7 @@ void tsim_phy_destroy(struct tsim_phy *phy) {
     free(phy->outcomes);
     for (size_t i = 0; i < phy->count; i++) {
         free(phy->air[phy->head + i].fates);
+        free(phy->air[phy->head + i].loss);
     }
     free(phy->air);
     free(phy);
@@ -625,6 +636,8 @@ void tsim_phy_set_loss(struct tsim_phy *phy, uint32_t a, uint32_t b, double loss
 void tsim_phy_set_loss_from(struct tsim_phy *phy, uint32_t from, uint32_t to, double loss_db) {
     phy->loss[(size_t)from * phy->n + to] = loss_db;
 }
+
+void tsim_phy_keep_losses(struct tsim_phy *phy, bool on) { phy->keep_losses = on; }
 
 double tsim_phy_loss(const struct tsim_phy *phy, uint32_t a, uint32_t b) {
     return phy->loss[(size_t)a * phy->n + b];
@@ -743,6 +756,10 @@ uint64_t tsim_phy_transmit(struct tsim_phy *phy, uint32_t node, uint16_t channel
     a->fates = phy->heard ? malloc(phy->n) : NULL; /* none if memory runs out: unreported */
     if (a->fates) {
         memset(a->fates, PENDING, phy->n);
+    }
+    a->loss = phy->keep_losses ? malloc(phy->n * sizeof *a->loss) : NULL;
+    if (a->loss) { /* none if memory runs out: the medium's */
+        memcpy(a->loss, &phy->loss[(size_t)node * phy->n], phy->n * sizeof *a->loss);
     }
     a->f = (struct tsim_frame){
         .id = phy->next_id++,
