@@ -103,6 +103,7 @@ static void on_marked(void *ctx, uint32_t node, const struct tsim_frame *frame,
             .carries = sent->tx.carries,
             .fate = fate,
             .rival = rival,
+            .start = frame->start,
         };
         net->hop(net->hop_ctx, &hop);
     }
@@ -193,7 +194,9 @@ void tsim_net_start(struct tsim_net *net) {
     net->started = true;
     if (net->routing->start) {
         for (uint32_t i = 0; i < net->n; i++) {
-            net->routing->start(net->nodes[i].routing);
+            if (!net->nodes[i].off) { /* a node down starts when it comes back up */
+                net->routing->start(net->nodes[i].routing);
+            }
         }
     }
 }

@@ -47,8 +47,8 @@ struct tsim_metrics {
     uint32_t *adj_at;
     uint32_t *adj;
     uint16_t **dist;
-    /* Power, once tsim_metrics_power() is first called: each node's times down, as [down, up)
-     * pairs, up -1 while down; and since its last going down, the last data hop meant for it. */
+    /* Power, once tsim_metrics_power() is first called: each node's times down, and for each the
+     * start of the last data hop sent to it while down. */
     struct power *power;
     uint32_t down_now;
     tsim_time down_since; /* when down_now last changed */
@@ -56,21 +56,30 @@ struct tsim_metrics {
     struct tsim_churn churn;
 };
 
-struct power {
-    tsim_time *spans; /* down, up, down, up... */
-    size_t count;
-    size_t cap;
+struct span {
+    tsim_time down;
+    tsim_time up;       /* -1 while down */
     tsim_time last_hit; /* -1 for none */
 };
 
-static bool down_at(const struct power *p, tsim_time t) {
-    for (size_t i = 0; i < p->count; i += 2) {
-        tsim_time up = i + 1 < p->count ? p->spans[i + 1] : -1;
-        if (t >= p->spans[i] && (up < 0 || t < up)) {
-            return true;
+struct power {
+    struct span *spans;
+    size_t count;
+    size_t cap;
+};
+
+/* The time down that `t` falls in, or NULL: the latest first, where nearly every lookup ends. */
+static struct span *down_at(const struct power *p, tsim_time t) {
+    for (size_t i = p->count; i-- > 0;) {
+        struct span *sp = &p->spans[i];
+        if (t >= sp->down && (sp->up < 0 || t < sp->up)) {
+            return sp;
+        }
+        if (t >= sp->down) {
+            break;
         }
     }
-    return false;
+    return NULL;
 }
 
 #define FAR UINT16_MAX
@@ -201,9 +210,11 @@ static void hop_seen(void *ctx, const struct tsim_net_hop *hop) {
     if (hop->carries && (!rec || rec->msg.dst == TSIM_BROADCAST)) {
         return;
     }
-    if (hop->carries && m->power && !tsim_net_on(m->net, hop->to)) {
-        m->power[hop->to].last_hit = tsim_sched_now(tsim_net_sched(m->net));
-        m->churn.hops_to_down++;
+    /* By where the destination stood as the frame began, which the hop's end comes after. */
+    struct span *sp = hop->carries && m->power ? down_at(&m->power[hop->to], hop->start) : NULL;
+    if (sp) {
+        sp->last_hit = hop->start > sp->last_hit ? hop->start : sp->last_hit;
+        m->churn.hops_to_down += hop->start >= m->begun;
     }
     m->hops[hop->carries ? 0 : 1][hop->fate]++;
     if (!hop->carries) {
@@ -266,15 +277,6 @@ bool tsim_metrics_links(struct tsim_metrics *m, const struct tsim_lora *lora, do
     return true;
 }
 
-/* Books the downs that ended, or the window's end, at `at`: routed to, if data hops still came. */
-static void close_down(struct tsim_churn *c, const struct power *p, tsim_time begun) {
-    tsim_time down = p->spans[p->count - 1];
-    if (down >= begun && p->last_hit >= down) {
-        c->routed_to++;
-        c->repair_s += (double)(p->last_hit - down) / 1e9; /* a sum until the report */
-    }
-}
-
 bool tsim_metrics_power(struct tsim_metrics *m, uint32_t node, bool on) {
     uint32_t n = tsim_net_nodes(m->net);
     if (!m->power && !(m->power = calloc(n, sizeof *m->power))) {
@@ -282,14 +284,14 @@ bool tsim_metrics_power(struct tsim_metrics *m, uint32_t node, bool on) {
     }
     m->churn.present = true;
     struct power *p = &m->power[node];
-    bool down = p->count % 2 == 1;
+    bool down = p->count && p->spans[p->count - 1].up < 0;
     if (down != on) {
         return true; /* already as told */
     }
     tsim_time now = tsim_sched_now(tsim_net_sched(m->net));
-    if (p->count == p->cap) {
-        size_t cap = p->cap ? 2 * p->cap : 8;
-        tsim_time *grown = realloc(p->spans, cap * sizeof *grown);
+    if (!on && p->count == p->cap) {
+        size_t cap = p->cap ? 2 * p->cap : 4;
+        struct span *grown = realloc(p->spans, cap * sizeof *grown);
         if (!grown) {
             return false;
         }
@@ -300,14 +302,13 @@ bool tsim_metrics_power(struct tsim_metrics *m, uint32_t node, bool on) {
         (double)m->down_now * (double)(now - (m->down_since > m->begun ? m->down_since : m->begun));
     m->down_since = now;
     if (on) {
-        close_down(&m->churn, p, m->begun);
+        p->spans[p->count - 1].up = now;
         m->down_now--;
     } else {
-        p->last_hit = -1;
+        p->spans[p->count++] = (struct span){.down = now, .up = -1, .last_hit = -1};
         m->churn.downs += now >= m->begun;
         m->down_now++;
     }
-    p->spans[p->count++] = now;
     return true;
 }
 
@@ -482,8 +483,12 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
         tsim_time now = tsim_sched_now(tsim_net_sched(net));
         struct tsim_churn c = m->churn;
         for (uint32_t i = 0; i < tsim_net_nodes(net); i++) {
-            if (m->power[i].count % 2 == 1) {
-                close_down(&c, &m->power[i], m->begun); /* still down as the window ends */
+            for (size_t k = 0; k < m->power[i].count; k++) {
+                const struct span *sp = &m->power[i].spans[k];
+                if (sp->down >= m->begun && sp->last_hit >= 0) {
+                    c.routed_to++;
+                    c.repair_s += (double)(sp->last_hit - sp->down) / 1e9;
+                }
             }
         }
         tsim_time since = m->down_since > m->begun ? m->down_since : m->begun;

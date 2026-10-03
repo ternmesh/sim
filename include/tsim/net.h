@@ -158,6 +158,7 @@ struct tsim_net_hop {
     uint64_t carries;
     enum tsim_phy_fate fate;
     int rival;
+    tsim_time start; /* when the frame began */
 };
 
 /* Called for each addressed frame as it ends, before its sender's routing hears it is done. For

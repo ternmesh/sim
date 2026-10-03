@@ -671,6 +671,17 @@ static void a_node_powered_down_comes_back_with_nothing(void) {
     CHECK(tsim_net_power(r.net, 2, false) && tsim_net_power(r.net, 2, true));
     CHECK(r.log.starts == 4);
     rig_close(&r);
+
+    /* Down before the network starts, a node is not started with it, but when it comes back. */
+    memset(&r.log, 0, sizeof r.log);
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 3, &recorder, &r.log, &manual, &r.log);
+    CHECK(tsim_net_power(r.net, 1, false));
+    tsim_net_start(r.net);
+    CHECK(r.log.starts == 2);
+    CHECK(tsim_net_power(r.net, 1, true));
+    CHECK(r.log.starts == 3);
+    rig_close(&r);
 }
 
 /* Once per delivery that counts, after the record has counted it, and not once removed. */
