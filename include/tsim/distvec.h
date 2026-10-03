@@ -518,12 +518,13 @@ struct tsim_distvec_config {
  * A probe fares no better than any other frame there: 27-43% of them reached the target, so a
  * live neighbour easily left a dozen unanswered. With churn, unicast on time was 50.0% at 0 dBm
  * and 44.6% at 20 dBm without probing; probing after 2, 4 or 8 lost hops, 6 or 12 tries 5 or 10 s
- * apart, made 37-48% and 32-44%, though it cut the hops sent to a relay down by 25-45%. Without
- * churn, where every verdict is wrong, 66.3% and 70.3% fell to 46-59% and 46-68%. Even probes all
- * but never acted on - 32 tries 30 s apart - cost 3-5 points, their airtime alone: 63.6% and 64.9%
- * without churn, 44.7% and 40.6% with it. Forgetting the neighbour on the verdict, rather than
- * taking its link out of use, did worse still. Finding a dead relay sooner is not what is missing:
- * routes around it come over the same lossy announces, however soon it is found. */
+ * apart, made 42.9-48.7% and 39.3-44.6%, though it cut the hops sent to a relay down by up to 45%.
+ * Without churn, where every verdict is wrong, 66.3% and 70.3% fell to 53.6-60.4% and
+ * 61.5-69.9%. Even probes all but never acted on - 32 tries 30 s apart - cost 2-6 points, their
+ * airtime alone: 64.2% and 64.1% without churn, 44.7% and 41.1% with it. Forgetting the
+ * neighbour on the verdict, rather than taking its link out of use, did worse still: 39-48% and
+ * 32-44% with churn. Finding a dead relay sooner is not what is missing: routes around it come
+ * over the same lossy announces, however soon it is found. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */
@@ -635,7 +636,8 @@ struct tsim_distvec_stats {
     uint64_t gave_up;
     uint64_t seq_raised;
     uint64_t route_replies; /* with demand routes: route requests it answered */
-    /* The liveness probe: probes sent, neighbours that answered one, and probes it answered. */
+    /* The liveness probe: probes that went on the air, neighbours that answered one, and answers
+     * it queued. */
     uint64_t probes;
     uint64_t probes_answered;
     uint64_t probe_acks;

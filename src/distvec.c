@@ -1817,8 +1817,6 @@ static void probe_fire(void *ctx) {
         struct tsim_tx tx = probe_frame(r, TYPE_PROBE, n->id, r->self);
         n->probe_handle = tsim_node_send(r->node, &tx);
         if (n->probe_handle) {
-            n->probes++;
-            r->stats.probes++;
             n->probe_due = -1;
         } else {
             n->probe_due = t + r->config.probe_wait; /* the queue refused it: not counted */
@@ -1827,15 +1825,19 @@ static void probe_fire(void *ctx) {
     probe_arm(r);
 }
 
-/* A probe went on the air: its answer is waited for probe_wait, and the next probe a random time
- * up to probe_wait more. Returns whether `handle` was one. */
+/* A probe went on the air, and counts: its answer is waited for probe_wait, and the next probe, if
+ * any are left, a random time up to probe_wait more. Returns whether `handle` was one. */
 static bool probe_sent(struct router *r, uint64_t handle) {
     for (size_t i = 0; r->probing && i < r->nb_count; i++) {
         struct neighbour *n = &r->nb[i];
         if (n->used && n->probing && n->probe_handle == handle) {
             n->probe_handle = 0;
-            n->probe_due = now(r) + r->config.probe_wait +
-                           (tsim_time)(tsim_rng_unit(&r->rng) * (double)r->config.probe_wait);
+            n->probes++;
+            r->stats.probes++;
+            n->probe_due = now(r) + r->config.probe_wait;
+            if (n->probes < r->config.probe_tries) {
+                n->probe_due += (tsim_time)(tsim_rng_unit(&r->rng) * (double)r->config.probe_wait);
+            }
             probe_arm(r);
             return true;
         }
@@ -1862,8 +1864,7 @@ static void on_probe(struct router *r, const uint8_t *b, uint32_t len, double sn
     }
     if (b[0] == TYPE_PROBE && to == r->self) {
         struct tsim_tx tx = probe_frame(r, TYPE_PROBE_ACK, from, r->self);
-        hold(r, &tx, 0, false, r->config.jitter);
-        r->stats.probe_acks++;
+        hold(r, &tx, 0, false, r->config.jitter); /* counted once queued */
     }
 }
 
@@ -2349,6 +2350,9 @@ static void out_fire(void *ctx) {
                 continue;
             }
             h->handle = tsim_node_send(r->node, &h->tx);
+            if (h->handle && h->tx.bytes[0] == TYPE_PROBE_ACK) {
+                r->stats.probe_acks++;
+            }
             if (h->handle == 0 || h->key == 0) {
                 r->held[i] = r->held[--r->held_count];
                 continue;
