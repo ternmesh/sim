@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "tsim/channel.h"
+#include "tsim/metrics.h"
 #include "tsim/nodeset.h"
 #include "tsim/phy.h"
 #include "tsim/rng.h"
@@ -358,6 +360,11 @@ static double promise_secs(const struct tsim_distvec_config *c, tsim_time interv
 const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     if (memchr(c->relays, 0, sizeof c->relays) == NULL || tsim_nodeset_contains(c->relays, 0) < 0) {
         return "relays is not all, or node numbers and ranges";
+    }
+    if (c->relay_pick > TSIM_DISTVEC_PICK_CDS ||
+        (c->relay_pick != TSIM_DISTVEC_PICK_LIST && c->relay_pick != TSIM_DISTVEC_PICK_CDS &&
+         c->relay_count == 0)) {
+        return "relay_pick is not list, degree, spaced or cds, or relay_count is 0 for one but cds";
     }
     if (c->leaves > TSIM_DISTVEC_LEAVES_PARENT_ORACLE) {
         return "leaves is not routed or parent_oracle";
@@ -2713,9 +2720,13 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->node = node;
     r->self = tsim_node_index(node);
     r->nodes = tsim_node_count(node);
-    r->infra = tsim_nodeset_contains(c->relays, r->self) == 1;
+    r->infra = tsim_distvec_relay(c, r->self);
     r->config = *c;
     r->oracle = c->oracle ? c->oracle_routes : NULL;
+    if (c->relay_pick != TSIM_DISTVEC_PICK_LIST && !c->relay_set) {
+        free(r); /* picked relays come from the driver, once it has laid the links */
+        return NULL;
+    }
     r->truth = c->links == TSIM_DISTVEC_LINKS_ORACLE && !c->oracle ? c->oracle_routes : NULL;
     if ((c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE) &&
         !c->oracle_routes) { /* the routes themselves come once the links are laid */
@@ -2955,7 +2966,7 @@ bool tsim_distvec_oracle_build(struct tsim_distvec_oracle *o, const struct tsim_
         queue[tail++] = d;
         while (head < tail) {
             uint32_t a = queue[head++];
-            if (a != d && tsim_nodeset_contains(c->relays, a) != 1) {
+            if (a != d && !tsim_distvec_relay(c, a)) {
                 continue; /* a leaf can be reached, but never passes anything on */
             }
             for (uint32_t i = start[a]; i < start[a + 1]; i++) {
@@ -2974,7 +2985,7 @@ bool tsim_distvec_oracle_build(struct tsim_distvec_oracle *o, const struct tsim_
             float best = INFINITY;
             for (uint32_t i = start[a]; i < start[a + 1]; i++) {
                 uint32_t b = adj[i];
-                bool passes = b == d || tsim_nodeset_contains(c->relays, b) == 1;
+                bool passes = b == d || tsim_distvec_relay(c, b);
                 if (passes && dist[b] + 1 == dist[a] && need[(size_t)a * n + b] < best) {
                     best = need[(size_t)a * n + b];
                     rt->next = b;
@@ -2998,5 +3009,252 @@ done:
     if (!ok) {
         tsim_distvec_oracle_free(o);
     }
+    return ok;
+}
+
+bool tsim_distvec_relay(const struct tsim_distvec_config *c, uint32_t node) {
+    if (c->relay_pick != TSIM_DISTVEC_PICK_LIST) {
+        return c->relay_set && c->relay_set[node];
+    }
+    return tsim_nodeset_contains(c->relays, node) == 1;
+}
+
+/* The oracle's links as lists: b is one of a's neighbours, adj[start[a]..start[a + 1]), where each
+ * decodes the other at tx_dbm with oracle_margin_db to spare. Both to be freed; false when memory
+ * runs out or the modulation is invalid. */
+static bool oracle_links(const struct tsim_phy *phy, const struct tsim_distvec_config *c,
+                         uint32_t **start_out, uint32_t **adj_out) {
+    *start_out = NULL;
+    *adj_out = NULL;
+    double floor_dbm = tsim_phy_floor_dbm(phy, &c->lora);
+    uint32_t n = tsim_phy_nodes(phy);
+    if (isnan(floor_dbm) || n == 0) {
+        return false;
+    }
+    double top = c->tx_dbm - c->oracle_margin_db; /* as the oracle judges them, to the float */
+    uint32_t *start = calloc((size_t)n + 1, sizeof *start);
+    if (!start) {
+        return false;
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        uint32_t k = 0;
+        for (uint32_t a = 0; a < n; a++) {
+            start[a] = k;
+            for (uint32_t b = 0; b < n; b++) {
+                if (a != b && (float)(tsim_phy_loss(phy, a, b) + floor_dbm) <= top &&
+                    (float)(tsim_phy_loss(phy, b, a) + floor_dbm) <= top) {
+                    if (pass) {
+                        (*adj_out)[k] = b;
+                    }
+                    k++;
+                }
+            }
+        }
+        start[n] = k;
+        if (!pass && !(*adj_out = malloc((size_t)k * sizeof **adj_out + 1))) {
+            free(start);
+            return false;
+        }
+    }
+    *start_out = start;
+    return true;
+}
+
+/* Adds to `set` the `count` nodes not in it of the most links, the lowest-numbered first among
+ * equals; returns how many it added. */
+static uint32_t pick_by_degree(const uint32_t *start, uint32_t n, uint8_t *set, uint32_t count) {
+    uint32_t added = 0;
+    while (added < count) {
+        uint32_t best = n;
+        for (uint32_t a = 0; a < n; a++) {
+            if (!set[a] && (best == n || start[a + 1] - start[a] > start[best + 1] - start[best])) {
+                best = a;
+            }
+        }
+        if (best == n) {
+            break;
+        }
+        set[best] = 1;
+        added++;
+    }
+    return added;
+}
+
+static bool pick_spaced(const struct tsim_pos *pos, uint32_t n, uint8_t *set, uint32_t count) {
+    double *gap = malloc(n * sizeof *gap);
+    if (!gap) {
+        return false;
+    }
+    double mx = 0, my = 0;
+    for (uint32_t a = 0; a < n; a++) {
+        mx += pos[a].x / n;
+        my += pos[a].y / n;
+    }
+    for (uint32_t a = 0; a < n; a++) {
+        gap[a] = INFINITY;
+    }
+    for (uint32_t k = 0; k < count && k < n; k++) {
+        uint32_t best = n;
+        double far = -1;
+        for (uint32_t a = 0; a < n; a++) {
+            double d = k ? gap[a] : -hypot(pos[a].x - mx, pos[a].y - my);
+            if (!set[a] && (best == n || d > far)) {
+                best = a;
+                far = d;
+            }
+        }
+        set[best] = 1;
+        for (uint32_t a = 0; a < n; a++) {
+            double d = hypot(pos[a].x - pos[best].x, pos[a].y - pos[best].y);
+            gap[a] = d < gap[a] ? d : gap[a];
+        }
+    }
+    free(gap);
+    return true;
+}
+
+/* Guha and Khuller's first greedy algorithm, stopping at `count`. A node is white with no relay
+ * in reach, grey with one next to it, and picked; gain[a] is the white nodes a would bring, itself
+ * among them. Picking only grey nodes keeps each part's relays joined, and a part none reach yet
+ * starts from its white node of the most gain. */
+static bool pick_cds(const uint32_t *start, const uint32_t *adj, uint32_t n, uint8_t *set,
+                     uint32_t count) {
+    enum { WHITE, GREY, PICKED };
+    uint8_t *colour = calloc(n, 1);
+    uint32_t *gain = malloc(n * sizeof *gain);
+    if (!colour || !gain) {
+        free(colour);
+        free(gain);
+        return false;
+    }
+    for (uint32_t a = 0; a < n; a++) {
+        gain[a] = start[a + 1] - start[a] + 1;
+    }
+    uint32_t white = n;
+    for (uint32_t k = 0; k < count && white; k++) {
+        uint32_t best = n;
+        for (int from = GREY; from >= WHITE && (best == n || gain[best] == 0); from--) {
+            best = n;
+            for (uint32_t a = 0; a < n; a++) {
+                if (colour[a] == from && (best == n || gain[a] > gain[best])) {
+                    best = a;
+                }
+            }
+        }
+        if (best == n || gain[best] == 0) {
+            break;
+        }
+        /* best and its white neighbours now have a relay in reach: none brings them again. */
+        for (uint32_t i = start[best]; i <= start[best + 1]; i++) {
+            uint32_t u = i < start[best + 1] ? adj[i] : best;
+            if (colour[u] != WHITE) {
+                continue;
+            }
+            colour[u] = GREY;
+            white--;
+            gain[u]--;
+            for (uint32_t j = start[u]; j < start[u + 1]; j++) {
+                gain[adj[j]]--;
+            }
+        }
+        colour[best] = PICKED;
+        set[best] = 1;
+    }
+    free(colour);
+    free(gain);
+    return true;
+}
+
+bool tsim_distvec_pick_relays(const struct tsim_phy *phy, const struct tsim_pos *pos,
+                              const struct tsim_distvec_config *c, uint8_t *set) {
+    uint32_t *start, *adj;
+    uint32_t n = tsim_phy_nodes(phy);
+    if (c->relay_pick == TSIM_DISTVEC_PICK_LIST || !oracle_links(phy, c, &start, &adj)) {
+        return false;
+    }
+    memset(set, 0, n);
+    uint32_t count = c->relay_count && c->relay_count < n ? c->relay_count : n;
+    bool ok = true;
+    switch (c->relay_pick) {
+    case TSIM_DISTVEC_PICK_DEGREE:
+        pick_by_degree(start, n, set, count);
+        break;
+    case TSIM_DISTVEC_PICK_SPACED:
+        ok = pick_spaced(pos, n, set, count);
+        break;
+    case TSIM_DISTVEC_PICK_CDS:
+        ok = pick_cds(start, adj, n, set, count);
+        if (ok && c->relay_count) {
+            uint32_t have = 0;
+            for (uint32_t a = 0; a < n; a++) {
+                have += set[a];
+            }
+            pick_by_degree(start, n, set, count - have);
+        }
+        break;
+    }
+    free(start);
+    free(adj);
+    return ok;
+}
+
+bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_config *c,
+                       struct tsim_relay_tier *out) {
+    *out = (struct tsim_relay_tier){0};
+    uint32_t *start, *adj;
+    uint32_t n = tsim_phy_nodes(phy);
+    if (!oracle_links(phy, c, &start, &adj)) {
+        return false;
+    }
+    uint8_t *relay = malloc(n);
+    uint32_t *part = malloc(n * sizeof *part), *queue = malloc(n * sizeof *queue);
+    bool ok = relay && part && queue;
+    for (uint32_t a = 0; ok && a < n; a++) {
+        relay[a] = tsim_distvec_relay(c, a);
+        part[a] = UINT32_MAX;
+    }
+    uint64_t joined = 0;
+    uint32_t leaves = 0, covered = 0;
+    for (uint32_t a = 0; ok && a < n; a++) {
+        if (!relay[a]) {
+            leaves++;
+            for (uint32_t i = start[a]; i < start[a + 1]; i++) {
+                if (relay[adj[i]]) {
+                    covered++;
+                    break;
+                }
+            }
+            continue;
+        }
+        out->count++;
+        if (part[a] != UINT32_MAX) {
+            continue;
+        }
+        /* A new set of relays: every relay its links among relays reach from a. */
+        uint32_t head = 0, tail = 0;
+        part[a] = out->components++;
+        queue[tail++] = a;
+        while (head < tail) {
+            uint32_t b = queue[head++];
+            for (uint32_t i = start[b]; i < start[b + 1]; i++) {
+                if (relay[adj[i]] && part[adj[i]] == UINT32_MAX) {
+                    part[adj[i]] = part[a];
+                    queue[tail++] = adj[i];
+                }
+            }
+        }
+        out->largest = tail > out->largest ? tail : out->largest;
+        joined += (uint64_t)tail * (tail - 1);
+    }
+    if (ok) {
+        out->present = leaves > 0; /* with none, there is no tier to speak of */
+        out->pairs = out->count > 1 ? (double)joined / ((double)out->count * (out->count - 1)) : 0;
+        out->covered = leaves ? (double)covered / leaves : 1;
+    }
+    free(relay);
+    free(part);
+    free(queue);
+    free(start);
+    free(adj);
     return ok;
 }

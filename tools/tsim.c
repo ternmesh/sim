@@ -163,6 +163,12 @@ static void print_report(const char *path, const struct tsim_scenario *s,
             h->route_requests_per_h, h->gave_up_per_h, h->seq_raised_per_h, h->route_replies_per_h,
             h->unrouted_infeasible, h->unrouted_empty);
     }
+    if (r->relays.present) {
+        printf("  \"relays\": {\"count\": %" PRIu32 ", \"components\": %" PRIu32
+               ", \"largest\": %" PRIu32 ", \"pairs\": %.6g, \"covered\": %.6g},\n",
+               r->relays.count, r->relays.components, r->relays.largest, r->relays.pairs,
+               r->relays.covered);
+    }
     print_losses(&r->losses);
     printf("  \"on_time_per_airtime_s\": %.6g,\n", r->on_time_per_airtime_s);
     printf("  \"duty_max\": %.6g, \"duty_max_node\": %" PRIu32 ", \"duty_mean\": %.6g,\n",

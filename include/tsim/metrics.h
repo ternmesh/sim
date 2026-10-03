@@ -64,6 +64,18 @@ struct tsim_route_health {
     double unrouted_empty;
 };
 
+/* How candidate 3's infrastructure joins up over the oracle's links (MSH-56), relays to relays
+ * only: what no routing over them can get past. Only tsim_scenario_run() fills it, for distvec
+ * when some nodes are leaves; `present` is false otherwise. */
+struct tsim_relay_tier {
+    bool present;
+    uint32_t count;      /* relays */
+    uint32_t components; /* sets of relays their links among themselves join */
+    uint32_t largest;    /* relays in the largest */
+    double pairs;   /* the share of ordered pairs of relays joined, the most routes can reach */
+    double covered; /* the share of leaves with a relay as a neighbour */
+};
+
 /* Where a message was dropped: at its source, at the hop before its destination - meant for the
  * destination itself - or between. */
 enum tsim_place {
@@ -158,6 +170,7 @@ struct tsim_report {
     struct tsim_phy_links links;
 
     struct tsim_route_health health;
+    struct tsim_relay_tier relays;
     struct tsim_losses losses;
 };
 

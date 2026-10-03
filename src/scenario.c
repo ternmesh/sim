@@ -473,6 +473,20 @@ static const char *distvec_set(void *config, const char *key, const char *value)
         strcpy(c->relays, value);
         return NULL;
     }
+    if (strcmp(key, "relay_pick") == 0) {
+        static const char *picks[] = {"list", "degree", "spaced", "cds"};
+        for (uint8_t i = 0; i < sizeof picks / sizeof *picks; i++) {
+            if (strcmp(value, picks[i]) == 0) {
+                c->relay_pick = i;
+                return NULL;
+            }
+        }
+        return "expected list, degree, spaced or cds";
+    }
+    if (strcmp(key, "relay_count") == 0) {
+        return parse_u64(value, UINT32_MAX, &v) ? (c->relay_count = (uint32_t)v, NULL)
+                                                : "expected a count";
+    }
     if (strcmp(key, "leaves") == 0) {
         if (strcmp(value, "routed") == 0) {
             c->leaves = TSIM_DISTVEC_LEAVES_ROUTED;
@@ -1196,6 +1210,15 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     if (ok && s->mac->check && (why = s->mac->check(s->mac_config))) {
         ok = fail(err, 0, "mac %s: %s", s->mac->name, why);
     }
+    const struct tsim_distvec_config *dv =
+        ok && s->routing->routing == &tsim_distvec ? (const void *)s->routing_config : NULL;
+    if (ok && dv && s->links_file[0] && dv->relay_pick == TSIM_DISTVEC_PICK_SPACED) {
+        ok = fail(err, 0, "routing.relay_pick = spaced needs positions, which links replaces");
+    }
+    if (ok && dv && dv->relay_pick != TSIM_DISTVEC_PICK_LIST && dv->relay_count > s->nodes) {
+        ok = fail(err, 0, "routing.relay_count is %" PRIu32 ", more than the %" PRIu32 " nodes",
+                  dv->relay_count, s->nodes);
+    }
     free(entries);
     free(copy);
     return ok;
@@ -1491,6 +1514,24 @@ static void health(const struct window *w, tsim_time end, struct tsim_route_heal
     h->relay_reach_end = relay_reach(w->net, w->relay);
 }
 
+/* Sets every link's loss as the scenario says: from its links file, or the channel model. */
+static bool lay_links(struct tsim_phy *phy, const struct tsim_scenario *s,
+                      const struct tsim_pos *pos) {
+    if (s->links_file[0]) {
+        if (!s->links) {
+            return false;
+        }
+        for (size_t i = 0; i < s->link_count; i++) {
+            tsim_phy_set_loss_from(phy, s->links[i].from, s->links[i].to, s->links[i].loss_db);
+        }
+    } else {
+        struct tsim_channel_params channel = s->channel;
+        channel.seed = s->seed;
+        tsim_phy_set_losses(phy, &channel, pos);
+    }
+    return true;
+}
+
 bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report) {
     struct tsim_pos *pos = malloc(s->nodes * sizeof *pos);
     struct tsim_sched *sched = tsim_sched_create();
@@ -1499,6 +1540,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     struct tsim_traffic *traffic = NULL;
     struct tsim_distvec_oracle oracle = {0};
     uint32_t *parents = NULL;
+    uint8_t *relay_set = NULL;
     struct window window = {0};
     bool ok = false;
     /* The oracle's routes are the driver's to hand down: the plugin is given where they will be,
@@ -1545,23 +1587,27 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     np.channel = s->radio.channel;
     np.listen = s->radio.lora;
     np.seed = s->seed;
+    /* Picked relays are known before any router is made, so they are picked over a medium of
+     * their own with the same losses. */
+    if (dv && dv->relay_pick != TSIM_DISTVEC_PICK_LIST) {
+        struct tsim_phy *medium = tsim_phy_create(sched, &np.phy, s->nodes, np.channel, &np.listen,
+                                                  (struct tsim_phy_hooks){0});
+        relay_set = malloc(s->nodes);
+        bool picked = medium && relay_set && lay_links(medium, s, pos) &&
+                      tsim_distvec_pick_relays(medium, pos, dv, relay_set);
+        tsim_phy_destroy(medium);
+        if (!picked) {
+            goto done;
+        }
+        dv->relay_set = relay_set;
+    }
     net = tsim_net_create(sched, &np, s->nodes, s->routing->routing, routing_config, s->mac->mac,
                           s->mac_config);
     if (!net) {
         goto done;
     }
-    if (s->links_file[0]) {
-        if (!s->links) {
-            goto done;
-        }
-        for (size_t i = 0; i < s->link_count; i++) {
-            tsim_phy_set_loss_from(tsim_net_phy(net), s->links[i].from, s->links[i].to,
-                                   s->links[i].loss_db);
-        }
-    } else {
-        struct tsim_channel_params channel = s->channel;
-        channel.seed = s->seed;
-        tsim_phy_set_losses(tsim_net_phy(net), &channel, pos);
+    if (!lay_links(tsim_net_phy(net), s, pos)) {
+        goto done;
     }
     if (dv && dv->oracle_routes && !tsim_distvec_oracle_build(&oracle, tsim_net_phy(net), dv)) {
         goto done;
@@ -1579,7 +1625,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
             goto done;
         }
         for (uint32_t i = 0; i < s->nodes; i++) {
-            window.relay[i] = tsim_nodeset_contains(dv->relays, i) == 1;
+            window.relay[i] = tsim_distvec_relay(dv, i);
         }
         window.dv = dv;
     }
@@ -1614,6 +1660,9 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         health(&window, tsim_sched_now(sched), &report->health);
     }
     ok = tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);
+    if (ok && dv && (dv->relay_pick != TSIM_DISTVEC_PICK_LIST || strcmp(dv->relays, "all") != 0)) {
+        ok = tsim_distvec_tier(tsim_net_phy(net), dv, &report->relays);
+    }
 
 done:
     tsim_traffic_destroy(traffic);
@@ -1621,6 +1670,7 @@ done:
     tsim_net_destroy(net);
     tsim_distvec_oracle_free(&oracle);
     free(parents);
+    free(relay_set);
     free(window.relay);
     tsim_sched_destroy(sched);
     free(pos);
