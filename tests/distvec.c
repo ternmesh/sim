@@ -605,24 +605,25 @@ static void announce_round(struct rig *r, uint16_t ann_seq, uint16_t rotation, b
     tsim_sched_run_until(r->sched, tsim_sched_now(r->sched) + TSIM_S(5));
 }
 
-/* With a round of 4 frames, node 0 keeps its link to node 5 through ihu_rounds rounds and one more
- * frame without an IHU, and takes it away at the next: 9 frames for 2 rounds, 33 for 8. */
-static void links_last_ihu_rounds_of_unnamed_announces(uint8_t rounds) {
+/* Node 0 keeps its link to node 5 through ihu_rounds rounds of `rotation` frames and one more frame
+ * without an IHU, and takes it away at the next: with a round of 4, 9 frames for 2 rounds and 33
+ * for 8; with a round of 1, 3 and 9. */
+static void links_last_ihu_rounds_of_unnamed_announces(uint8_t rounds, uint16_t rotation) {
     struct rig r;
     rig_init(&r);
     r.rc.ihu_rounds = rounds;
     build(&r, 6, 1);
     link(&r, 0, 1, LOSS_LOUD);
     tsim_net_start(r.net);
-    announce_round(&r, 1, 4, true);
+    announce_round(&r, 1, rotation, true);
     uint32_t next;
     CHECK(route(&r, 0, 5, &next) && next == 5);
-    uint16_t allowed = (uint16_t)(rounds * 4 + 1);
+    uint16_t allowed = (uint16_t)(rounds * rotation + 1);
     for (uint16_t k = 1; k < allowed; k++) {
-        announce_round(&r, (uint16_t)(1 + k), 4, false);
+        announce_round(&r, (uint16_t)(1 + k), rotation, false);
     }
     CHECK(route(&r, 0, 5, &next));
-    announce_round(&r, (uint16_t)(1 + allowed), 4, false);
+    announce_round(&r, (uint16_t)(1 + allowed), rotation, false);
     CHECK(!route(&r, 0, 5, &next));
     rig_close(&r);
 }
@@ -647,8 +648,10 @@ static void a_link_past_the_longest_wait_goes_whichever_announce_comes(void) {
 }
 
 static void a_link_lasts_its_ihu_rounds(void) {
-    links_last_ihu_rounds_of_unnamed_announces(2);
-    links_last_ihu_rounds_of_unnamed_announces(8);
+    links_last_ihu_rounds_of_unnamed_announces(2, 4);
+    links_last_ihu_rounds_of_unnamed_announces(8, 4);
+    links_last_ihu_rounds_of_unnamed_announces(2, 1);
+    links_last_ihu_rounds_of_unnamed_announces(8, 1);
     struct rig r;
     rig_init(&r);
     CHECK_EQ_U64(r.rc.ihu_rounds, 8);

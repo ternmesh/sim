@@ -1289,7 +1289,7 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
         }
     }
     uint32_t rounds = r->config.ihu_rounds;
-    uint32_t allowed = rotation <= 1 ? rounds - 1 : rounds * rotation + 1u;
+    uint32_t allowed = rounds * (rotation > 1 ? rotation : 1u) + 1u;
     if (allowed > IHU_AGE_MAX) {
         allowed = IHU_AGE_MAX;
     }

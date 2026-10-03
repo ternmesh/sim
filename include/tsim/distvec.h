@@ -64,18 +64,17 @@
  * this node. The link's ETX is 1 / (d_f d_r), and a neighbour without an IHU for this node - one
  * that has not heard it - is not used at all: LoRa links are often one-way, and Babel assumes they
  * are not. Nor is one with an ETX over etx_max. A neighbour that has sent more announces without
- * naming this node than ihu_rounds of its rounds allow - ihu_rounds less one, when its round is a
- * single frame; otherwise ihu_rounds times the round and one more, for the frames that name new
- * neighbours first, and never more than 32767 - does not hear it, and its IHU is taken away. Two
- * rounds cut thousands of good links an hour in the region, under load and even on a quiet channel:
- * most frames are lost there, and two IHUs in a row often enough. Each cut starves the routes
- * through it until a new seqno comes, which the saturated queue of urgent updates takes hours to
- * carry. Eight rounds made the region's unicast 18.8% to 24.5% at 0 dBm and 9.8% to 13.9% at 20
- * dBm, for 3-5% of its deliveries per second of airtime, and the town's 81.6% to 98.3% (MSH-52).
- * The count is in announces, not time, so however slowly a node with many neighbours announces, its
- * IHUs stand until their turn comes round again. A neighbour not heard for neighbour_timeout, and
- * for two of its promises, is forgotten; one that frames sent to it keep failing to reach soon goes
- * unused (below).
+ * naming this node than ihu_rounds of its rounds allow - ihu_rounds times the round, and one more
+ * for the frames that name new neighbours first, never more than 32767 - does not hear it, and its
+ * IHU is taken away. Two rounds cut thousands of good links an hour in the region, under load and
+ * even on a quiet channel: most frames are lost there, and two IHUs in a row often enough. Each cut
+ * starves the routes through it until a new seqno comes, which the saturated queue of urgent
+ * updates takes hours to carry. Eight rounds made the region's unicast 18.8% to 24.5% at 0 dBm
+ * and 9.8% to 13.9% at 20 dBm, for 3-5% of its deliveries per second of airtime, and the
+ * town's 81.6% to 98.3% (MSH-52). The count is in announces, not time, so however slowly a node
+ * with many neighbours announces, its IHUs stand until their turn comes round again. A neighbour
+ * not heard for neighbour_timeout, and for two of its promises, is forgotten; one that frames sent
+ * to it keep failing to reach soon goes unused (below).
  *
  * The metric is time on air: a link's cost is the airtime of a reference frame, ref_len bytes at
  * the link's modulation, in milliseconds, at least 1, and with `etx` that times the link's ETX.
