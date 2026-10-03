@@ -663,6 +663,10 @@ size_t tsim_node_queue_length(const struct tsim_node *nd) { return nd->queue_len
 
 bool tsim_node_sending(const struct tsim_node *nd) { return nd->sending; }
 
+const struct tsim_tx *tsim_net_on_air(const struct tsim_net *net, uint32_t node) {
+    return node < net->n && net->nodes[node].sending ? &net->nodes[node].air.tx : NULL;
+}
+
 bool tsim_node_transmit(struct tsim_node *nd) {
     if (nd->sending || nd->queue_len == 0) {
         return false;

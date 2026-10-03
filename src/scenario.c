@@ -1539,12 +1539,12 @@ static bool announces_start(struct announces *a, struct tsim_net *net,
 static void sensed_links(const struct announces *a, struct tsim_net *net, uint32_t out[3]) {
     out[0] = out[1] = out[2] = 0;
     for (uint32_t x = 0; x < a->n; x++) {
-        const void *r = tsim_net_routing(net, x);
-        for (uint32_t y = 0; r && a->watch[x] && y < a->n; y++) {
+        const void *r = tsim_net_routing(net, x); /* NULL while down: it uses no link */
+        for (uint32_t y = 0; a->watch[x] && y < a->n; y++) {
             if (x == y || !a->watch[y]) {
                 continue;
             }
-            bool used = tsim_distvec_uses(r, y);
+            bool used = r && tsim_distvec_uses(r, y);
             bool true_link = a->linked[(size_t)a->index[x] * a->relays + a->index[y]];
             out[used && true_link ? 0 : used ? 1 : 2] += used || true_link;
         }
@@ -1553,9 +1553,15 @@ static void sensed_links(const struct announces *a, struct tsim_net *net, uint32
 
 static void announces_report(struct announces *a, struct tsim_net *net, tsim_time begun,
                              tsim_time end, struct tsim_announces *out) {
-    uint64_t sent = 0; /* from the senders' own books, so a lone relay's count too */
+    /* From the senders' own books, so a lone relay's count too - less what is still on the air,
+     * whose fates are not yet known, so that it is in neither the frames sent nor the silences. */
+    uint64_t sent = 0;
     for (uint32_t i = 0; i < a->n; i++) {
-        sent += a->watch[i] ? tsim_net_ledger(net, i)->frames[TSIM_PURPOSE_ANNOUNCE] : 0;
+        if (a->watch[i]) {
+            const struct tsim_tx *air = tsim_net_on_air(net, i);
+            sent += tsim_net_ledger(net, i)->frames[TSIM_PURPOSE_ANNOUNCE] -
+                    (air && air->purpose == TSIM_PURPOSE_ANNOUNCE);
+        }
     }
     for (size_t k = 0; k < (size_t)a->relays * a->relays; k++) {
         if (a->linked[k]) {
