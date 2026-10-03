@@ -69,4 +69,27 @@ double tsim_channel_shadowing(const struct tsim_channel_params *p, uint32_t a, s
 double tsim_channel_loss(const struct tsim_channel_params *p, uint32_t a, struct tsim_pos pa,
                          uint32_t b, struct tsim_pos pb);
 
+/* A node's place on the shared field, worked out once for every link it is on (MSH-59): a node
+ * that moves needs its links' losses again, and drawing the field at both ends of each would cost
+ * more than everything else a move does. */
+struct tsim_channel_spot {
+    struct tsim_pos pos;
+    uint32_t ix[4]; /* the field's corners around it, and their weights */
+    uint32_t iy[4];
+    double w[4];
+    double field; /* the field's value there */
+};
+
+struct tsim_channel_spot tsim_channel_spot(const struct tsim_channel_params *p,
+                                           struct tsim_pos pos);
+
+/* The part of the shadowing that is the link's own, as a unit normal: where its ends stand does
+ * not change it. */
+double tsim_channel_own(const struct tsim_channel_params *p, uint32_t a, uint32_t b);
+
+/* tsim_channel_loss() from the two ends' spots and the link's own part: the same number. */
+double tsim_channel_spot_loss(const struct tsim_channel_params *p,
+                              const struct tsim_channel_spot *a, const struct tsim_channel_spot *b,
+                              double own);
+
 #endif

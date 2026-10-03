@@ -138,6 +138,25 @@ static void the_3gpp_models_match_meshtasticator(void) {
                tsim_channel_shadowing(&p, 0, a, 1, b)) < 1e-9);
 }
 
+/* A moving node's links are set again from spots worked out once (MSH-59): the same numbers. */
+static void loss_from_spots_is_the_same_number(void) {
+    struct tsim_channel_params p = tsim_channel_default(5);
+    struct tsim_pos at[] = {{0, 0}, {40, 30}, {130, 90}, {2500, -800}, {-1e6, 3e5}};
+    int n = sizeof at / sizeof at[0];
+    for (int a = 0; a < n; a++) {
+        for (int b = 0; b < n; b++) {
+            if (a == b) {
+                continue;
+            }
+            struct tsim_channel_spot sa = tsim_channel_spot(&p, at[a]);
+            struct tsim_channel_spot sb = tsim_channel_spot(&p, at[b]);
+            CHECK(tsim_channel_spot_loss(&p, &sa, &sb, tsim_channel_own(&p, a, b)) ==
+                  tsim_channel_loss(&p, a, at[a], b, at[b]));
+        }
+    }
+    CHECK(tsim_channel_own(&p, 2, 4) == tsim_channel_own(&p, 4, 2));
+}
+
 int main(void) {
     RUN(the_3gpp_models_match_meshtasticator);
     RUN(median_loss_follows_log_distance);
@@ -145,5 +164,6 @@ int main(void) {
     RUN(shadowing_has_the_configured_spread);
     RUN(nearby_links_are_correlated);
     RUN(shadowing_holds_at_any_finite_position);
+    RUN(loss_from_spots_is_the_same_number);
     return CHECK_DONE();
 }

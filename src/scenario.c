@@ -190,6 +190,18 @@ static bool parse_yes_no(const char *v, bool *out) {
     return false;
 }
 
+/* Which nodes churn or movement takes: enum tsim_churn_nodes. */
+static bool parse_kinds(const char *v, uint8_t *out) {
+    static const char *names[] = {"all", "relays", "leaves"};
+    for (uint8_t i = 0; i < sizeof names / sizeof *names; i++) {
+        if (strcmp(v, names[i]) == 0) {
+            *out = i;
+            return true;
+        }
+    }
+    return false;
+}
+
 /* A contention window setting, shared by Meshtastic's routing and MAC. NULL if `key` is not one,
  * else "" if it took, or what was wrong with it. */
 static const char *window_set(struct tsim_meshtastic_window *w, const char *key,
@@ -729,6 +741,11 @@ static void defaults(struct tsim_scenario *s) {
         .reply_delay = TSIM_S(2 * 60),
         .churn_up = TSIM_S(2 * 3600),
         .churn_down = TSIM_S(15 * 60),
+        .move_nodes = TSIM_CHURN_LEAVES,
+        .move_speed_min = 0.5,
+        .move_speed_max = 2.0,
+        .move_pause = TSIM_S(5 * 60),
+        .move_step = TSIM_S(10),
         .warmup = 0,
         .duration = TSIM_S(3600),
         .deadline = TSIM_S(60),
@@ -1021,14 +1038,7 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
         return parse_fraction(v, &s->churn_share) ? NULL : "expected a fraction from 0 to 1";
     }
     if (strcmp(key, "churn.nodes") == 0) {
-        static const char *names[] = {"all", "relays", "leaves"};
-        for (uint8_t i = 0; i < sizeof names / sizeof *names; i++) {
-            if (strcmp(v, names[i]) == 0) {
-                s->churn_nodes = i;
-                return NULL;
-            }
-        }
-        return "expected all, relays or leaves";
+        return parse_kinds(v, &s->churn_nodes) ? NULL : "expected all, relays or leaves";
     }
     if (strcmp(key, "churn.up") == 0) {
         return parse_time(v, &s->churn_up) && s->churn_up > 0 ? NULL
@@ -1038,6 +1048,25 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
         return parse_time(v, &s->churn_down) && s->churn_down > 0
                    ? NULL
                    : "expected a time, such as 15 min";
+    }
+    if (strcmp(key, "move.share") == 0) {
+        return parse_fraction(v, &s->move_share) ? NULL : "expected a fraction from 0 to 1";
+    }
+    if (strcmp(key, "move.nodes") == 0) {
+        return parse_kinds(v, &s->move_nodes) ? NULL : "expected all, relays or leaves";
+    }
+    if (strcmp(key, "move.speed_min") == 0 || strcmp(key, "move.speed_max") == 0) {
+        double *out = strcmp(key, "move.speed_min") == 0 ? &s->move_speed_min : &s->move_speed_max;
+        return parse_double(v, out) && *out > 0 && *out <= 1e6
+                   ? NULL
+                   : "expected a speed above 0, in metres a second";
+    }
+    if (strcmp(key, "move.pause") == 0) {
+        return parse_time(v, &s->move_pause) ? NULL : "expected a time, such as 5 min";
+    }
+    if (strcmp(key, "move.step") == 0) {
+        return parse_time(v, &s->move_step) && s->move_step > 0 ? NULL
+                                                                : "expected a time, such as 10 s";
     }
     return "is not a setting";
 }
@@ -1250,6 +1279,16 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
         ok && s->routing->routing == &tsim_distvec ? (const void *)s->routing_config : NULL;
     if (ok && dv && s->links_file[0] && dv->relay_pick == TSIM_DISTVEC_PICK_SPACED) {
         ok = fail(err, 0, "routing.relay_pick = spaced needs positions, which links replaces");
+    }
+    if (ok && s->move_share > 0 && s->move_speed_min > s->move_speed_max) {
+        ok = fail(err, 0, "move.speed_min is above move.speed_max");
+    }
+    if (ok && s->move_share > 0 && s->links_file[0]) {
+        ok = fail(err, 0, "move.share needs positions, which links replaces");
+    }
+    if (ok && s->move_share > 0 && dv && (dv->oracle || dv->links == TSIM_DISTVEC_LINKS_ORACLE)) {
+        ok = fail(err, 0,
+                  "move.share: the oracle's routes are built once, from where the nodes start");
     }
     if (ok && dv && dv->relay_pick != TSIM_DISTVEC_PICK_LIST && dv->relay_count > s->nodes) {
         ok = fail(err, 0, "routing.relay_count is %" PRIu32 ", more than the %" PRIu32 " nodes",
@@ -1781,10 +1820,10 @@ static void churn_flip(struct tsim_sched *sched, void *ctx) {
     }
 }
 
-/* Whether churn may take `node` down. */
-static bool churnable(const struct tsim_scenario *s, const struct tsim_distvec_config *dv,
-                      uint32_t node) {
-    if (s->churn_nodes == TSIM_CHURN_ALL) {
+/* Whether `node` is of the kind `kinds` names (enum tsim_churn_nodes). */
+static bool of_kind(const struct tsim_scenario *s, const struct tsim_distvec_config *dv,
+                    uint8_t kinds, uint32_t node) {
+    if (kinds == TSIM_CHURN_ALL) {
         return true;
     }
     bool relay = true;
@@ -1794,30 +1833,42 @@ static bool churnable(const struct tsim_scenario *s, const struct tsim_distvec_c
         const struct tsim_meshcore_config *mc = (const void *)s->routing_config;
         relay = tsim_nodeset_contains(mc->relays, node) == 1;
     }
-    return relay == (s->churn_nodes == TSIM_CHURN_RELAYS);
+    return relay == (kinds == TSIM_CHURN_RELAYS);
+}
+
+/* round(share x eligible) of the nodes of the kind `kinds` names, drawn from `stream`: returned
+ * first in a list of the node count, NULL when memory runs out, with how many in *k. */
+static uint32_t *pick(const struct tsim_scenario *s, const struct tsim_distvec_config *dv,
+                      uint8_t kinds, double share, uint64_t stream, uint32_t *k) {
+    uint32_t n = s->nodes, eligible = 0;
+    uint32_t *pool = malloc(n * sizeof *pool);
+    if (!pool) {
+        return NULL;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        if (of_kind(s, dv, kinds, i)) {
+            pool[eligible++] = i;
+        }
+    }
+    *k = (uint32_t)(share * eligible + 0.5);
+    struct tsim_rng rng;
+    tsim_rng_init(&rng, s->seed, stream);
+    for (uint32_t i = 0; i < *k; i++) {
+        uint32_t j = i + (uint32_t)tsim_rng_below(&rng, eligible - i);
+        uint32_t t = pool[i];
+        pool[i] = pool[j];
+        pool[j] = t;
+    }
+    return pool;
 }
 
 /* Picks round(share x eligible) nodes to churn, and schedules each one's first time down. */
 static bool churn_start(struct churn *c, const struct tsim_scenario *s,
                         const struct tsim_distvec_config *dv, struct tsim_sched *sched) {
-    uint32_t n = s->nodes, eligible = 0;
-    uint32_t *pool = malloc(n * sizeof *pool);
+    uint32_t k;
+    uint32_t *pool = pick(s, dv, s->churn_nodes, s->churn_share, UINT64_C(0xC4) << 56, &k);
     if (!pool) {
         return false;
-    }
-    for (uint32_t i = 0; i < n; i++) {
-        if (churnable(s, dv, i)) {
-            pool[eligible++] = i;
-        }
-    }
-    uint32_t k = (uint32_t)(s->churn_share * eligible + 0.5);
-    struct tsim_rng rng;
-    tsim_rng_init(&rng, s->seed, UINT64_C(0xC4) << 56);
-    for (uint32_t i = 0; i < k; i++) {
-        uint32_t j = i + (uint32_t)tsim_rng_below(&rng, eligible - i);
-        uint32_t t = pool[i];
-        pool[i] = pool[j];
-        pool[j] = t;
     }
     c->churners = calloc(k ? k : 1, sizeof *c->churners);
     if (!c->churners) {
@@ -1834,6 +1885,110 @@ static bool churn_start(struct churn *c, const struct tsim_scenario *s,
     }
     free(pool);
     return ok;
+}
+
+/* --- Movement --- */
+
+struct moving {
+    struct tsim_phy *phy;
+    struct tsim_channel_params channel;
+    struct tsim_move_params params;
+    tsim_time step;
+    uint32_t nodes;
+    struct tsim_channel_spot *spot; /* [node] */
+    uint32_t count;
+    uint32_t *who;             /* [mover]: its node */
+    struct tsim_mover *movers; /* [mover] */
+    bool *moved;               /* [mover]: this step */
+    double *own;               /* [mover * nodes + node]: the link's own shadowing */
+    bool failed;
+};
+
+static void move_step(struct tsim_sched *sched, void *ctx) {
+    struct moving *mv = ctx;
+    for (uint32_t i = 0; i < mv->count; i++) {
+        mv->moved[i] = tsim_mover_step(&mv->movers[i], &mv->params, mv->step);
+        if (mv->moved[i]) {
+            mv->spot[mv->who[i]] = tsim_channel_spot(&mv->channel, mv->movers[i].at);
+        }
+    }
+    /* Every spot is where it now is before any loss is set, so a link between two movers comes
+     * out the same whichever is set last. */
+    for (uint32_t i = 0; i < mv->count; i++) {
+        if (!mv->moved[i]) {
+            continue;
+        }
+        uint32_t a = mv->who[i];
+        const double *own = &mv->own[(size_t)i * mv->nodes];
+        for (uint32_t b = 0; b < mv->nodes; b++) {
+            if (b != a) {
+                tsim_phy_set_loss(
+                    mv->phy, a, b,
+                    tsim_channel_spot_loss(&mv->channel, &mv->spot[a], &mv->spot[b], own[b]));
+            }
+        }
+    }
+    if (tsim_sched_after(sched, mv->step, move_step, mv).slot == 0) {
+        mv->failed = true;
+    }
+}
+
+/* Picks the movers, starts each where it stands, and schedules the first step. */
+static bool move_start(struct moving *mv, const struct tsim_scenario *s,
+                       const struct tsim_distvec_config *dv, struct tsim_sched *sched,
+                       struct tsim_phy *phy, const struct tsim_pos *pos) {
+    uint32_t n = s->nodes;
+    *mv = (struct moving){
+        .phy = phy,
+        .channel = s->channel,
+        .params = {.speed_min = s->move_speed_min,
+                   .speed_max = s->move_speed_max,
+                   .pause = s->move_pause},
+        .step = s->move_step,
+        .nodes = n,
+    };
+    mv->channel.seed = s->seed;
+    if (s->placement == TSIM_PLACEMENT_UNIFORM) {
+        mv->params.x_max = s->width_m;
+        mv->params.y_max = s->height_m;
+    } else {
+        mv->params.x_min = mv->params.x_max = pos[0].x;
+        mv->params.y_min = mv->params.y_max = pos[0].y;
+        for (uint32_t i = 1; i < n; i++) {
+            mv->params.x_min = fmin(mv->params.x_min, pos[i].x);
+            mv->params.x_max = fmax(mv->params.x_max, pos[i].x);
+            mv->params.y_min = fmin(mv->params.y_min, pos[i].y);
+            mv->params.y_max = fmax(mv->params.y_max, pos[i].y);
+        }
+    }
+    mv->who = pick(s, dv, s->move_nodes, s->move_share, UINT64_C(0xC6) << 56, &mv->count);
+    uint32_t k = mv->count ? mv->count : 1;
+    mv->spot = malloc(n * sizeof *mv->spot);
+    mv->movers = malloc(k * sizeof *mv->movers);
+    mv->moved = malloc(k * sizeof *mv->moved);
+    mv->own = malloc((size_t)k * n * sizeof *mv->own);
+    if (!mv->who || !mv->spot || !mv->movers || !mv->moved || !mv->own) {
+        return false;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        mv->spot[i] = tsim_channel_spot(&mv->channel, pos[i]);
+    }
+    for (uint32_t i = 0; i < mv->count; i++) {
+        uint32_t a = mv->who[i];
+        tsim_mover_init(&mv->movers[i], &mv->params, pos[a], s->seed, a);
+        for (uint32_t b = 0; b < n; b++) {
+            mv->own[(size_t)i * n + b] = b == a ? 0 : tsim_channel_own(&mv->channel, a, b);
+        }
+    }
+    return tsim_sched_after(sched, mv->step, move_step, mv).slot != 0;
+}
+
+static void move_free(struct moving *mv) {
+    free(mv->who);
+    free(mv->spot);
+    free(mv->movers);
+    free(mv->moved);
+    free(mv->own);
 }
 
 /* Sets every link's loss as the scenario says: from its links file, or the channel model. */
@@ -1865,6 +2020,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     uint8_t *relay_set = NULL;
     struct window window = {0};
     struct churn churn = {0};
+    struct moving moving = {0};
     struct announces announces = {0};
     bool ok = false;
     /* The oracle's routes are the driver's to hand down: the plugin is given where they will be,
@@ -1989,6 +2145,9 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
             goto done;
         }
     }
+    if (s->move_share > 0 && !move_start(&moving, s, dv, sched, tsim_net_phy(net), pos)) {
+        goto done;
+    }
     tsim_net_start(net);
     tsim_sched_run_until(sched, s->warmup + s->duration + s->deadline);
     tsim_metrics_report(metrics, report);
@@ -1999,7 +2158,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         sensed_links(&announces, net, announces.report.sensed[1]);
         announces_report(&announces, net, window.begun, tsim_sched_now(sched), &report->announces);
     }
-    ok = !churn.failed && !window.failed &&
+    ok = !churn.failed && !moving.failed && !window.failed &&
          tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);
     if (ok && dv && (dv->relay_pick != TSIM_DISTVEC_PICK_LIST || strcmp(dv->relays, "all") != 0)) {
         ok = tsim_distvec_tier(tsim_net_phy(net), dv, &report->relays);
@@ -2013,6 +2172,7 @@ done:
     free(parents);
     free(relay_set);
     free(churn.churners);
+    move_free(&moving);
     announces_free(&announces); /* the network that called into it is gone */
     free(window.relay);
     tsim_sched_destroy(sched);

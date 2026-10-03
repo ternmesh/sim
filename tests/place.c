@@ -1,5 +1,7 @@
 #include "tsim/place.h"
 
+#include <math.h>
+
 #include "check.h"
 
 static void uniform_stays_inside_and_repeats(void) {
@@ -49,10 +51,56 @@ static void line_runs_along_x(void) {
     }
 }
 
+/* A mover keeps to its box and its speed, stays where it arrives, and repeats with its seed. */
+static void a_mover_keeps_to_its_box_and_speed(void) {
+    struct tsim_move_params p = {.x_min = 100,
+                                 .y_min = -50,
+                                 .x_max = 1100,
+                                 .y_max = 450,
+                                 .speed_min = 1,
+                                 .speed_max = 3,
+                                 .pause = TSIM_S(60)};
+    struct tsim_mover m, again;
+    tsim_mover_init(&m, &p, (struct tsim_pos){600, 200}, 9, 4);
+    tsim_mover_init(&again, &p, (struct tsim_pos){600, 200}, 9, 4);
+    int still = 0;
+    for (int i = 0; i < 20000; i++) {
+        struct tsim_pos was = m.at;
+        bool moved = tsim_mover_step(&m, &p, TSIM_S(5));
+        tsim_mover_step(&again, &p, TSIM_S(5));
+        double went = hypot(m.at.x - was.x, m.at.y - was.y);
+        CHECK(m.at.x >= 100 && m.at.x <= 1100 && m.at.y >= -50 && m.at.y <= 450);
+        CHECK(went <= 3 * 5 + 1e-9);
+        CHECK(moved == (went > 0));
+        CHECK(m.at.x == again.at.x && m.at.y == again.at.y);
+        still += !moved;
+    }
+    /* A minute's stay at a leg's end, against legs of a few minutes: some steps it stood still. */
+    CHECK(still > 1000 && still < 15000);
+    struct tsim_mover other;
+    tsim_mover_init(&other, &p, (struct tsim_pos){600, 200}, 9, 5);
+    tsim_mover_step(&other, &p, TSIM_S(5));
+    tsim_mover_init(&m, &p, (struct tsim_pos){600, 200}, 9, 4);
+    tsim_mover_step(&m, &p, TSIM_S(5));
+    CHECK(other.at.x != m.at.x);
+}
+
+/* In a box of one point there is nowhere to go, and the time still runs out. */
+static void a_mover_in_a_point_stays_put(void) {
+    struct tsim_move_params p = {
+        .x_min = 5, .y_min = 5, .x_max = 5, .y_max = 5, .speed_min = 1, .speed_max = 1};
+    struct tsim_mover m;
+    tsim_mover_init(&m, &p, (struct tsim_pos){5, 5}, 1, 0);
+    CHECK(!tsim_mover_step(&m, &p, TSIM_S(3600)));
+    CHECK(m.at.x == 5 && m.at.y == 5);
+}
+
 int main(void) {
     RUN(uniform_stays_inside_and_repeats);
     RUN(fewer_nodes_are_a_thinned_map);
     RUN(grid_fills_rows_of_the_smallest_square);
     RUN(line_runs_along_x);
+    RUN(a_mover_keeps_to_its_box_and_speed);
+    RUN(a_mover_in_a_point_stays_put);
     return CHECK_DONE();
 }

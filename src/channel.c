@@ -70,19 +70,6 @@ static double field_value(const struct tsim_channel_params *p, const struct blen
     return v;
 }
 
-/* The correlation between the field at two points: the overlap of their corner weights. */
-static double field_correlation(const struct blend *a, const struct blend *b) {
-    double rho = 0;
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 4; j++) {
-            if (a->ix[i] == b->ix[j] && a->iy[i] == b->iy[j]) {
-                rho += a->w[i] * b->w[j];
-            }
-        }
-    }
-    return rho;
-}
-
 struct tsim_channel_params tsim_channel_default(uint64_t seed) {
     return (struct tsim_channel_params){
         .model = TSIM_PATH_LOG_DISTANCE,
@@ -111,25 +98,64 @@ double tsim_channel_median_loss(const struct tsim_channel_params *p, double dist
            (35.46 - 1.1 * h) * log10(p->freq_mhz) - 13.82 * log10(h) + 0.7 * h + urban;
 }
 
-double tsim_channel_shadowing(const struct tsim_channel_params *p, uint32_t a, struct tsim_pos pa,
-                              uint32_t b, struct tsim_pos pb) {
+struct tsim_channel_spot tsim_channel_spot(const struct tsim_channel_params *p,
+                                           struct tsim_pos pos) {
+    struct blend b = blend_at(p, pos);
+    struct tsim_channel_spot s = {.pos = pos, .field = field_value(p, &b)};
+    for (int i = 0; i < 4; i++) {
+        s.ix[i] = b.ix[i];
+        s.iy[i] = b.iy[i];
+        s.w[i] = b.w[i];
+    }
+    return s;
+}
+
+double tsim_channel_own(const struct tsim_channel_params *p, uint32_t a, uint32_t b) {
     uint32_t lo = a < b ? a : b;
     uint32_t hi = a < b ? b : a;
-    double own = keyed_normal(p->seed, LINK_DOMAIN, ((uint64_t)lo << 32) | hi);
+    return keyed_normal(p->seed, LINK_DOMAIN, ((uint64_t)lo << 32) | hi);
+}
 
-    struct blend ba = blend_at(p, pa);
-    struct blend bb = blend_at(p, pb);
+/* The correlation between the field at two spots: the overlap of their corner weights. */
+static double spot_correlation(const struct tsim_channel_spot *a,
+                               const struct tsim_channel_spot *b) {
+    double rho = 0;
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            if (a->ix[i] == b->ix[j] && a->iy[i] == b->iy[j]) {
+                rho += a->w[i] * b->w[j];
+            }
+        }
+    }
+    return rho;
+}
+
+static double spot_shadowing(const struct tsim_channel_params *p, const struct tsim_channel_spot *a,
+                             const struct tsim_channel_spot *b, double own) {
     /* The sum of the two endpoints' values has variance 2 + 2 rho, where rho is how correlated
      * the field is between them; dividing by its square root keeps a short link's shadowing as
      * wide as a long one's. */
-    double shared =
-        (field_value(p, &ba) + field_value(p, &bb)) / sqrt(2.0 + 2.0 * field_correlation(&ba, &bb));
-
+    double shared = (a->field + b->field) / sqrt(2.0 + 2.0 * spot_correlation(a, b));
     return p->sigma_db * (sqrt(p->node_share) * shared + sqrt(1.0 - p->node_share) * own);
+}
+
+double tsim_channel_shadowing(const struct tsim_channel_params *p, uint32_t a, struct tsim_pos pa,
+                              uint32_t b, struct tsim_pos pb) {
+    struct tsim_channel_spot sa = tsim_channel_spot(p, pa);
+    struct tsim_channel_spot sb = tsim_channel_spot(p, pb);
+    return spot_shadowing(p, &sa, &sb, tsim_channel_own(p, a, b));
+}
+
+double tsim_channel_spot_loss(const struct tsim_channel_params *p,
+                              const struct tsim_channel_spot *a, const struct tsim_channel_spot *b,
+                              double own) {
+    double distance = hypot(a->pos.x - b->pos.x, a->pos.y - b->pos.y);
+    return tsim_channel_median_loss(p, distance) + spot_shadowing(p, a, b, own);
 }
 
 double tsim_channel_loss(const struct tsim_channel_params *p, uint32_t a, struct tsim_pos pa,
                          uint32_t b, struct tsim_pos pb) {
-    double distance = hypot(pa.x - pb.x, pa.y - pb.y);
-    return tsim_channel_median_loss(p, distance) + tsim_channel_shadowing(p, a, pa, b, pb);
+    struct tsim_channel_spot sa = tsim_channel_spot(p, pa);
+    struct tsim_channel_spot sb = tsim_channel_spot(p, pb);
+    return tsim_channel_spot_loss(p, &sa, &sb, tsim_channel_own(p, a, b));
 }

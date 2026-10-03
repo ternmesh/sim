@@ -99,6 +99,12 @@ misleading.
 | `churn.nodes` | `all` | which nodes churn may take: `all`; `relays`, the routing's - `distvec`'s infrastructure, `meshcore`'s repeaters, every node for routing without tiers; or `leaves`, the rest |
 | `churn.up` | 2 h | mean time a churning node stays up |
 | `churn.down` | 15 min | mean time a churning node stays down |
+| `move.share` | 0 | movement (MSH-59): the share of the nodes `move.nodes` names that move over the whole run, by random waypoint - in a straight line to a point drawn uniformly over the map, at a speed drawn uniformly from `move.speed_min` to `move.speed_max`, then a stay drawn from an exponential of mean `move.pause`, then the next. The map is `area` for uniform placement, otherwise the smallest box that holds every node. Every `move.step`, each node that moved has its links' losses set again from the channel model: the shared shadowing follows it over the ground, its links' own part stays. Not with `links`, nor with `distvec`'s oracle (`routing.oracle`, `routing.links` oracle), whose routes are built from where the nodes start; relay picking and the links `progress` is judged against are from there too. 0 is none |
+| `move.nodes` | `leaves` | which nodes move, the same kinds as `churn.nodes` |
+| `move.speed_min` | 0.5 | slowest a mover goes, in m/s, above 0; 5 to 20 is driving |
+| `move.speed_max` | 2 | fastest |
+| `move.pause` | 5 min | mean stay at each waypoint |
+| `move.step` | 10 s | how often movers' links are set again; a frame already on the air meets the new losses from then on |
 | `report.announces` | `no` | `yes` adds the `announces` report for `distvec` (MSH-60): every frame from then on is followed at every relay, which is slow, so it is for diagnosis |
 | `traffic.closed` | `no` | `yes` starts a node's next gap only when its routing is done with its last message - acknowledged, or given up on - as Meshtasticator's nodes do. The messages then depend on the protocol, so candidates are no longer offered the same ones |
 
