@@ -69,9 +69,9 @@
  * IHU is taken away. Two rounds cut thousands of good links an hour in the region, under load and
  * even on a quiet channel: most frames are lost there, and two IHUs in a row often enough. Each cut
  * starves the routes through it until a new seqno comes, which the saturated queue of urgent
- * updates takes hours to carry. Eight rounds made the region's unicast 18.8% to 24.5% at 0 dBm
+ * updates takes hours to carry. Eight rounds made the region's unicast 18.8% to 25.0% at 0 dBm
  * and 9.8% to 13.9% at 20 dBm, for 3-5% of its deliveries per second of airtime, and the
- * town's 81.6% to 98.3% (MSH-52). The count is in announces, not time, so however slowly a node
+ * town's 81.6% to 98.5% (MSH-52). The count is in announces, not time, so however slowly a node
  * with many neighbours announces, its IHUs stand until their turn comes round again. A neighbour
  * not heard for neighbour_timeout, and for two of its promises, is forgotten; one that frames sent
  * to it keep failing to reach soon goes unused (below).
