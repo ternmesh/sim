@@ -1773,6 +1773,18 @@ static void power_settings_are_checked(void) {
     CHECK(tsim_distvec_check(&bad) == NULL);
 }
 
+/* Frames carry a demand route's life in whole seconds, so a route_ttl under one is refused: it
+ * would go out as no life at all. */
+static void a_route_ttl_under_a_second_is_refused(void) {
+    struct tsim_lora l = tsim_lora_default(9, 125000);
+    struct tsim_distvec_config c = tsim_distvec_default(0, &l, 14.0);
+    c.routes = TSIM_DISTVEC_ROUTES_DEMAND;
+    c.route_ttl = TSIM_S(1);
+    CHECK(tsim_distvec_check(&c) == NULL);
+    c.route_ttl = TSIM_MS(500);
+    CHECK(tsim_distvec_check(&c) != NULL);
+}
+
 /* Each message's loss is booked where it happened: across a whole line, on time, every hop
  * closer; with the last link cut, given up at the hop before the destination; and once the line
  * has learnt of the cut, without a route at the source. */
@@ -1825,6 +1837,7 @@ int main(void) {
     RUN(power_k_reaches_the_k_nearest);
     RUN(a_fractional_tx_dbm_is_kept_at_the_top);
     RUN(power_settings_are_checked);
+    RUN(a_route_ttl_under_a_second_is_refused);
     RUN(a_message_crosses_the_line_and_is_acknowledged);
     RUN(every_node_of_a_grid_reaches_every_other);
     RUN(a_one_way_link_is_never_used);

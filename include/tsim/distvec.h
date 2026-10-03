@@ -252,12 +252,57 @@
  * relay reach stayed near 20%, the urgent list grew fourfold and unicast fell 1-6 points: the new
  * seqs crossed eight hops of announces under load no better than the routes did.
  *
+ * Routes on demand (MSH-43), when `routes` is demand - work in progress, and on the region worse
+ * than proactive so far (below). A node announces itself and its IHUs and no other route, and
+ * routes come from the traffic, under the same feasibility condition:
+ *
+ *  - every data, acknowledgement and route reply frame carries, after the head (and the power
+ *    byte), the sender and its route to the frame's source - sender 4, seq 2, metric 2, life 2 -
+ *    which any node that decodes it takes as the sender advertising that route, for `life`
+ *    seconds at most. Putting a route in a frame sets the feasibility distance, as announcing it
+ *    would, and a route goes out with what is left of its life, so a node never keeps one longer
+ *    than the neighbour it had it from;
+ *  - a node with a message and no route to where it goes floods a route request through
+ *    infrastructure, at most once a request_interval for each destination, raising its own seq
+ *    first, as AODV does, so the routes back to it are feasible wherever the request goes:
+ *
+ *        type 0x06 | origin 4 | id 4 | target 4 | target seq 2 | flags 1 | hops 1 | sender 4
+ *        | origin seq 2 | metric 2 | life 2
+ *
+ *    Each node that hears it takes the route to the origin it carries; infrastructure that has
+ *    not seen it, and now has a route back, passes it on with its own route, after a wait of up to
+ *    bcast_window airtimes, dropping it on hearing req_cancel copies, for up to req_hops relays;
+ *  - only the target answers - in a dense town every node with a route answering made eight
+ *    replies a request - raising its seq, to at least the one asked for, and sending a route reply
+ *    along the reverse route, laid out as an acknowledgement is, with itself as the source and the
+ *    origin as the destination. Each hop takes the route to the target from it and passes it on,
+ *    listening for it to go on as a data frame's hop does. A reply that reaches the origin sends
+ *    the messages waiting on that route at once;
+ *  - a route lasts route_ttl from when it was last heard of, and then is gone: nothing retracts
+ *    it. A relay with no route for a message holds it, up to PARKED_MAX of them, for two
+ *    request_intervals while it asks for one;
+ *  - a leaf with parent_oracle sends what it has no route for to its parent. Leaves never pass
+ *    requests on.
+ *
+ * Measured on the region (200 relays, parent_oracle, 3 seeds), unicast on time was 12-17% at 0 dBm
+ * and 7-8% at 20 dBm, against 22.7% and 7.9% proactive. Requests took 45-50% of the airtime at
+ * 0 dBm and reached the target 30% of the time: a request reached about 60 of the 200 relays, and
+ * most that heard it at 20 dBm could not pass it on, holding no usable link back to the relay
+ * they heard it from. Announces did not get cheaper either: without routes they were shorter but
+ * more often, as many as the cap allowed - at 20 dBm Trickle wanted more than it.
+ *
  * Not yet here, and left out of MSH-41 for issues of their own: the store-and-forward floor, which
  * only shows its worth under mobility and churn, and per-link modulation, which needs the slotted
  * MAC. */
 
 #define TSIM_DISTVEC_METRIC_INF 0xFFFF
 #define TSIM_DISTVEC_NO_PARENT 0xFFFFFFFFu
+
+/* Where routes come from: announced to every node, or found when traffic needs them. */
+enum tsim_distvec_routes {
+    TSIM_DISTVEC_ROUTES_PROACTIVE,
+    TSIM_DISTVEC_ROUTES_DEMAND,
+};
 
 /* How a leaf is reached: by routes to it that infrastructure announces, or through its parent. */
 enum tsim_distvec_leaves {
@@ -279,9 +324,12 @@ struct tsim_distvec_config {
     uint16_t channel;
     struct tsim_lora lora;
     double tx_dbm;
-    char relays[96];   /* infrastructure, as tsim_meshcore_config.relays: "all" or "0-45,50" */
-    uint8_t leaves;    /* enum tsim_distvec_leaves */
-    uint32_t *parents; /* with parent_oracle: [node], shared by every node; set by the driver */
+    char relays[96];    /* infrastructure, as tsim_meshcore_config.relays: "all" or "0-45,50" */
+    uint8_t leaves;     /* enum tsim_distvec_leaves */
+    uint8_t routes;     /* enum tsim_distvec_routes */
+    uint8_t req_hops;   /* with demand routes: relays a route request crosses, at most */
+    uint8_t req_cancel; /* with demand routes: copies heard that cancel a request, 0 never */
+    uint32_t *parents;  /* with parent_oracle: [node], shared by every node; set by the driver */
 
     tsim_time imin;    /* Trickle */
     uint8_t doublings; /* imax is imin times 2^doublings, 0..16 */
@@ -302,6 +350,7 @@ struct tsim_distvec_config {
     double change;     /* 0 to 1 */
     tsim_time request_interval;
     tsim_time seq_period; /* a node raises its own seq this often, give or take 10%; 0 never */
+    tsim_time route_ttl;  /* with demand routes: how long a route lasts unheard of */
 
     uint8_t hop_max;
     uint8_t hop_retries;
@@ -475,6 +524,7 @@ struct tsim_distvec_stats {
     uint64_t route_requests;
     uint64_t gave_up;
     uint64_t seq_raised;
+    uint64_t route_replies; /* with demand routes: route requests it answered */
     /* Now, not summed: of the destinations it announces, has had a route to and has none to, how
      * many it holds a route to through a usable neighbour that is infeasible, and how many none. */
     uint32_t unrouted_infeasible;

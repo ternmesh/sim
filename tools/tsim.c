@@ -151,16 +151,17 @@ static void print_report(const char *path, const struct tsim_scenario *s,
         for (int c = 0; c < TSIM_HEALTH_CAUSES; c++) {
             printf("%s\"%s\": %.6g", c ? ", " : "", causes[c], h->strong_per_h[c]);
         }
-        printf("},\n             \"outages_per_h\": %.6g, \"outage_mean_s\": %.6g, "
-               "\"unrouted_mean\": %.6g, \"urgent_mean\": %.6g,\n"
-               "             \"relay_reach_begin\": %.6g, \"relay_reach_end\": %.6g,\n"
-               "             \"seqno_requests_per_h\": %.6g, \"route_requests_per_h\": %.6g, "
-               "\"gave_up_per_h\": %.6g, \"seq_raised_per_h\": %.6g,\n"
-               "             \"unrouted_infeasible\": %.6g, \"unrouted_empty\": %.6g},\n",
-               h->outages_per_h, h->outage_mean_s, h->unrouted_mean, h->urgent_mean,
-               h->relay_reach_begin, h->relay_reach_end, h->seqno_requests_per_h,
-               h->route_requests_per_h, h->gave_up_per_h, h->seq_raised_per_h,
-               h->unrouted_infeasible, h->unrouted_empty);
+        printf(
+            "},\n             \"outages_per_h\": %.6g, \"outage_mean_s\": %.6g, "
+            "\"unrouted_mean\": %.6g, \"urgent_mean\": %.6g,\n"
+            "             \"relay_reach_begin\": %.6g, \"relay_reach_end\": %.6g,\n"
+            "             \"seqno_requests_per_h\": %.6g, \"route_requests_per_h\": %.6g, "
+            "\"gave_up_per_h\": %.6g, \"seq_raised_per_h\": %.6g, \"route_replies_per_h\": %.6g,\n"
+            "             \"unrouted_infeasible\": %.6g, \"unrouted_empty\": %.6g},\n",
+            h->outages_per_h, h->outage_mean_s, h->unrouted_mean, h->urgent_mean,
+            h->relay_reach_begin, h->relay_reach_end, h->seqno_requests_per_h,
+            h->route_requests_per_h, h->gave_up_per_h, h->seq_raised_per_h, h->route_replies_per_h,
+            h->unrouted_infeasible, h->unrouted_empty);
     }
     print_losses(&r->losses);
     printf("  \"on_time_per_airtime_s\": %.6g,\n", r->on_time_per_airtime_s);

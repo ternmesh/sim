@@ -483,6 +483,25 @@ static const char *distvec_set(void *config, const char *key, const char *value)
         }
         return NULL;
     }
+    if (strcmp(key, "routes") == 0) {
+        if (strcmp(value, "proactive") == 0) {
+            c->routes = TSIM_DISTVEC_ROUTES_PROACTIVE;
+        } else if (strcmp(value, "demand") == 0) {
+            c->routes = TSIM_DISTVEC_ROUTES_DEMAND;
+        } else {
+            return "expected proactive or demand";
+        }
+        return NULL;
+    }
+    if (strcmp(key, "route_ttl") == 0) {
+        return distvec_time(value, false, &c->route_ttl);
+    }
+    if (strcmp(key, "req_hops") == 0) {
+        return distvec_count(value, 1, UINT8_MAX, &c->req_hops);
+    }
+    if (strcmp(key, "req_cancel") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->req_cancel);
+    }
     if (strcmp(key, "imin") == 0) {
         return distvec_time(value, false, &c->imin);
     }
@@ -1393,6 +1412,7 @@ static void distvec_sum(struct tsim_net *net, struct tsim_distvec_stats *sum) {
         sum->route_requests += s.route_requests;
         sum->gave_up += s.gave_up;
         sum->seq_raised += s.seq_raised;
+        sum->route_replies += s.route_replies;
         sum->unrouted_infeasible += s.unrouted_infeasible;
         sum->unrouted_empty += s.unrouted_empty;
     }
@@ -1461,6 +1481,7 @@ static void health(const struct window *w, tsim_time end, struct tsim_route_heal
         h->route_requests_per_h = (double)(now.route_requests - w->stats.route_requests) / hours;
         h->gave_up_per_h = (double)(now.gave_up - w->stats.gave_up) / hours;
         h->seq_raised_per_h = (double)(now.seq_raised - w->stats.seq_raised) / hours;
+        h->route_replies_per_h = (double)(now.route_replies - w->stats.route_replies) / hours;
     }
     if (relays) {
         h->unrouted_infeasible = (double)now.unrouted_infeasible / relays;
