@@ -416,6 +416,10 @@ struct tsim_distvec_config {
     double link_margin_db;
     double link_band_db;
     tsim_time silent_max; /* with links by strength: unheard this long, forgotten */
+    /* With links by strength, the liveness probe (MSH-61, below). */
+    uint8_t probe_hops;   /* hops lost running, nothing heard between, that start one; 0 never */
+    uint8_t probe_tries;  /* probes unanswered that forget the neighbour, 1..32 */
+    tsim_time probe_wait; /* a probe's wait for its answer, and the most the next waits more */
     const struct tsim_distvec_oracle
         *oracle_routes; /* with either: set by the driver, never parsed */
 };
@@ -489,7 +493,37 @@ struct tsim_distvec_config {
  * points short of the link oracle there (66.3% against 69.0%), but 8% at 20 dBm, where routes
  * over the nearest links alone, more hops each, fell 10.7 short (70.3% against 81.0%), mostly in
  * retries: what announcing to power_k neighbours leaves unknown, and what learning more costs
- * more than it gains. */
+ * more than it gains.
+ *
+ * The liveness probe (MSH-61), with links by strength and probe_hops above 0. A dead neighbour
+ * wants a signal a live one never gives, and a live one always gives an answer when asked. After
+ * probe_hops hops to a neighbour are lost in a row, with nothing heard from it between, the node
+ * asks it directly, at tx_dbm whatever power control would set:
+ *
+ *     type 0x08 | target 4 | prober 4 | power 1
+ *
+ * and the target answers at once, after the jitter, at tx_dbm too, charged as control:
+ *
+ *     type 0x09 | prober 4 | target 4 | power 1
+ *
+ * Anything heard from the neighbour - the answer, an announce, a frame passed on, a probe or an
+ * answer of its own to some other node - ends the probing, and every node that decodes a probe or
+ * an answer hears its sender. Without one, the next probe goes probe_wait after the last went, and
+ * a random time up to probe_wait more; once probe_tries have gone unanswered, the link goes out of
+ * use, its routes kept, until something is heard from the neighbour again. Its routes stay in use
+ * while it is asked. dead_hops and silent_max still forget as before.
+ *
+ * Off by default: measured on the region (cds 200, parent_oracle, 3 seeds) it lost more than it
+ * found, with churn - a quarter of the relays down 30 minutes after every 2 hours up - or without.
+ * A probe fares no better than any other frame there: 27-43% of them reached the target, so a
+ * live neighbour easily left a dozen unanswered. With churn, unicast on time was 50.0% at 0 dBm
+ * and 44.6% at 20 dBm without probing; probing after 2, 4 or 8 lost hops, 6 or 12 tries 5 or 10 s
+ * apart, made 37-48% and 32-44%, though it cut the hops sent to a relay down by 25-45%. Without
+ * churn, where every verdict is wrong, 66.3% and 70.3% fell to 46-59% and 46-68%. Even probes all
+ * but never acted on - 32 tries 30 s apart - cost 3-5 points, their airtime alone: 63.6% and 64.9%
+ * without churn, 44.7% and 40.6% with it. Forgetting the neighbour on the verdict, rather than
+ * taking its link out of use, did worse still. Finding a dead relay sooner is not what is missing:
+ * routes around it come over the same lossy announces, however soon it is found. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */
@@ -569,13 +603,15 @@ bool tsim_distvec_next(const void *self, uint32_t dst, uint32_t *next);
 
 /* What took a usable link out of use (MSH-54): its IHU for this node expired; an announce heard
  * left its receive rate too low for etx_max; housekeeping found it silent so long its rate fell
- * too low; a frame sent to it was lost; or it was forgotten, unheard for neighbour_timeout. */
+ * too low; a frame sent to it was lost; it was forgotten, unheard for neighbour_timeout; or it
+ * left the liveness probe unanswered (MSH-61). */
 enum tsim_distvec_down {
     TSIM_DISTVEC_DOWN_IHU,
     TSIM_DISTVEC_DOWN_RATE,
     TSIM_DISTVEC_DOWN_SILENT,
     TSIM_DISTVEC_DOWN_HOP,
     TSIM_DISTVEC_DOWN_TIMEOUT,
+    TSIM_DISTVEC_DOWN_PROBE,
     TSIM_DISTVEC_DOWN_COUNT,
 };
 
@@ -599,6 +635,10 @@ struct tsim_distvec_stats {
     uint64_t gave_up;
     uint64_t seq_raised;
     uint64_t route_replies; /* with demand routes: route requests it answered */
+    /* The liveness probe: probes sent, neighbours that answered one, and probes it answered. */
+    uint64_t probes;
+    uint64_t probes_answered;
+    uint64_t probe_acks;
     /* Now, not summed: of the destinations it announces, has had a route to and has none to, how
      * many it holds a route to through a usable neighbour that is infeasible, and how many none. */
     uint32_t unrouted_infeasible;

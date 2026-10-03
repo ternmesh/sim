@@ -27,6 +27,8 @@
 #define TYPE_BCAST 0x05
 #define TYPE_RREQ 0x06
 #define TYPE_RREP 0x07
+#define TYPE_PROBE 0x08
+#define TYPE_PROBE_ACK 0x09
 
 #define ANNOUNCE_HEAD 16
 #define IHU_LEN 5
@@ -41,6 +43,7 @@
  * request's length: see the header. */
 #define TRAIL_LEN 10
 #define RREQ_LEN 27
+#define PROBE_LEN 10  /* a probe or its answer */
 #define PARKED_MAX 16 /* frames a relay holds while it asks for a route */
 #define RREQ_SEQ 0x01 /* a route request's flag: it asks for the target's seq */
 /* The longest IHU round an announce can tell, in its two bytes. */
@@ -147,12 +150,17 @@ struct neighbour {
     uint16_t cost;      /* the link's, or INF */
     uint16_t cost_used; /* the cost every route through it was last chosen with */
     tsim_time heard;
-    tsim_time promise; /* how soon it said it would announce again */
-    uint16_t ihu_seq;  /* the announce that last named this node */
-    double floor;      /* the quietest it decodes this node at, in dBm; NAN until known */
-    bool up;           /* with links by strength: its margins, both ways, put it in use */
-    uint8_t lost;      /* with links by strength: hops lost to it since it was last heard */
-    double boost;      /* power control: dB more for frames to it, for hops it has lost */
+    tsim_time promise;     /* how soon it said it would announce again */
+    uint16_t ihu_seq;      /* the announce that last named this node */
+    double floor;          /* the quietest it decodes this node at, in dBm; NAN until known */
+    bool up;               /* with links by strength: its margins, both ways, put it in use */
+    uint8_t lost;          /* with links by strength: hops lost to it since it was last heard */
+    double boost;          /* power control: dB more for frames to it, for hops it has lost */
+    bool probing;          /* the liveness probe: asked whether it is there, and not yet answered */
+    uint8_t probes;        /* probes sent it unanswered */
+    uint64_t probe_handle; /* its probe in the queue, until it goes; 0 for none */
+    tsim_time probe_due;   /* when the next probe goes, or the last is given up on; -1 queued */
+    bool mute;             /* left the probe unanswered: unused until something is heard from it */
 };
 
 /* A frame sent to a next hop, waiting to hear the next hop pass it on. */
@@ -299,6 +307,8 @@ struct router {
     struct tsim_timer *ask_timer;
     struct tsim_timer *seq_timer;
     struct tsim_timer *park_timer; /* with demand routes: when parked frames next look for routes */
+    struct tsim_timer *probe_timer;
+    uint32_t probing; /* neighbours being probed */
     struct parked *parked;
     size_t parked_count;
 };
@@ -352,6 +362,8 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .link_band_db = 3,
         .dead_hops = 24,
         .silent_max = TSIM_S(24 * 3600),
+        .probe_tries = 6,
+        .probe_wait = TSIM_S(5),
     };
 }
 
@@ -415,6 +427,10 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     }
     if (strength && (c->dead_hops < 1 || c->silent_max <= 0)) {
         return "dead_hops is 0, or silent_max is not above 0";
+    }
+    if (strength && c->probe_hops &&
+        (c->probe_tries < 1 || c->probe_tries > 32 || c->probe_wait <= 0)) {
+        return "with probe_hops, probe_tries is not 1 to 32, or probe_wait is not above 0";
     }
     bool oracle = c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE;
     if (oracle && !(c->oracle_margin_db >= 0 && c->oracle_margin_db <= 60)) {
@@ -621,7 +637,7 @@ static void judge(const struct router *r, struct neighbour *n) {
 static uint16_t link_cost(const struct router *r, const struct neighbour *n) {
     if (r->truth || by_strength(r)) {
         double cost = ceil(r->ref_ms); /* an ETX of 1 */
-        bool up = r->truth ? true_link(r, n->id) : n->up;
+        bool up = r->truth ? true_link(r, n->id) : n->up && !n->mute;
         return !up ? INF : cost < 1 ? 1 : cost >= INF ? INF - 1 : (uint16_t)cost;
     }
     uint8_t got = heard_rate(r, n);
@@ -1168,13 +1184,16 @@ static void reselect_through(struct router *r, uint16_t s) {
 
 static void trickle_reset(struct router *r);
 
+static void probe_stop(struct router *r, struct neighbour *n, bool answered);
+
 /* A neighbour is gone, for `cause`: unheard for too long, or by strength, frames sent to it lost
- * too many times running. */
+ * too many times running or a probe left unanswered. */
 static void forget(struct router *r, uint16_t s, enum tsim_distvec_down cause) {
     struct neighbour *n = slot(r, s);
     if (!n->used) {
         return;
     }
+    probe_stop(r, n, false);
     uint16_t was = n->cost;
     n->used = false;
     n->cost = INF;
@@ -1577,6 +1596,8 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     n->last_seq = seq;
     n->heard = now(r);
     n->lost = 0;
+    n->mute = false;
+    probe_stop(r, n, true);
     n->infra = b[9] & FLAG_INFRA;
     n->promise = promise_time(get16(b + 10));
     if (r->config.power && r->truth) {
@@ -1701,6 +1722,151 @@ static void on_request(struct router *r, const uint8_t *b, uint32_t len) {
     }
 }
 
+/* --- The liveness probe --- */
+
+static void probe_arm(struct router *r) {
+    tsim_time next = -1;
+    for (size_t i = 0; r->probing && i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        if (n->used && n->probing && n->probe_due >= 0 && (next < 0 || n->probe_due < next)) {
+            next = n->probe_due;
+        }
+    }
+    if (next < 0) {
+        tsim_timer_stop(r->probe_timer);
+    } else {
+        tsim_time t = now(r);
+        tsim_timer_start(r->probe_timer, next > t ? next - t : 0);
+    }
+}
+
+/* Asks the neighbour whether it is there, unless it is being asked already. */
+static void probe_start(struct router *r, struct neighbour *n) {
+    if (n->probing) {
+        return;
+    }
+    n->probing = true;
+    n->probes = 0;
+    n->probe_handle = 0;
+    n->probe_due = now(r);
+    r->probing++;
+    probe_arm(r);
+}
+
+/* Something was heard from the neighbour - `answered` - or it is forgotten: no more probes. */
+static void probe_stop(struct router *r, struct neighbour *n, bool answered) {
+    if (!n->probing) {
+        return;
+    }
+    if (n->probe_handle) {
+        tsim_node_cancel(r->node, n->probe_handle);
+    }
+    if (answered && n->probes) {
+        r->stats.probes_answered++;
+    }
+    n->probing = false;
+    n->probe_handle = 0;
+    r->probing--;
+    probe_arm(r);
+}
+
+/* A probe or its answer, `type`, from `from` to `to`, at tx_dbm. */
+static struct tsim_tx probe_frame(const struct router *r, uint8_t type, uint32_t to,
+                                  uint32_t from) {
+    struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_CONTROL);
+    tx.tx_dbm = r->config.tx_dbm;
+    tx.bytes[0] = type;
+    put32(tx.bytes + 1, to);
+    put32(tx.bytes + 5, from);
+    tx.bytes[9] = power_byte(tx.tx_dbm);
+    tx.len = PROBE_LEN;
+    return tx;
+}
+
+/* The neighbour in slot `s` left probe_tries probes unanswered: its link goes out of use, its
+ * routes kept, until something is heard from it. */
+static void silenced(struct router *r, uint16_t s) {
+    struct neighbour *n = slot(r, s);
+    probe_stop(r, n, false);
+    n->mute = true;
+    uint16_t was = n->cost;
+    n->cost = INF;
+    link_down(r, n, was, TSIM_DISTVEC_DOWN_PROBE);
+    if (was != INF) {
+        n->cost_used = INF;
+        r->changed = true;
+        reselect_through(r, s);
+        choose_parent(r);
+        trickle_reset(r);
+        r->changed = false;
+    }
+}
+
+static void probe_fire(void *ctx) {
+    struct router *r = ctx;
+    tsim_time t = now(r);
+    for (size_t i = 0; r->probing && i < r->nb_count; i++) {
+        struct neighbour *n = &r->nb[i];
+        if (!n->used || !n->probing || n->probe_due < 0 || n->probe_due > t) {
+            continue;
+        }
+        if (n->probes >= r->config.probe_tries) {
+            silenced(r, (uint16_t)(i + 1));
+            continue;
+        }
+        struct tsim_tx tx = probe_frame(r, TYPE_PROBE, n->id, r->self);
+        n->probe_handle = tsim_node_send(r->node, &tx);
+        if (n->probe_handle) {
+            n->probes++;
+            r->stats.probes++;
+            n->probe_due = -1;
+        } else {
+            n->probe_due = t + r->config.probe_wait; /* the queue refused it: not counted */
+        }
+    }
+    probe_arm(r);
+}
+
+/* A probe went on the air: its answer is waited for probe_wait, and the next probe a random time
+ * up to probe_wait more. Returns whether `handle` was one. */
+static bool probe_sent(struct router *r, uint64_t handle) {
+    for (size_t i = 0; r->probing && i < r->nb_count; i++) {
+        struct neighbour *n = &r->nb[i];
+        if (n->used && n->probing && n->probe_handle == handle) {
+            n->probe_handle = 0;
+            n->probe_due = now(r) + r->config.probe_wait +
+                           (tsim_time)(tsim_rng_unit(&r->rng) * (double)r->config.probe_wait);
+            probe_arm(r);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void heard_from(struct router *r, uint16_t s, const uint8_t *power, double snr);
+static void hold(struct router *r, const struct tsim_tx *tx, uint64_t key, bool listen,
+                 double airtimes);
+
+/* A probe or an answer: its sender is heard, by strength, by every node that decodes it, and a
+ * probe for this node is answered. */
+static void on_probe(struct router *r, const uint8_t *b, uint32_t len, double snr) {
+    if (len < PROBE_LEN) {
+        return;
+    }
+    uint32_t to = get32(b + 1), from = get32(b + 5);
+    if (from >= r->nodes || from == r->self) {
+        return;
+    }
+    if (by_strength(r) && r->slot_of[from]) {
+        heard_from(r, r->slot_of[from], b + 9, snr);
+    }
+    if (b[0] == TYPE_PROBE && to == r->self) {
+        struct tsim_tx tx = probe_frame(r, TYPE_PROBE_ACK, from, r->self);
+        hold(r, &tx, 0, false, r->config.jitter);
+        r->stats.probe_acks++;
+    }
+}
+
 /* --- Next hops and their implicit acknowledgements --- */
 
 /* A frame never reached the neighbour in slot `s`: evidence against the link, as good as HOP_MISS
@@ -1716,6 +1882,9 @@ static void missed(struct router *r, uint16_t s) {
     if (by_strength(r) && ++n->lost >= r->config.dead_hops) {
         forget(r, s, TSIM_DISTVEC_DOWN_HOP);
         return;
+    }
+    if (by_strength(r) && r->config.probe_hops && n->lost >= r->config.probe_hops) {
+        probe_start(r, n);
     }
     n->history = (uint16_t)(n->history << HOP_MISS);
     n->span = HISTORY;
@@ -1841,6 +2010,8 @@ static void heard_from(struct router *r, uint16_t s, const uint8_t *power, doubl
     n->floor = isnan(n->floor) ? floor : 0.75 * n->floor + 0.25 * floor;
     n->heard = now(r);
     n->lost = 0;
+    n->mute = false;
+    probe_stop(r, n, true);
     uint16_t was = n->cost;
     judge(r, n);
     n->cost = link_cost(r, n);
@@ -2574,6 +2745,10 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
             on_bcast(r, rx->bytes, rx->len);
         }
         return;
+    case TYPE_PROBE:
+    case TYPE_PROBE_ACK:
+        on_probe(r, rx->bytes, rx->len, rx->snr_db);
+        return;
     default:
         return;
     }
@@ -2587,6 +2762,9 @@ static void router_tx_done(void *self, uint64_t handle) {
         tsim_time waited = now(r) - r->ann_queued, kept = r->mac_wait - r->mac_wait / 8;
         r->mac_wait = waited > kept ? waited : kept;
         r->ann_handle = 0;
+        return;
+    }
+    if (probe_sent(r, handle)) {
         return;
     }
     for (struct awaiting *a = r->awaiting; a; a = a->next) {
@@ -2696,6 +2874,7 @@ static void router_destroy(void *self) {
     tsim_timer_destroy(r->ask_timer);
     tsim_timer_destroy(r->seq_timer);
     tsim_timer_destroy(r->park_timer);
+    tsim_timer_destroy(r->probe_timer);
     free(r->starving);
     free(r->asks);
     free(r->dest);
@@ -2762,9 +2941,10 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->ask_timer = tsim_timer_create(node, ask_fire, r);
     r->seq_timer = tsim_timer_create(node, seq_fire, r);
     r->park_timer = tsim_timer_create(node, park_fire, r);
-    if (!r->seq_timer || !r->park_timer || !r->dest || !r->slot_of || !r->trickle ||
-        !r->cap_timer || !r->hop_timer || !r->out_timer || !r->house || !r->request_timer ||
-        !r->ask_timer) {
+    r->probe_timer = tsim_timer_create(node, probe_fire, r);
+    if (!r->probe_timer || !r->seq_timer || !r->park_timer || !r->dest || !r->slot_of ||
+        !r->trickle || !r->cap_timer || !r->hop_timer || !r->out_timer || !r->house ||
+        !r->request_timer || !r->ask_timer) {
         router_destroy(r);
         return NULL;
     }
