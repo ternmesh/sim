@@ -1607,6 +1607,32 @@ static void by_strength_a_neighbour_is_gone_when_frames_to_it_fail(void) {
     CHECK(tsim_distvec_check(&bad) != NULL);
 }
 
+/* By strength, housekeeping keeps time with silent_max, not neighbour_timeout: two nodes heard
+ * early, while their promises are short, fall silent, and are forgotten soon after silent_max -
+ * within 300 s here, where looking every 15 min, as neighbour_timeout would, took until 900 s. */
+static void by_strength_silence_is_checked_as_often_as_silent_max_needs(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.silent_max = TSIM_S(240);
+    r.rc.imin = TSIM_S(1);
+    r.rc.doublings = 14; /* imax 4.5 h: housekeeping by neighbour_timeout would come every 15 min */
+    r.rc.quiet_max = 0;
+    r.rc.cap = 0.5;
+    CHECK(tsim_distvec_check(&r.rc) == NULL);
+    line(&r, 2, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(20));
+    uint32_t next = 0;
+    CHECK(route(&r, 0, 1, &next) && next == 1);
+    link(&r, 0, 1, LOSS_NONE);
+    tsim_sched_run_until(r.sched, TSIM_S(20 + 360)); /* by neighbour_timeout's, still kept */
+    CHECK(!route(&r, 0, 1, &next));
+    struct tsim_distvec_stats st;
+    tsim_distvec_stats(at(&r, 0), &st);
+    CHECK_EQ_U64(st.down[TSIM_DISTVEC_DOWN_TIMEOUT], 1);
+    rig_close(&r);
+}
+
 /* With power control, SF7 and 14 dBm: a neighbour at loss L is heard at SNR 131 - L, so its floor
  * is L - 124.5 dBm, and a frame to it goes at L - 114.5, rounded up, between -9 and 14. */
 static void power_rig(struct rig *r, uint32_t nodes, const double *losses) {
@@ -1787,6 +1813,7 @@ int main(void) {
     RUN(links_by_strength_come_up_and_go_down_on_margin);
     RUN(a_lost_hop_takes_no_link_down_by_strength);
     RUN(by_strength_a_neighbour_is_gone_when_frames_to_it_fail);
+    RUN(by_strength_silence_is_checked_as_often_as_silent_max_needs);
     RUN(a_near_neighbour_is_sent_to_quieter_than_a_far_one);
     RUN(a_relay_goes_loud_enough_for_the_hop_before);
     RUN(a_hop_lost_at_its_power_is_tried_again_louder);

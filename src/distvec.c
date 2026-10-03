@@ -2233,9 +2233,15 @@ static void router_tx_done(void *self, uint64_t handle) {
 
 /* --- Housekeeping and life --- */
 
+/* How long a neighbour may go unheard before it is forgotten: neighbour_timeout, or by strength,
+ * silent_max. */
+static tsim_time silence_limit(const struct router *r) {
+    return by_strength(r) ? r->config.silent_max : r->config.neighbour_timeout;
+}
+
 /* How often a node looks over its links for neighbours gone quiet. */
 static tsim_time house_period(const struct router *r) {
-    tsim_time p = r->config.neighbour_timeout / 4;
+    tsim_time p = silence_limit(r) / 4;
     return (p < imax(r) ? p : imax(r)) + 1;
 }
 
@@ -2253,8 +2259,7 @@ static void house_fire(void *ctx) {
         /* Never before it has let two of its promises pass: a node may go quiet that long. And
          * never with the link oracle, whose links stay; by strength, only after silent_max, its
          * frames lost telling sooner if it is gone. */
-        tsim_time timeout = by_strength(r) ? r->config.silent_max : r->config.neighbour_timeout;
-        if (!r->truth && t - n->heard > timeout && t - n->heard > 2 * n->promise) {
+        if (!r->truth && t - n->heard > silence_limit(r) && t - n->heard > 2 * n->promise) {
             forget(r, s, TSIM_DISTVEC_DOWN_TIMEOUT);
             continue;
         }
