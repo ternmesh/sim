@@ -111,6 +111,7 @@ struct dest {
     bool advertised;  /* a finite route to it has been announced, and not retracted since */
     bool urgent;      /* on the list of changed routes */
     bool listed;      /* in the frame being built */
+    bool leaf;        /* heard announcing itself as a leaf */
     uint8_t retracts; /* times its retraction is still to go */
     uint8_t tries;    /* seqno requests sent while starved: 0 when not starved */
     uint16_t fd_seq;  /* the feasibility distance */
@@ -200,6 +201,7 @@ struct router {
     uint32_t self;
     uint32_t nodes;
     bool infra;
+    uint32_t parent; /* a leaf's, with parent_oracle: a neighbour's id, or TSIM_DISTVEC_NO_PARENT */
     uint32_t ann_head; /* an announce's head, and a data frame's: longer with power control */
     uint32_t data_head;
     double node_dbm;                          /* what frames for every neighbour go at */
@@ -274,6 +276,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .lora = *lora,
         .tx_dbm = tx_dbm,
         .relays = "all",
+        .leaves = TSIM_DISTVEC_LEAVES_ROUTED,
         .imin = TSIM_S(8),
         .doublings = 6,
         .redundancy = 3,
@@ -315,6 +318,9 @@ static double promise_secs(const struct tsim_distvec_config *c, tsim_time interv
 const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     if (memchr(c->relays, 0, sizeof c->relays) == NULL || tsim_nodeset_contains(c->relays, 0) < 0) {
         return "relays is not all, or node numbers and ranges";
+    }
+    if (c->leaves > TSIM_DISTVEC_LEAVES_PARENT_ORACLE) {
+        return "leaves is not routed or parent_oracle";
     }
     if (tsim_lora_airtime(&c->lora, c->ref_len) < 0) {
         return "ref_len has no airtime at the radio's modulation";
@@ -362,6 +368,17 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
 static tsim_time now(const struct router *r) { return tsim_node_now(r->node); }
 
 static tsim_time imax(const struct router *r) { return r->config.imin << r->config.doublings; }
+
+/* Whether leaves are reached through their parents rather than by routes to them. */
+static bool by_parent(const struct router *r) {
+    return r->config.leaves == TSIM_DISTVEC_LEAVES_PARENT_ORACLE;
+}
+
+/* Whether this node announces its route to `d`: infrastructure does, but never to a leaf when
+ * leaves are reached through their parents. */
+static bool announces(const struct router *r, uint32_t d) {
+    return r->infra && !(by_parent(r) && r->dest[d].leaf);
+}
 
 static bool seen(const struct router *r, uint64_t key) {
     for (unsigned i = 0; i < SEEN; i++) {
@@ -448,7 +465,8 @@ static void node_power(struct router *r) {
     unsigned have = 0, k = c->power_k;
     for (size_t i = 0; i < r->nb_count; i++) {
         const struct neighbour *n = &r->nb[i];
-        if (!n->used || isnan(n->floor) || (have == k && n->floor >= low[k - 1])) {
+        if (!n->used || isnan(n->floor) || (by_parent(r) && !n->infra) ||
+            (have == k && n->floor >= low[k - 1])) {
             continue;
         }
         unsigned at = have < k ? have++ : k - 1;
@@ -501,6 +519,38 @@ static bool usable(struct router *r, uint16_t s, uint32_t d) {
     return n->used && n->cost != INF && (n->infra || n->id == d);
 }
 
+/* A leaf's parent, with parent_oracle: of the infrastructure neighbours it can use, the one with
+ * the best ETX, kept unless another beats it by `hysteresis` - written where every node can read
+ * it. */
+static void choose_parent(struct router *r) {
+    if (r->infra || !by_parent(r)) {
+        return;
+    }
+    const struct neighbour *cur =
+        r->parent < r->nodes && r->slot_of[r->parent] ? slot(r, r->slot_of[r->parent]) : NULL;
+    double best_q = 0, cur_q = 0; /* d_f d_r: the inverse of the link's ETX */
+    uint32_t best = TSIM_DISTVEC_NO_PARENT;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        if (!n->used || !n->infra || n->cost == INF) {
+            continue;
+        }
+        double q = (double)heard_rate(r, n) * n->dr;
+        if (n == cur) {
+            cur_q = q;
+        }
+        if (q > best_q) {
+            best_q = q;
+            best = n->id;
+        }
+    }
+    if (cur_q > 0 && !(cur_q < best_q * (1.0 - r->config.hysteresis))) {
+        best = r->parent; /* not enough better to move */
+    }
+    r->parent = best;
+    r->config.parents[r->self] = best;
+}
+
 static uint16_t total(uint16_t metric, uint16_t cost) {
     if (metric == INF || cost == INF) {
         return INF;
@@ -520,13 +570,40 @@ static struct entry *entry_by(struct dest *d, uint16_t s) {
     return NULL;
 }
 
+/* The node whose route a frame for `dst` follows: `dst`, or with parent_oracle, the parent of a
+ * leaf this node has no route to - TSIM_DISTVEC_NO_PARENT if it has none, and this node itself if
+ * it is the parent but cannot reach the leaf. */
+static uint32_t target_of(const struct router *r, uint32_t dst) {
+    if (!by_parent(r) || r->dest[dst].sel) {
+        return dst;
+    }
+    return r->config.parents[dst];
+}
+
+/* The neighbour a frame for `dst` goes to next, or NULL for none, and the metric of the way there:
+ * through a leaf's parent, the route to the parent and a hop more. */
+static struct neighbour *next_toward(struct router *r, uint32_t dst, uint16_t *metric) {
+    uint32_t t = target_of(r, dst);
+    if (t >= r->nodes || t == r->self || !r->dest[t].sel) {
+        return NULL;
+    }
+    struct dest *ds = &r->dest[t];
+    struct neighbour *n = slot(r, ds->sel);
+    if (metric) {
+        uint16_t m = total(entry_by(ds, ds->sel)->metric, n->cost);
+        double hop = ceil(r->ref_ms);
+        *metric = t == dst ? m : total(m, (uint16_t)(hop < 1 ? 1 : hop));
+    }
+    return n;
+}
+
 static bool feasible(const struct dest *d, const struct entry *e) {
     return !d->has_fd || newer(e->seq, d->fd_seq) ||
            (e->seq == d->fd_seq && e->metric < d->fd_metric);
 }
 
 static void push_urgent(struct router *r, uint32_t d) {
-    if (r->dest[d].urgent) {
+    if (r->dest[d].urgent || !announces(r, d)) {
         return;
     }
     if (r->urgent_count == r->urgent_cap) {
@@ -757,13 +834,13 @@ static void reselect(struct router *r, uint32_t d) {
     }
     bool was = ds->sel != 0;
     ds->sel = chosen ? chosen->slot : 0;
-    r->selected = r->selected - was + (chosen != NULL);
     if (!chosen && infeasible) {
         starved(r, d);
     }
-    if (!r->infra) {
-        return; /* a leaf announces no routes */
+    if (!announces(r, d)) {
+        return; /* a leaf announces no routes, and with parents nobody announces one to a leaf */
     }
+    r->selected = r->selected - was + (chosen != NULL);
     if (!chosen) {
         if (ds->advertised || was) {
             push_urgent(r, d); /* to retract it */
@@ -878,6 +955,7 @@ static void forget(struct router *r, uint16_t s) {
             reselect(r, d);
         }
     }
+    choose_parent(r);
     r->changed = true;
     trickle_reset(r);
     r->changed = false;
@@ -1145,7 +1223,7 @@ static uint32_t build(struct router *r, uint8_t *b) {
             uint32_t d = r->cursor;
             r->cursor = (r->cursor + 1) % r->nodes;
             struct dest *ds = &r->dest[d];
-            if (d != r->self && !ds->listed && (ds->sel || ds->retracts) &&
+            if (d != r->self && !ds->listed && (ds->sel || ds->retracts) && announces(r, d) &&
                 advertise(r, d, b + i)) {
                 i += ROUTE_LEN;
                 routes++;
@@ -1307,7 +1385,9 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
         r->changed |= flipped;
         reselect_through(r, s);
     }
+    r->dest[from].leaf = !n->infra;
     update(r, from, get16(b + 7), 0, s);
+    choose_parent(r);
     if (n->infra) {
         for (uint8_t k = 0; k < routes; k++, p += ROUTE_LEN) {
             update(r, get32(p), get16(p + 4), get16(p + 6), s);
@@ -1399,6 +1479,7 @@ static void missed(struct router *r, uint16_t s) {
     if (n->cost != was) {
         n->cost_used = n->cost;
         reselect_through(r, s);
+        choose_parent(r);
     }
     if (r->changed) {
         trickle_reset(r);
@@ -1550,11 +1631,10 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
             return false;
         }
     } else {
-        struct dest *ds = &r->dest[dst];
-        if (!ds->sel) {
+        n = next_toward(r, dst, NULL);
+        if (!n) {
             return false;
         }
-        n = slot(r, ds->sel);
         next = n->id;
     }
     struct tsim_tx tx = frame(r, purpose,
@@ -1592,6 +1672,21 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
     return true;
 }
 
+/* This node has no way to send a frame for `dst` on: it asks for a route to the node it would
+ * follow one to - `dst`, or with parent_oracle the leaf's parent, never a leaf, which nobody
+ * announces a route to. A leaf with no parent, or one of its own it cannot reach, it cannot ask
+ * about. With `at_once`, a message waits on it, so it asks without waiting out request_interval. */
+static void no_route(struct router *r, uint32_t dst, bool at_once) {
+    uint32_t t = target_of(r, dst);
+    if (t >= r->nodes || t == r->self) {
+        return;
+    }
+    if (at_once) {
+        r->dest[t].asked = -1;
+    }
+    starved(r, t);
+}
+
 static void forget_awaiting(struct awaiting *a) {
     struct router *r = a->owner;
     for (struct awaiting **p = &r->awaiting; *p; p = &(*p)->next) {
@@ -1606,14 +1701,17 @@ static void forget_awaiting(struct awaiting *a) {
 
 static void send_attempt(struct awaiting *a) {
     struct router *r = a->owner;
-    struct dest *ds = &r->dest[a->dst];
     tsim_time wait = r->config.ack_wait;
     uint64_t handle = 0;
     if (route_frame(r, TYPE_DATA, r->self, a->dst, a->id, r->config.hop_max, a->content, a->len,
                     TSIM_PURPOSE_DATA, a->id, NAN, &handle)) {
+        uint16_t route_metric = INF;
+        if (!r->oracle) {
+            next_toward(r, a->dst, &route_metric);
+        }
         double metric =
             r->oracle ? r->oracle->route[(size_t)r->self * r->nodes + a->dst].hops * ceil(r->ref_ms)
-                      : total(entry_by(ds, ds->sel)->metric, slot(r, ds->sel)->cost);
+                      : route_metric;
         wait += (tsim_time)(r->config.ack_factor * metric * (double)TSIM_MS(1));
         if (handle) {
             /* The wait starts when the frame goes: however long it queues behind other traffic,
@@ -1624,8 +1722,7 @@ static void send_attempt(struct awaiting *a) {
         }
         /* Refused by a full queue: tried again after the wait, as if it had been lost. */
     } else {
-        ds->asked = -1; /* a message waits on it: ask now */
-        starved(r, a->dst);
+        no_route(r, a->dst, true); /* a message waits on it: ask now */
     }
     tsim_timer_start(a->timer, wait);
 }
@@ -1812,7 +1909,7 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
         tsim_node_deliver(r->node, id);
         if (!route_frame(r, TYPE_ACK, r->self, src, id, r->config.hop_max, NULL, 0,
                          TSIM_PURPOSE_CONTROL, 0, back, NULL)) {
-            starved(r, src);
+            no_route(r, src, false);
         }
         return;
     }
@@ -1830,16 +1927,17 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
                      data ? id : 0, back, NULL)) {
         /* Sent here, so the hop before still has the route: if it had it from this node, its
          * retraction never got there. Say it again. */
-        struct dest *ds = &r->dest[dst];
-        if (ds->has_fd && !ds->advertised && !ds->urgent) {
+        uint32_t t = target_of(r, dst);
+        struct dest *ds = t < r->nodes ? &r->dest[t] : NULL;
+        if (ds && t != r->self && ds->has_fd && !ds->advertised && !ds->urgent) {
             if (!ds->retracts) {
                 ds->retracts = 1;
                 r->retracting++;
             }
-            push_urgent(r, dst);
+            push_urgent(r, t);
             trickle_reset(r);
         }
-        starved(r, dst);
+        no_route(r, dst, false);
     }
 }
 
@@ -1978,6 +2076,7 @@ static void house_fire(void *ctx) {
         trickle_reset(r);
         r->changed = false;
     }
+    choose_parent(r);
     node_power(r);
     tsim_timer_start(r->house, house_period(r));
 }
@@ -2037,6 +2136,14 @@ static void *router_create(struct tsim_node *node, const void *config) {
         free(r);
         return NULL;
     }
+    r->parent = TSIM_DISTVEC_NO_PARENT;
+    if (c->leaves == TSIM_DISTVEC_LEAVES_PARENT_ORACLE) {
+        if (!c->parents) {
+            free(r);
+            return NULL;
+        }
+        c->parents[r->self] = r->infra ? r->self : TSIM_DISTVEC_NO_PARENT;
+    }
     r->ann_head = ANNOUNCE_HEAD + (c->power ? 1 : 0);
     r->data_head = DATA_HEAD + (c->power ? 1 : 0);
     node_power(r);
@@ -2067,8 +2174,7 @@ static void *router_create(struct tsim_node *node, const void *config) {
 }
 
 static bool router_next_hop(const void *self, uint32_t dst, uint32_t *next) {
-    uint16_t metric;
-    return tsim_distvec_route(self, dst, next, &metric);
+    return tsim_distvec_next(self, dst, next);
 }
 
 const struct tsim_routing tsim_distvec = {
@@ -2118,6 +2224,19 @@ bool tsim_distvec_route(const void *self, uint32_t dst, uint32_t *next, uint16_t
         }
     }
     return false;
+}
+
+bool tsim_distvec_next(const void *self, uint32_t dst, uint32_t *next) {
+    struct router *r = (struct router *)self; /* next_toward() changes nothing */
+    if (r->oracle || dst >= r->nodes || dst == r->self) {
+        uint16_t metric;
+        return tsim_distvec_route(self, dst, next, &metric);
+    }
+    const struct neighbour *n = next_toward(r, dst, NULL);
+    if (n && next) {
+        *next = n->id;
+    }
+    return n != NULL;
 }
 
 uint32_t tsim_distvec_neighbours(const void *self) {

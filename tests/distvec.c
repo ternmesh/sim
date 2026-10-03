@@ -1046,6 +1046,70 @@ static void a_leaf_never_forwards(void) {
     rig_close(&r);
 }
 
+/* With parents, relays route among themselves: leaf, relay, relay, relay, leaf. No relay announces
+ * a route to a leaf, the relay hearing one keeps it for the last hop, and a message from leaf to
+ * leaf goes along the relays' route to the far leaf's parent, which hands it over. */
+static void with_parents_relays_route_among_themselves(void) {
+    struct rig r;
+    uint32_t parents[5];
+    rig_init(&r);
+    strcpy(r.rc.relays, "1-3");
+    r.rc.leaves = TSIM_DISTVEC_LEAVES_PARENT_ORACLE;
+    r.rc.parents = parents;
+    line(&r, 5, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    CHECK_EQ_U64(parents[0], 1);
+    CHECK_EQ_U64(parents[4], 3);
+    for (uint32_t i = 1; i <= 3; i++) {
+        CHECK_EQ_U64(parents[i], i); /* a relay is its own */
+    }
+    uint32_t next;
+    CHECK(route(&r, 1, 0, &next) && next == 0); /* the last hop, kept */
+    CHECK(!route(&r, 2, 0, &next));             /* never announced */
+    CHECK(!route(&r, 3, 0, &next));
+    CHECK(!route(&r, 0, 4, &next));
+    CHECK(route(&r, 0, 3, &next) && next == 1); /* a leaf hears the relays' routes */
+    CHECK(tsim_distvec_next(at(&r, 0), 4, &next) && next == 1);
+    CHECK(tsim_distvec_next(at(&r, 2), 4, &next) && next == 3);
+    CHECK(tsim_distvec_next(at(&r, 3), 4, &next) && next == 4);
+    CHECK(tsim_distvec_next(at(&r, 4), 0, &next) && next == 3);
+    uint64_t m = tsim_net_originate(r.net, 0, 4, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(400));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    CHECK(tsim_net_message(r.net, m)->finished); /* acknowledged the same way back */
+    for (uint32_t i = 1; i <= 3; i++) {
+        CHECK_EQ_U64(frames(&r, i, TSIM_PURPOSE_RELAY), 1);
+    }
+    rig_close(&r);
+}
+
+/* A leaf that hears no relay has no parent: nothing reaches it, and nobody asks about it. */
+static void a_leaf_with_no_parent_is_not_asked_about(void) {
+    struct rig r;
+    uint32_t parents[3];
+    rig_init(&r);
+    strcpy(r.rc.relays, "2");
+    r.rc.leaves = TSIM_DISTVEC_LEAVES_PARENT_ORACLE;
+    r.rc.parents = parents;
+    line(&r, 3, 1); /* leaf, leaf, relay */
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    CHECK_EQ_U64(parents[0], TSIM_DISTVEC_NO_PARENT);
+    CHECK_EQ_U64(parents[1], 2);
+    uint32_t next;
+    CHECK(!tsim_distvec_next(at(&r, 2), 0, &next));
+    uint64_t m = tsim_net_originate(r.net, 2, 0, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(400));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 0);
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK_EQ_U64(frames(&r, 2, TSIM_PURPOSE_CONTROL), 0); /* no requests */
+    CHECK_EQ_U64(frames(&r, 2, TSIM_PURPOSE_DATA), 0);
+    rig_close(&r);
+
+    struct tsim_distvec_config bad = r.rc;
+    bad.leaves = TSIM_DISTVEC_LEAVES_PARENT_ORACLE + 1;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+}
+
 static void trickle_backs_off_and_resets_on_a_new_neighbour(void) {
     struct rig r;
     rig_init(&r);
@@ -1464,6 +1528,8 @@ int main(void) {
     RUN(an_ihu_round_longer_than_the_timeout_keeps_the_links);
     RUN(a_retry_still_queued_when_the_answer_comes_is_taken_back);
     RUN(a_leaf_never_forwards);
+    RUN(with_parents_relays_route_among_themselves);
+    RUN(a_leaf_with_no_parent_is_not_asked_about);
     RUN(trickle_backs_off_and_resets_on_a_new_neighbour);
     RUN(announces_stay_under_the_cap);
     RUN(a_broken_link_is_found_by_the_data_crossing_it);
