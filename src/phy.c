@@ -302,16 +302,13 @@ static bool survives_pairwise(const struct tsim_phy *phy, const struct tsim_fram
     return true;
 }
 
-/* Whether a frame received at `dbm` by `node` survives everything else that overlapped it while
- * the node was listening to it - from `since`, which is the frame's start unless the node caught
- * it part-way through the preamble. What was on the air before then never reached the
- * demodulator, so it neither helps nor hurts. */
-static bool survives(const struct tsim_phy *phy, const struct tsim_frame *f, uint32_t node,
-                     double dbm, tsim_time since) {
-    if (phy->params.pairwise) {
-        return survives_pairwise(phy, f, node, dbm, since);
-    }
-    double energy[TSIM_SF_COUNT] = {0};
+/* The summed rule: the interference energy each SF brings over the reception, as
+ * energy[interfering SF - 7], and, if `loudest` is given, the frame that brought the most of each
+ * group, 0 for none. */
+static void interference(const struct tsim_phy *phy, const struct tsim_frame *f, uint32_t node,
+                         tsim_time since, double energy[TSIM_SF_COUNT],
+                         uint64_t loudest[TSIM_SF_COUNT]) {
+    double most[TSIM_SF_COUNT] = {0};
     for (size_t i = 0; i < phy->count; i++) {
         const struct tsim_frame *g = &phy->air[phy->head + i].f;
         if (g->id == f->id || g->channel != f->channel) {
@@ -323,12 +320,39 @@ static bool survives(const struct tsim_phy *phy, const struct tsim_frame *f, uin
             continue;
         }
         int sf = g->lora.bw_hz == f->lora.bw_hz ? g->lora.sf : f->lora.sf;
-        energy[sf - TSIM_SF_MIN] += mw(rx_dbm(phy, g, node)) * (double)(hi - lo);
+        double e = mw(rx_dbm(phy, g, node)) * (double)(hi - lo);
+        energy[sf - TSIM_SF_MIN] += e;
+        if (loudest && e > most[sf - TSIM_SF_MIN]) {
+            most[sf - TSIM_SF_MIN] = e;
+            loudest[sf - TSIM_SF_MIN] = g->id;
+        }
+    }
+}
+
+/* How far an SF's summed interference leaves the reception short of the pair's isolation
+ * threshold, in dB - positive when it destroys it - or -INFINITY for an SF that brought none. */
+static double summed_shortfall(const struct tsim_phy *phy, const struct tsim_frame *f, double dbm,
+                               tsim_time since, const double energy[TSIM_SF_COUNT], int k) {
+    if (!(energy[k] > 0)) {
+        return -INFINITY;
     }
     double signal = mw(dbm) * (double)(f->end - since);
-    const double *threshold = phy->params.isolation_db[f->lora.sf - TSIM_SF_MIN];
+    return phy->params.isolation_db[f->lora.sf - TSIM_SF_MIN][k] - 10.0 * log10(signal / energy[k]);
+}
+
+/* Whether a frame received at `dbm` by `node` survives everything else that overlapped it while
+ * the node was listening to it - from `since`, which is the frame's start unless the node caught
+ * it part-way through the preamble. What was on the air before then never reached the
+ * demodulator, so it neither helps nor hurts. */
+static bool survives(const struct tsim_phy *phy, const struct tsim_frame *f, uint32_t node,
+                     double dbm, tsim_time since) {
+    if (phy->params.pairwise) {
+        return survives_pairwise(phy, f, node, dbm, since);
+    }
+    double energy[TSIM_SF_COUNT] = {0};
+    interference(phy, f, node, since, energy, NULL);
     for (int k = 0; k < TSIM_SF_COUNT; k++) {
-        if (energy[k] > 0 && 10.0 * log10(signal / energy[k]) < threshold[k]) {
+        if (summed_shortfall(phy, f, dbm, since, energy, k) > 0) {
             return false;
         }
     }
@@ -336,27 +360,31 @@ static bool survives(const struct tsim_phy *phy, const struct tsim_frame *f, uin
 }
 
 /* The frame that cost a reception lost on interference the most, or 0 for none, by the rule that
- * judged it: under pairwise, the counted frame furthest past its threshold; otherwise the one that
- * brought the most interference energy. */
+ * judged it: under pairwise, the counted frame furthest past its threshold; summed, the loudest
+ * frame of the SF group furthest past its own. */
 static uint64_t loudest_rival(const struct tsim_phy *phy, const struct tsim_frame *f, uint32_t node,
                               double dbm, tsim_time since) {
     double most = 0;
     uint64_t id = 0;
-    for (size_t i = 0; i < phy->count; i++) {
-        const struct tsim_frame *g = &phy->air[phy->head + i].f;
-        double cost;
-        if (phy->params.pairwise) {
-            cost = pairwise_shortfall(phy, f, g, node, dbm, since);
-        } else if (g->id == f->id || g->channel != f->channel) {
-            continue;
-        } else {
-            tsim_time lo = g->start > since ? g->start : since;
-            tsim_time hi = g->end < f->end ? g->end : f->end;
-            cost = hi > lo ? mw(rx_dbm(phy, g, node)) * (double)(hi - lo) : 0;
+    if (phy->params.pairwise) {
+        for (size_t i = 0; i < phy->count; i++) {
+            const struct tsim_frame *g = &phy->air[phy->head + i].f;
+            double short_by = pairwise_shortfall(phy, f, g, node, dbm, since);
+            if (short_by > most) {
+                most = short_by;
+                id = g->id;
+            }
         }
-        if (cost > most) {
-            most = cost;
-            id = g->id;
+        return id;
+    }
+    double energy[TSIM_SF_COUNT] = {0};
+    uint64_t loudest[TSIM_SF_COUNT] = {0};
+    interference(phy, f, node, since, energy, loudest);
+    for (int k = 0; k < TSIM_SF_COUNT; k++) {
+        double short_by = summed_shortfall(phy, f, dbm, since, energy, k);
+        if (short_by > most) {
+            most = short_by;
+            id = loudest[k];
         }
     }
     return id;

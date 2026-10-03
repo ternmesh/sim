@@ -1160,13 +1160,14 @@ struct marked_send {
     uint32_t node;
     uint32_t to;
     int tag;
+    uint8_t sf; /* 0 for SF7 */
 };
 
 static void send_marked(struct tsim_sched *s, void *ctx) {
     (void)s;
     struct marked_send *x = ctx;
-    struct tsim_lora sf7 = tsim_lora_default(7, 125000);
-    uint64_t id = tsim_phy_transmit(x->phy, x->node, 0, &sf7, 16, TX_DBM, NULL);
+    struct tsim_lora lora = tsim_lora_default(x->sf ? x->sf : 7, 125000);
+    uint64_t id = tsim_phy_transmit(x->phy, x->node, 0, &lora, 16, TX_DBM, NULL);
     CHECK(tsim_phy_mark(x->phy, id, x->to, x->tag));
 }
 
@@ -1184,7 +1185,8 @@ static struct marks mark_case(double dbm1, double dbm2, tsim_time at1, tsim_time
                                            (struct tsim_phy_hooks){.ctx = &m, .marked = on_marked});
     tsim_phy_set_loss(phy, 1, 0, TX_DBM - dbm1);
     tsim_phy_set_loss(phy, 1, 2, INFINITY);
-    struct marked_send one = {phy, 1, 0, 1}, two = {phy, 2, UINT32_MAX, 2}, own = {phy, 0, 1, 3};
+    struct marked_send one = {phy, 1, 0, 1, 0}, two = {phy, 2, UINT32_MAX, 2, 0},
+                       own = {phy, 0, 1, 3, 0};
     tsim_sched_at(sched, at1, send_marked, &one);
     if (!isnan(dbm2)) {
         tsim_phy_set_loss(phy, 2, 0, TX_DBM - dbm2);
@@ -1252,11 +1254,37 @@ static void a_pairwise_rival_is_the_frame_that_counted(void) {
     tsim_phy_set_loss(phy, 1, 0, TX_DBM + 122.0);
     tsim_phy_set_loss(phy, 2, 0, TX_DBM + 126.0);
     tsim_phy_set_loss(phy, 3, 0, TX_DBM + 124.0);
-    struct marked_send one = {phy, 1, 0, 1}, faint = {phy, 2, UINT32_MAX, 2},
-                       late = {phy, 3, UINT32_MAX, 3};
+    struct marked_send one = {phy, 1, 0, 1, 0}, faint = {phy, 2, UINT32_MAX, 2, 0},
+                       late = {phy, 3, UINT32_MAX, 3, 0};
     tsim_sched_at(sched, 0, send_marked, &one);
     tsim_sched_at(sched, TSIM_MS(1), send_marked, &faint);
     tsim_sched_at(sched, SF7_FRAME - SF7_FRAME / 10, send_marked, &late);
+    tsim_sched_run_until(sched, SF7_FRAME + TSIM_US(1));
+    CHECK_EQ_I64(m.count, 1);
+    CHECK_EQ_I64(m.fate, TSIM_PHY_INTERFERED);
+    CHECK_EQ_I64(m.rival, 3);
+    tsim_phy_destroy(phy);
+    tsim_sched_destroy(sched);
+}
+
+/* Summed, the rival comes from the SF group that broke its threshold: an SF8 frame 10 dB louder
+ * is within the -16 dB cross-SF isolation, though it brings the most energy; an SF7 frame 5 dB
+ * quieter is under the 6 dB co-SF threshold, and is the one that destroyed it. */
+static void a_summed_rival_comes_from_the_group_that_failed(void) {
+    struct tsim_sched *sched = tsim_sched_create();
+    struct tsim_phy_params params = tsim_phy_defaults();
+    struct tsim_lora sf7 = tsim_lora_default(7, 125000);
+    struct marks m = {0};
+    struct tsim_phy *phy = tsim_phy_create(sched, &params, 4, 0, &sf7,
+                                           (struct tsim_phy_hooks){.ctx = &m, .marked = on_marked});
+    tsim_phy_set_loss(phy, 1, 0, TX_DBM + 80.0);
+    tsim_phy_set_loss(phy, 2, 0, TX_DBM + 70.0);
+    tsim_phy_set_loss(phy, 3, 0, TX_DBM + 85.0);
+    struct marked_send one = {phy, 1, 0, 1, 0}, loud = {phy, 2, UINT32_MAX, 2, 8},
+                       co = {phy, 3, UINT32_MAX, 3, 0};
+    tsim_sched_at(sched, 0, send_marked, &one);
+    tsim_sched_at(sched, TSIM_MS(10), send_marked, &loud);
+    tsim_sched_at(sched, TSIM_MS(10), send_marked, &co);
     tsim_sched_run_until(sched, SF7_FRAME + TSIM_US(1));
     CHECK_EQ_I64(m.count, 1);
     CHECK_EQ_I64(m.fate, TSIM_PHY_INTERFERED);
@@ -1330,6 +1358,7 @@ int main(void) {
     RUN(links_count_pairs_that_decode_both_ways);
     RUN(a_marked_frame_reports_its_fate_at_the_receiver);
     RUN(a_pairwise_rival_is_the_frame_that_counted);
+    RUN(a_summed_rival_comes_from_the_group_that_failed);
     RUN(marking_changes_nothing_and_refuses_what_it_cannot_mark);
     return CHECK_DONE();
 }
