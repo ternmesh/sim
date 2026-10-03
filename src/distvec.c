@@ -33,10 +33,13 @@
 #define DATA_HEAD 18
 #define ACK_LEN 18
 #define BCAST_HEAD 10
-/* The longest IHU round an announce can tell. A receiver counts announces between IHUs in 16 bits,
- * so ihu_rounds of a round that long and one more are cut to 65535: only a node naming one
- * neighbour to a frame among thousands would come near it. */
+/* The longest IHU round an announce can tell, in its two bytes. */
 #define ROUND_MAX 32767
+/* The most announces a neighbour may go without an IHU, whatever its round: half the 16-bit count,
+ * so that any announce over the next 32768 finds it expired. Capped at the count's top, only the
+ * one announce reaching it exactly could, and with that one lost the count would wrap and keep the
+ * link for 65536 more. */
+#define IHU_AGE_MAX 0x7FFFu
 
 #define FLAG_INFRA 0x01
 
@@ -1287,8 +1290,8 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     }
     uint32_t rounds = r->config.ihu_rounds;
     uint32_t allowed = rotation <= 1 ? rounds - 1 : rounds * rotation + 1u;
-    if (allowed > UINT16_MAX) {
-        allowed = UINT16_MAX; /* the most announces apart the count can tell */
+    if (allowed > IHU_AGE_MAX) {
+        allowed = IHU_AGE_MAX;
     }
     if (!named && (uint16_t)(seq - n->ihu_seq) >= allowed) {
         n->dr = 0;

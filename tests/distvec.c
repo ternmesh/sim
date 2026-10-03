@@ -627,6 +627,25 @@ static void links_last_ihu_rounds_of_unnamed_announces(uint8_t rounds) {
     rig_close(&r);
 }
 
+/* A round so long that ihu_rounds of it pass the count's limit: the link still goes once 32767
+ * announces have passed without an IHU, at whichever announce is heard first after that - here not
+ * the one at the limit, which was lost. */
+static void a_link_past_the_longest_wait_goes_whichever_announce_comes(void) {
+    struct rig r;
+    rig_init(&r);
+    build(&r, 6, 1);
+    link(&r, 0, 1, LOSS_LOUD);
+    tsim_net_start(r.net);
+    announce_round(&r, 1, 16384, true);
+    uint32_t next;
+    CHECK(route(&r, 0, 5, &next));
+    announce_round(&r, 1 + 0x4000, 16384, false);
+    CHECK(route(&r, 0, 5, &next));
+    announce_round(&r, 1 + 0x8100, 16384, false);
+    CHECK(!route(&r, 0, 5, &next));
+    rig_close(&r);
+}
+
 static void a_link_lasts_its_ihu_rounds(void) {
     links_last_ihu_rounds_of_unnamed_announces(2);
     links_last_ihu_rounds_of_unnamed_announces(8);
@@ -1420,6 +1439,7 @@ int main(void) {
     RUN(every_neighbour_hears_its_ihu_in_turn);
     RUN(an_ihu_lost_is_sent_again_in_turn);
     RUN(a_link_lasts_its_ihu_rounds);
+    RUN(a_link_past_the_longest_wait_goes_whichever_announce_comes);
     RUN(a_link_gone_one_way_is_dropped_by_the_side_still_hearing);
     RUN(a_retraction_the_queue_refused_goes_later);
     RUN(a_retraction_lost_on_the_air_is_repeated);
