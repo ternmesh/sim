@@ -205,6 +205,13 @@ static void problems_say_where_they_are(void) {
         {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.lead = soon\n", 4, "expected a time"},
         {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.relays = some\n", 4,
          "node numbers and ranges"},
+        {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.relay_pick = best\n", 4,
+         "list, degree, spaced or cds"},
+        {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.relay_pick = degree\n", 0,
+         "relay_count is 0"},
+        {"nodes = 2\nlinks = a.links\nrouting = distvec\nmac = meshcore\n"
+         "routing.relay_pick = spaced\nrouting.relay_count = 1\n",
+         0, "spaced needs positions"},
         {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.hash_size = 4\n", 4,
          "1, 2 or 3 bytes"},
         {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.flood_max = 0\n", 4,

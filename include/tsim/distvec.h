@@ -318,6 +318,25 @@ enum tsim_distvec_links {
     TSIM_DISTVEC_LINKS_STRENGTH,
 };
 
+/* Which nodes are infrastructure (MSH-56): those `relays` names, or `relay_count` the driver picks
+ * over the oracle's links - every pair of nodes each decoding the other at tx_dbm with
+ * oracle_margin_db to spare, by the mean loss - before the network starts:
+ *  - degree: the nodes with the most links;
+ *  - spaced: by position, the node nearest the middle of them all first, then each time the node
+ *    farthest from every one picked so far;
+ *  - cds: a greedy connected dominating set (Guha and Khuller, Algorithmica 1998): from the node
+ *    with the most links, each time the node next to those picked that brings the most nodes still
+ *    without a relay next to them, so every node either is one or has one as a neighbour and the
+ *    relays of each part of the network join up. With a relay_count it stops there, and tops up
+ *    with the most linked nodes if it finished short; 0 takes as many as it needs.
+ * Which nodes are relays is the deployment's to say. These bound what siting could be worth. */
+enum tsim_distvec_pick {
+    TSIM_DISTVEC_PICK_LIST,
+    TSIM_DISTVEC_PICK_DEGREE,
+    TSIM_DISTVEC_PICK_SPACED,
+    TSIM_DISTVEC_PICK_CDS,
+};
+
 struct tsim_distvec_oracle;
 
 struct tsim_distvec_config {
@@ -330,6 +349,11 @@ struct tsim_distvec_config {
     uint8_t req_hops;   /* with demand routes: relays a route request crosses, at most */
     uint8_t req_cancel; /* with demand routes: copies heard that cancel a request, 0 never */
     uint32_t *parents;  /* with parent_oracle: [node], shared by every node; set by the driver */
+
+    /* Picked infrastructure, above; with a pick, `relays` is ignored. */
+    uint8_t relay_pick;       /* enum tsim_distvec_pick */
+    uint32_t relay_count;     /* how many: at least 1, or with cds 0 for as many as it needs */
+    const uint8_t *relay_set; /* [node] 1 for infrastructure, shared; set by the driver */
 
     tsim_time imin;    /* Trickle */
     uint8_t doublings; /* imax is imin times 2^doublings, 0..16 */
@@ -458,6 +482,24 @@ bool tsim_distvec_oracle_build(struct tsim_distvec_oracle *oracle, const struct 
                                const struct tsim_distvec_config *config);
 
 void tsim_distvec_oracle_free(struct tsim_distvec_oracle *oracle);
+
+/* Whether `node` is infrastructure under `config`: with a pick by relay_set, else by relays. */
+bool tsim_distvec_relay(const struct tsim_distvec_config *config, uint32_t node);
+
+struct tsim_pos;
+
+/* Picks infrastructure by `config`'s relay_pick and relay_count from the links `phy` has now, and
+ * for spaced the nodes' positions, setting set[node] to 1 for each relay and 0 for the rest.
+ * Returns false when memory runs out, the modulation is invalid or the pick is list. */
+bool tsim_distvec_pick_relays(const struct tsim_phy *phy, const struct tsim_pos *pos,
+                              const struct tsim_distvec_config *config, uint8_t *set);
+
+struct tsim_relay_tier;
+
+/* How well `config`'s infrastructure joins up over the oracle's links, from those `phy` has now.
+ * Returns false, leaving `out` zero, when memory runs out or the modulation is invalid. */
+bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_config *config,
+                       struct tsim_relay_tier *out);
 
 /* Every node infrastructure, leaves routed; Trickle from 8 s to 8 min (six doublings), redundancy
  * 3, announcing at least every third interval and forgetting a neighbour after an hour; a 0.5% cap,

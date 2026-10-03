@@ -6,6 +6,7 @@
 #include "tsim/meshcore.h"
 #include "tsim/metrics.h"
 #include "tsim/net.h"
+#include "tsim/phy.h"
 #include "tsim/rng.h"
 
 #include "check.h"
@@ -1785,6 +1786,117 @@ static void a_route_ttl_under_a_second_is_refused(void) {
     CHECK(tsim_distvec_check(&c) != NULL);
 }
 
+/* A medium alone, for picking relays: `nodes` radios at SF7 and nothing linked. */
+static struct tsim_phy *medium(struct tsim_sched *sched, uint32_t nodes) {
+    struct tsim_lora l = tsim_lora_default(7, 125000);
+    struct tsim_phy_params p = tsim_phy_defaults();
+    return tsim_phy_create(sched, &p, nodes, 0, &l, (struct tsim_phy_hooks){0});
+}
+
+static uint32_t picked(const uint8_t *set, uint32_t nodes) {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < nodes; i++) {
+        count += set[i];
+    }
+    return count;
+}
+
+/* On a line of seven, the connected dominating set is the five inside it: every end has one as a
+ * neighbour, and they join. Capped, it stops; asked for more than it needs, it tops up. */
+static void relays_picked_as_a_connected_dominating_set_join_and_reach_every_node(void) {
+    struct tsim_sched *sched = tsim_sched_create();
+    struct tsim_phy *phy = medium(sched, 7);
+    for (uint32_t i = 0; i + 1 < 7; i++) {
+        tsim_phy_set_loss(phy, i, i + 1, LOSS_LOUD);
+    }
+    struct tsim_lora l = tsim_lora_default(7, 125000);
+    struct tsim_distvec_config c = tsim_distvec_default(0, &l, 14.0);
+    uint8_t set[7];
+    c.relay_pick = TSIM_DISTVEC_PICK_CDS;
+    CHECK(tsim_distvec_pick_relays(phy, NULL, &c, set));
+    CHECK(!set[0] && !set[6] && picked(set, 7) == 5);
+    c.relay_set = set;
+    struct tsim_relay_tier t;
+    CHECK(tsim_distvec_tier(phy, &c, &t));
+    CHECK(t.present);
+    CHECK_EQ_U64(t.count, 5);
+    CHECK_EQ_U64(t.components, 1);
+    CHECK(t.pairs == 1 && t.covered == 1);
+    CHECK(tsim_distvec_relay(&c, 3) && !tsim_distvec_relay(&c, 0));
+
+    c.relay_count = 2;
+    CHECK(tsim_distvec_pick_relays(phy, NULL, &c, set));
+    CHECK(set[1] && set[2] && picked(set, 7) == 2);
+    c.relay_count = 6;
+    CHECK(tsim_distvec_pick_relays(phy, NULL, &c, set));
+    CHECK(set[0] && !set[6] && picked(set, 7) == 6);
+    tsim_phy_destroy(phy);
+
+    /* Two triangles apart: a relay in each, which no link joins. */
+    phy = medium(sched, 6);
+    for (uint32_t i = 0; i < 6; i += 3) {
+        tsim_phy_set_loss(phy, i, i + 1, LOSS_LOUD);
+        tsim_phy_set_loss(phy, i + 1, i + 2, LOSS_LOUD);
+        tsim_phy_set_loss(phy, i, i + 2, LOSS_LOUD);
+    }
+    c.relay_count = 0;
+    CHECK(tsim_distvec_pick_relays(phy, NULL, &c, set));
+    CHECK(set[0] && set[3] && picked(set, 6) == 2);
+    CHECK(tsim_distvec_tier(phy, &c, &t));
+    CHECK_EQ_U64(t.components, 2);
+    CHECK_EQ_U64(t.largest, 1);
+    CHECK(t.pairs == 0 && t.covered == 1);
+    tsim_phy_destroy(phy);
+    tsim_sched_destroy(sched);
+}
+
+/* By degree, the hub of a star with a tail; spaced, the middle of a line and then its ends. */
+static void relays_are_picked_by_degree_or_spacing(void) {
+    struct tsim_sched *sched = tsim_sched_create();
+    struct tsim_phy *phy = medium(sched, 6);
+    for (uint32_t i = 1; i < 5; i++) {
+        tsim_phy_set_loss(phy, 2, i == 2 ? 0 : i, LOSS_LOUD);
+    }
+    tsim_phy_set_loss(phy, 4, 5, LOSS_LOUD);
+    struct tsim_lora l = tsim_lora_default(7, 125000);
+    struct tsim_distvec_config c = tsim_distvec_default(0, &l, 14.0);
+    uint8_t set[6];
+    c.relay_pick = TSIM_DISTVEC_PICK_DEGREE;
+    c.relay_count = 2;
+    CHECK(tsim_distvec_pick_relays(phy, NULL, &c, set));
+    CHECK(set[2] && set[4] && picked(set, 6) == 2);
+    tsim_phy_destroy(phy);
+
+    struct tsim_pos pos[5];
+    for (uint32_t i = 0; i < 5; i++) {
+        pos[i] = (struct tsim_pos){.x = 10.0 * i, .y = 0};
+    }
+    phy = medium(sched, 5);
+    c.relay_pick = TSIM_DISTVEC_PICK_SPACED;
+    c.relay_count = 3;
+    CHECK(tsim_distvec_pick_relays(phy, pos, &c, set));
+    CHECK(set[0] && set[2] && set[4] && picked(set, 5) == 3);
+    tsim_phy_destroy(phy);
+    tsim_sched_destroy(sched);
+}
+
+/* A pick without a count is refused but for cds, and a router told to pick and handed no set of
+ * relays is not made. */
+static void picked_relays_are_checked(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.relay_pick = TSIM_DISTVEC_PICK_DEGREE;
+    CHECK(tsim_distvec_check(&r.rc) != NULL);
+    r.rc.relay_pick = TSIM_DISTVEC_PICK_CDS;
+    CHECK(tsim_distvec_check(&r.rc) == NULL);
+    r.rc.relay_pick = TSIM_DISTVEC_PICK_CDS + 1;
+    CHECK(tsim_distvec_check(&r.rc) != NULL);
+    r.rc.relay_pick = TSIM_DISTVEC_PICK_CDS;
+    build(&r, 3, 1);
+    CHECK(r.net == NULL);
+    tsim_sched_destroy(r.sched);
+}
+
 /* Each message's loss is booked where it happened: across a whole line, on time, every hop
  * closer; with the last link cut, given up at the hop before the destination; and once the line
  * has learnt of the cut, without a route at the source. */
@@ -1838,6 +1950,9 @@ int main(void) {
     RUN(a_fractional_tx_dbm_is_kept_at_the_top);
     RUN(power_settings_are_checked);
     RUN(a_route_ttl_under_a_second_is_refused);
+    RUN(picked_relays_are_checked);
+    RUN(relays_picked_as_a_connected_dominating_set_join_and_reach_every_node);
+    RUN(relays_are_picked_by_degree_or_spacing);
     RUN(a_message_crosses_the_line_and_is_acknowledged);
     RUN(every_node_of_a_grid_reaches_every_other);
     RUN(a_one_way_link_is_never_used);
