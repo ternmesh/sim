@@ -1448,7 +1448,7 @@ struct announces {
     bool *watch;        /* [node]: a relay */
     uint8_t *linked;    /* [relay * relays + relay] */
     struct pair *pairs; /* [relay * relays + relay] */
-    tsim_time *last;    /* [relay]: start of its last announce counted */
+    uint64_t sent;      /* announce frames relays had sent as the window began */
     struct tsim_announces report;
     double silence_s;
 };
@@ -1465,9 +1465,10 @@ static void close_silence(struct announces *a, struct pair *p, tsim_time now) {
             a->report.unsent++;
         } else if (p->pending[TSIM_PHY_WEAK] == sent) {
             a->report.quiet++;
-        }
-        for (int f = 0; f < TSIM_PHY_FATE_COUNT; f++) {
-            a->report.lost[f] += p->pending[f];
+        } else {
+            for (int f = 0; f < TSIM_PHY_FATE_COUNT; f++) {
+                a->report.lost[f] += p->pending[f];
+            }
         }
     }
     memset(p->pending, 0, sizeof p->pending);
@@ -1479,10 +1480,6 @@ static void announce_heard(void *ctx, const struct tsim_net_heard *h) {
         return;
     }
     uint32_t from = a->index[h->from], to = a->index[h->to];
-    if (a->last[from] != h->start) {
-        a->last[from] = h->start;
-        a->report.sent_per_h++; /* a count until the report */
-    }
     size_t k = (size_t)from * a->relays + to;
     if (!a->linked[k]) {
         return;
@@ -1516,8 +1513,7 @@ static bool announces_start(struct announces *a, struct tsim_net *net,
     size_t rr = (size_t)a->relays * a->relays;
     a->linked = calloc(rr ? rr : 1, 1);
     a->pairs = calloc(rr ? rr : 1, sizeof *a->pairs);
-    a->last = malloc((a->relays ? a->relays : 1) * sizeof *a->last);
-    if (!a->linked || !a->pairs || !a->last) {
+    if (!a->linked || !a->pairs) {
         return false;
     }
     double top = dv->tx_dbm - dv->oracle_margin_db - tsim_phy_floor_dbm(phy, &dv->lora);
@@ -1532,8 +1528,8 @@ static bool announces_start(struct announces *a, struct tsim_net *net,
             }
         }
     }
-    for (uint32_t r = 0; r < a->relays; r++) {
-        a->last[r] = -1;
+    for (uint32_t i = 0; i < n; i++) {
+        a->sent += a->watch[i] ? tsim_net_ledger(net, i)->frames[TSIM_PURPOSE_ANNOUNCE] : 0;
     }
     tsim_net_observe_heard(net, announce_heard, a, a->watch);
     return true;
@@ -1555,8 +1551,12 @@ static void sensed_links(const struct announces *a, struct tsim_net *net, uint32
     }
 }
 
-static void announces_report(struct announces *a, tsim_time begun, tsim_time end,
-                             struct tsim_announces *out) {
+static void announces_report(struct announces *a, struct tsim_net *net, tsim_time begun,
+                             tsim_time end, struct tsim_announces *out) {
+    uint64_t sent = 0; /* from the senders' own books, so a lone relay's count too */
+    for (uint32_t i = 0; i < a->n; i++) {
+        sent += a->watch[i] ? tsim_net_ledger(net, i)->frames[TSIM_PURPOSE_ANNOUNCE] : 0;
+    }
     for (size_t k = 0; k < (size_t)a->relays * a->relays; k++) {
         if (a->linked[k]) {
             a->report.silent_end += end - a->pairs[k].heard >= TSIM_SILENCE;
@@ -1566,7 +1566,7 @@ static void announces_report(struct announces *a, tsim_time begun, tsim_time end
     *out = a->report;
     out->present = true;
     double hours = (double)(end - begun) / (double)TSIM_S(3600);
-    out->sent_per_h = a->relays && hours > 0 ? a->report.sent_per_h / a->relays / hours : 0;
+    out->sent_per_h = a->relays && hours > 0 ? (double)(sent - a->sent) / a->relays / hours : 0;
     out->silence_mean_s = a->report.silences ? a->silence_s / (double)a->report.silences : 0;
 }
 
@@ -1575,7 +1575,6 @@ static void announces_free(struct announces *a) {
     free(a->watch);
     free(a->linked);
     free(a->pairs);
-    free(a->last);
 }
 
 /* What the window's start leaves for its end to be measured against. */
@@ -1974,7 +1973,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     }
     if (window.announces && !window.failed) {
         sensed_links(&announces, net, announces.report.sensed[1]);
-        announces_report(&announces, window.begun, tsim_sched_now(sched), &report->announces);
+        announces_report(&announces, net, window.begun, tsim_sched_now(sched), &report->announces);
     }
     ok = !churn.failed && !window.failed &&
          tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);
