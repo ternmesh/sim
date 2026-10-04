@@ -198,6 +198,7 @@ enum tsim_drop {
     TSIM_DROP_HOP_LIMIT, /* it had come as many hops as it was allowed */
     TSIM_DROP_QUEUE,     /* the queue was full: booked by the network, see below */
     TSIM_DROP_OTHER,
+    TSIM_DROP_DUTY, /* sending it would have gone over the protocol's own duty-cycle limit */
     TSIM_DROP_COUNT,
 };
 

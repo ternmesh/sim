@@ -22,6 +22,7 @@ struct latencies {
 struct base {
     struct tsim_ledger ledger;
     uint64_t dropped;
+    uint64_t held;
     struct tsim_phy_stats phy;
 };
 
@@ -398,6 +399,7 @@ void tsim_metrics_begin(struct tsim_metrics *m) {
     for (uint32_t i = 0; i < n; i++) {
         tsim_net_ledger_now(m->net, i, &base[i].ledger);
         base[i].dropped = tsim_net_stats(m->net, i)->dropped;
+        base[i].held = tsim_net_stats(m->net, i)->held;
         base[i].phy = *tsim_phy_stats(phy, i);
         m->warmup_ns += (double)tsim_ledger_airtime(&base[i].ledger);
     }
@@ -543,6 +545,7 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
             r->duty_max_node = i;
         }
         r->queue_dropped += tsim_net_stats(net, i)->dropped - (b ? b->dropped : 0);
+        r->duty_held += tsim_net_stats(net, i)->held - (b ? b->held : 0);
         const struct tsim_phy_stats *ps = tsim_phy_stats(phy, i);
         r->rx_ok += ps->rx_ok - (b ? b->phy.rx_ok : 0);
         r->rx_lost += ps->rx_lost - (b ? b->phy.rx_lost : 0);

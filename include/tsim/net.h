@@ -21,6 +21,13 @@ struct tsim_net_params {
     uint32_t queue_limit; /* frames waiting per node; 0 is no limit */
     uint64_t seed;        /* the root of every stream tsim_node_rng() hands out, and of the fading:
                            * it replaces phy.fading_seed */
+    /* The duty cycle every radio holds to, as a share of any hour, 0 to 1; 0 for none (MSH-65).
+     * A radio does not start a frame that would take its airtime in the hour ending as the frame
+     * ends over that share: the frame stays at the head of the queue, and the MAC is kicked when
+     * it would fit, as a regulator's limit enforced in the radio would hold it. A frame longer
+     * than the whole share is dropped as a full queue's would be. Its frames are remembered
+     * across a power cycle, as the airtime is spent all the same. */
+    double duty_cycle;
 };
 
 /* tsim_phy_defaults(), every radio on channel 0 at SF7/125 kHz, and 16 frames of queue. */
@@ -100,6 +107,7 @@ struct tsim_net_stats {
     uint64_t cancelled;
     uint64_t refused;   /* messages originated here that its routing could not carry */
     uint64_t delivered; /* messages delivered to this node's application */
+    uint64_t held;      /* times the radio held a frame back for the duty cycle */
 };
 
 const struct tsim_net_stats *tsim_net_stats(const struct tsim_net *net, uint32_t node);

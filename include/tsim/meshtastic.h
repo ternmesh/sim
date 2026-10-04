@@ -80,8 +80,15 @@
  * offset. But every node starts knowing no other, as one with its database wiped would, so the
  * NodeInfo exchanges of the first hour are heavier than a settled mesh's: a warmup covers them.
  * The interval stretch reads the count of nodes heard at most every 5 minutes, where the firmware
- * reads it as it changes. Smart position - more often while the node moves - and the firmware's
- * duty-cycle check are not modelled.
+ * reads it as it changes. Smart position - more often while the node moves - is not modelled.
+ *
+ * The duty cycle, if duty_cycle is above 0: as Router::send() does, a node whose transmit time in
+ * the current minute and the 59 before it is over duty_cycle percent of an hour sends nothing - a
+ * rebroadcast or acknowledgement is dropped, and a message of its own is dropped too, booked as
+ * TSIM_DROP_DUTY, and waited on as though it had gone, so a retry goes once the hour allows. The
+ * firmware checks when a packet is handed to the radio's queue, not when it goes on the air, so
+ * what is already queued still goes. NodeInfo and telemetry also wait while it is over half the
+ * duty cycle, as isTxAllowedAirUtil() has them.
  *
  * Meshtasticator starts the acknowledgement wait when the message is queued; this port starts it
  * when the frame has been sent, as a radio that queues behind its own traffic has to. It also
@@ -202,6 +209,9 @@ struct tsim_meshtastic_config {
     double position_share; /* 0 to 1 */
     uint16_t nodedb_max;   /* 2 to 250 */
     double throttle;       /* the interval stretch for each node heard over 40 */
+    /* The region's duty cycle, as a percentage of the hour, as the firmware holds to it - 10 for
+     * EU_868 - or 0 for none, as in the US. See above. */
+    double duty_cycle;
 };
 
 /* The firmware's interval stretch for the preset `lora` matches - 0.04 for SF10 at 250 kHz, 0.02

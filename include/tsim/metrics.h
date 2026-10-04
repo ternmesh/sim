@@ -201,6 +201,7 @@ struct tsim_report {
     double routes_reach;
 
     uint64_t queue_dropped; /* frames refused for a full queue, every node */
+    uint64_t duty_held;     /* times a radio held a frame back for net.duty_cycle, every node */
     uint64_t rx_ok;         /* receptions by every radio: see struct tsim_phy_stats */
     uint64_t rx_lost;
     uint64_t rx_preempted;

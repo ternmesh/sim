@@ -128,6 +128,22 @@ static bool parse_fraction(const char *v, double *out) {
     return true;
 }
 
+/* "10%" as 0.1, "none" as 0: a share of the hour above 0 and at most 100%. */
+static bool parse_share(const char *v, double *out) {
+    if (strcmp(v, "none") == 0) {
+        *out = 0;
+        return true;
+    }
+    char *end;
+    double d = strtod(v, &end);
+    if (end == v || *skip_space(end) != '%' || *skip_space(skip_space(end) + 1) != '\0' ||
+        !(d > 0 && d <= 100)) {
+        return false;
+    }
+    *out = d / 100;
+    return true;
+}
+
 /* --- Plugins the format knows --- */
 
 struct tsim_plugin {
@@ -384,6 +400,14 @@ static const char *meshtastic_set(void *config, const char *key, const char *val
     }
     if (strcmp(key, "throttle") == 0) {
         return parse_fraction(value, &c->throttle) ? NULL : "expected a fraction from 0 to 1";
+    }
+    if (strcmp(key, "duty_cycle") == 0) {
+        double share;
+        if (!parse_share(value, &share)) {
+            return "expected a percentage such as 10%, or none";
+        }
+        c->duty_cycle = share * 100;
+        return NULL;
     }
     return "is not a setting of meshtastic";
 }
@@ -987,6 +1011,10 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
         }
         s->net.queue_limit = (uint32_t)u;
         return NULL;
+    }
+    if (strcmp(key, "duty_cycle") == 0) {
+        return parse_share(v, &s->net.duty_cycle) ? NULL
+                                                  : "expected a percentage such as 10%, or none";
     }
 
     if (strcmp(key, "radio.channel") == 0) {
