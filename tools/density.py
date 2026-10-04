@@ -17,10 +17,12 @@ of the scorecard every comparison reports (MSH-66), in this order:
   duty     the busiest node's share of the measured hour spent sending
   churn    unicast on time with nodes going down and coming back up: a quarter of the 200 sites
            (churn.nodes = relays, churn.share = 0.25), each down 30 minutes on average after two
-           hours up, as MSH-59 measured candidate 3; for flooding, which has no sites, the same 50
-           nodes' worth from all of them (churn.share = 0.05)
+           hours up, as MSH-59 measured candidate 3; where there are no sites - flooding, and
+           every candidate without --deployed or --fast - the same 50 nodes' worth from all of them
+           (churn.share = 0.05)
   move     unicast on time with a quarter of the leaves walking (move.share = 0.25: 200 of the
-           800); for flooding, 200 of all the nodes (move.nodes = all, move.share = 0.2)
+           800); where there are no sites, 200 of all the nodes (move.nodes = all,
+           move.share = 0.2)
 
 and after them, for context:
 
@@ -114,9 +116,11 @@ def run(tsim, scenario, power, seed, sets):
     }
 
 
-def stress_sets(name, stress, sets):
-    """The settings a stress run adds, ahead of the caller's own so that those can tune it."""
-    flat = name == "flood" or any(s.replace(" ", "") == "routing.relay_pick=elect" for s in sets)
+def stress_sets(name, sited, stress, sets):
+    """The settings a stress run adds, ahead of the caller's own so that those can tune it. Only
+    the --deployed and --fast scenarios have sites, and flooding and elected relays none of them."""
+    flat = (not sited or name == "flood"
+            or any(s.replace(" ", "") == "routing.relay_pick=elect" for s in sets))
     return STRESS[stress]["flat" if flat else "sited"]
 
 
@@ -194,7 +198,7 @@ def main():
 
     def one(c):
         name, scenario, power, seed, stress = c
-        extra = stress_sets(name, stress, args.set) if stress else []
+        extra = stress_sets(name, family is not None, stress, args.set) if stress else []
         return run(args.tsim, scenario, power, seed, extra + sets)
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
