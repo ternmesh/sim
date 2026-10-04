@@ -1,0 +1,34 @@
+# Candidate 1 on the fast preset (MSH-66): region-meshtastic-deployed.tsim - 200 routers on the
+# shared sites, the rest clients, the firmware's own traffic, EU_868's 10% as the firmware holds
+# to it - on the radio every candidate here shares instead of LongFast: SF7 at 125 kHz, coding
+# rate 4/5, a 16-symbol preamble. Only the routing and its MAC differ from the other three, so
+# what one wins here a preset cannot explain: the incumbents could take this preset too. The
+# sites are picked over links at this preset (sites.sf), which every fast scenario shares.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf       = 7
+radio.bw       = 125000
+radio.cr       = 1
+radio.preamble = 16
+radio.tx_dbm   = 20
+
+routing             = meshtastic
+mac                 = meshtastic
+routing.relay_pick  = cds
+routing.relay_count = 200
+routing.background  = yes
+routing.duty_cycle  = 10%
+sites.sf            = 7
+sites.bw            = 125000
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+# As region.tsim: six hours to settle, the last three carrying traffic, and one measured.
+warmup       = 6 h
+traffic.lead = 3 h
+duration     = 1 h
+deadline     = 60 s

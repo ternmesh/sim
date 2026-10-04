@@ -51,7 +51,9 @@ Then run a scenario:
 
 A 1000-node, one-hour run (`scenarios/scale/region.tsim`) takes a few seconds in a release build
 (`-DCMAKE_BUILD_TYPE=Release`). `tools/density.py` runs every candidate on it at several densities
-and seeds, because how many neighbours each node hears changes which candidate wins.
+and seeds, because how many neighbours each node hears changes which candidate wins, and prints
+the same scorecard for each; `--deployed` puts each on the preset it ships with, and `--fast` puts
+them all on one fast preset, so that only the routing differs.
 
 `-DTSIM_SANITIZE=ON` builds with AddressSanitizer and UndefinedBehaviorSanitizer, and
 `-DTSIM_WERROR=ON` makes warnings errors; CI runs both, with GCC and Clang. Format with

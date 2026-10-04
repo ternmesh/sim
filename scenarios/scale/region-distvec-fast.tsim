@@ -1,0 +1,34 @@
+# Candidate 3 on the fast preset (MSH-66): region-distvec-deployed.tsim - 200 relays on the
+# shared sites, leaves routed, links by strength, no oracle - on the radio every candidate here
+# shares: SF7 at 125 kHz, coding rate 4/5, a 16-symbol preamble. Its announces are its own
+# background traffic, held under its cap. The sites are picked over links at this preset
+# (sites.sf), which every fast scenario shares.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf       = 7
+radio.bw       = 125000
+radio.cr       = 1
+radio.preamble = 16
+radio.tx_dbm   = 20
+
+routing             = distvec
+mac                 = meshcore
+routing.relay_pick  = cds
+routing.relay_count = 200
+sites.sf            = 7
+sites.bw            = 125000
+
+# The sub-band's 10%, held by every radio, as in region-distvec-deployed.tsim.
+duty_cycle = 10%
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+# As region.tsim: six hours to settle, the last three carrying traffic, and one measured.
+warmup       = 6 h
+traffic.lead = 3 h
+duration     = 1 h
+deadline     = 60 s

@@ -1,0 +1,33 @@
+# Candidate 2 on the fast preset (MSH-66): region-meshcore-deployed.tsim - 200 repeaters on the
+# shared sites, the rest companions, repeaters' adverts, MeshCore's own airtime budget as it
+# ships - on the radio every candidate here shares instead of the UK/EU narrow preset: SF7 at
+# 125 kHz, coding rate 4/5, and a 16-symbol preamble where MeshCore 1.17 would program 32 at SF8
+# and below, so that only the routing and its MAC differ. The sites are picked over links at this
+# preset (sites.sf), which every fast scenario shares.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf       = 7
+radio.bw       = 125000
+radio.cr       = 1
+radio.preamble = 16
+radio.tx_dbm   = 20
+
+routing             = meshcore
+mac                 = meshcore
+routing.relay_pick  = cds
+routing.relay_count = 200
+routing.background  = yes
+sites.sf            = 7
+sites.bw            = 125000
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+# As region.tsim: six hours to settle, the last three carrying traffic, and one measured.
+warmup       = 6 h
+traffic.lead = 3 h
+duration     = 1 h
+deadline     = 60 s
