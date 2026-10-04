@@ -1863,6 +1863,28 @@ static void a_broadcast_goes_as_loud_as_bcast_power_says(void) {
     }
 }
 
+/* Under the oracle, a broadcast by routes goes as loud as the oracle's routes to relays need: node
+ * 1 between a neighbour at 100 dB and one at 120, with power_k 1, sends announces for the near one
+ * (-9, its least) and broadcasts for the far one too (120 - 114.5, up). */
+static void the_oracle_broadcasts_as_loud_as_its_routes_need(void) {
+    struct rig r;
+    struct tsim_distvec_oracle o = {0};
+    rig_init(&r);
+    r.rc.oracle = true;
+    r.rc.oracle_routes = &o;
+    r.rc.power = true;
+    r.rc.power_k = 1;
+    build(&r, 3, 1);
+    link(&r, 0, 1, 100);
+    link(&r, 1, 2, 120);
+    CHECK(tsim_distvec_oracle_build(&o, tsim_net_phy(r.net), &r.rc));
+    tsim_net_start(r.net);
+    CHECK_EQ_I64((int64_t)tsim_distvec_node_power(at(&r, 1)), -9);
+    CHECK_EQ_I64((int64_t)ceil(tsim_distvec_bcast_power(at(&r, 1))), 6);
+    rig_close(&r);
+    tsim_distvec_oracle_free(&o);
+}
+
 /* A tx_dbm that is not a whole dBm is still what full power means: not rounded down. */
 static void a_fractional_tx_dbm_is_kept_at_the_top(void) {
     struct rig r;
@@ -2184,6 +2206,7 @@ int main(void) {
     RUN(a_hop_lost_at_its_power_is_tried_again_louder);
     RUN(power_k_reaches_the_k_nearest);
     RUN(a_broadcast_goes_as_loud_as_bcast_power_says);
+    RUN(the_oracle_broadcasts_as_loud_as_its_routes_need);
     RUN(a_fractional_tx_dbm_is_kept_at_the_top);
     RUN(power_settings_are_checked);
     RUN(a_strong_link_goes_at_a_faster_sf);

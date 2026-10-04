@@ -648,7 +648,21 @@ static double bcast_dbm(const struct router *r) {
     if (!c->power || c->bcast_power == TSIM_DISTVEC_BCAST_FULL) {
         return c->tx_dbm;
     }
-    if (c->bcast_power == TSIM_DISTVEC_BCAST_ROUTES) {
+    if (c->bcast_power == TSIM_DISTVEC_BCAST_K) {
+        return r->node_dbm;
+    }
+    double p = -INFINITY;
+    if (c->bcast_power == TSIM_DISTVEC_BCAST_ROUTES && r->oracle) {
+        /* The oracle's own routes to relays, each first hop at the power it hands the node. */
+        for (uint32_t d = 0; d < r->nodes; d++) {
+            const struct tsim_distvec_oracle_route *o =
+                &r->oracle->route[(size_t)r->self * r->nodes + d];
+            if (d != r->self && o->next != TSIM_BROADCAST && tsim_distvec_relay(c, d) &&
+                o->dbm > p) {
+                p = o->dbm;
+            }
+        }
+    } else if (c->bcast_power == TSIM_DISTVEC_BCAST_ROUTES) {
         /* Every neighbour a selected route to a relay goes through. */
         double need = -INFINITY;
         for (uint32_t d = 0; d < r->nodes; d++) {
@@ -658,39 +672,42 @@ static double bcast_dbm(const struct router *r) {
             }
             const struct neighbour *n = &r->nb[ds->sel - 1];
             if (isnan(n->floor)) {
-                return c->tx_dbm;
+                return c->tx_dbm; /* a next hop it cannot yet tell the need of */
             }
             need = n->floor > need ? n->floor : need;
         }
-        if (need == -INFINITY) {
-            return c->tx_dbm;
+        p = need == -INFINITY ? need : ceil(need + c->margin_db);
+    } else {
+        /* The bcast_k relays it has a usable link to with the lowest floors, or all of them. */
+        double low[UINT8_MAX], top = -INFINITY;
+        unsigned have = 0, k = c->bcast_k;
+        for (size_t i = 0; i < r->nb_count; i++) {
+            const struct neighbour *n = &r->nb[i];
+            if (!n->used || n->cost == INF || !n->infra || isnan(n->floor)) {
+                continue;
+            }
+            have++;
+            if (!k) {
+                top = n->floor > top ? n->floor : top;
+                continue;
+            }
+            if (have > k && n->floor >= low[k - 1]) {
+                continue;
+            }
+            unsigned at = have <= k ? have - 1 : k - 1;
+            while (at > 0 && low[at - 1] > n->floor) {
+                low[at] = low[at - 1];
+                at--;
+            }
+            low[at] = n->floor;
         }
-        double p = ceil(need + c->margin_db);
-        p = p < r->node_dbm ? r->node_dbm : p;
-        return p > c->tx_dbm ? c->tx_dbm : p;
-    }
-    if (c->bcast_power != TSIM_DISTVEC_BCAST_RELAYS) {
-        return r->node_dbm;
-    }
-    /* The bcast_k infrastructure neighbours with the lowest floors, or all of them. */
-    double low[UINT8_MAX];
-    unsigned have = 0, k = c->bcast_k ? c->bcast_k : UINT8_MAX;
-    for (size_t i = 0; i < r->nb_count; i++) {
-        const struct neighbour *n = &r->nb[i];
-        if (!n->used || !n->infra || isnan(n->floor) || (have == k && n->floor >= low[k - 1])) {
-            continue;
+        if (have) {
+            p = ceil((k ? low[(have < k ? have : k) - 1] : top) + c->margin_db);
         }
-        unsigned at = have < k ? have++ : k - 1;
-        while (at > 0 && low[at - 1] > n->floor) {
-            low[at] = low[at - 1];
-            at--;
-        }
-        low[at] = n->floor;
     }
-    if (have == 0) {
+    if (p == -INFINITY) {
         return c->tx_dbm; /* no relay known: as loud as it may, to find one */
     }
-    double p = ceil(low[have - 1] + c->margin_db);
     p = p < r->node_dbm ? r->node_dbm : p;
     return p > c->tx_dbm ? c->tx_dbm : p;
 }
