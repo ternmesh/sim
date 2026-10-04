@@ -3,6 +3,58 @@
 # shares: SF7 at 125 kHz, coding rate 4/5, a 16-symbol preamble. Its announces are its own
 # background traffic, held under its cap. The sites are picked over links at this preset
 # (sites.sf), which every fast scenario shares.
+#
+# Measured with tools/density.py --fast (3 seeds, -5 to 20 dBm; MSH-66), every candidate on this
+# radio over the same 200 sites. Unicast / broadcast on time, %; deliveries per second of airtime;
+# unicast on time under churn (a quarter of the sites down 30 min after every 2 h up) and under
+# movement (200 of the leaves walking). Flooding has no sites: the same number of nodes from all.
+# SF7                 -5 dBm       0 dBm        5 dBm       10 dBm       20 dBm
+#   flooding        14 / 14      35 / 34      47 / 46      51 / 49      46 / 45
+#     per_s         5.3          5.9          5.9          5.6          5.5
+#     churn, move   14, 15       33, 35       48, 48       51, 51       46, 46
+#   meshtastic      11 / 11      31 / 29      43 / 42      50 / 49      22 / 22
+#     per_s         3.3          4.9          5.7          7.3          3.8
+#     churn, move   11, 13       30, 33       43, 44       50, 48       23, 18
+#   meshcore        37 / 16      53 / 24      49 / 22      45 / 18      35 / 11
+#     per_s         2.0          2.9          2.9          2.9          2.5
+#     churn, move   35, 37       52, 52       50, 48       45, 44       36, 35
+#   candidate 3     47 / 10      89 / 41      97 / 74      97 / 86      96 / 89
+#     per_s         8.0          37.9         48.3         53.2         54.4
+#     churn, move   22, 33       59, 60       79, 70       80, 75       77, 85
+# SF8 (--sf 8)
+#   flooding        19 / 18      31 / 29      35 / 34      36 / 34      32 / 30
+#     per_s         3.0          3.1          3.2          3.0          2.9
+#     churn, move   18, 18       31, 29       35, 35       36, 34       31, 32
+#   meshtastic      16 / 16      28 / 26      34 / 31      31 / 30       6 / 5
+#     per_s         2.2          2.7          3.3          3.6          0.9
+#     churn, move   16, 18       27, 27       34, 32       32, 28        6, 5
+#   meshcore        33 / 12      37 / 15      33 / 11      29 / 10      22 / 6
+#     per_s         1.3          1.7          1.5          1.7          1.3
+#     churn, move   32, 32       38, 36       34, 33       30, 29       24, 23
+#   candidate 3     65 / 16      83 / 47      85 / 70      85 / 77      83 / 70
+#     per_s         6.7          18.0         26.8         31.2         28.2
+#     churn, move   36, 44       62, 57       66, 62       63, 67       58, 69
+# Links per node 5, 12, 30, 69 and 284 at SF7; 8, 19, 46, 102 and 372 at SF8. The busiest node
+# sends 1.4-8.2% of the hour, candidate 3's and MeshCore's the most where the network is sparsest,
+# their relays carrying everything; none comes near the sub-band's 10%. Median and 95th-percentile
+# delay are 2-14 s and 16-37 s for candidate 3, 3-24 s and 6-63 s for flooding and MeshCore;
+# Meshtastic's at 20 dBm reach 70-374 s and 704-1638 s, its queues never draining.
+#
+# The verdict. A fast preset alone does not explain candidate 3's lead: given the same radio and the
+# same sites the incumbents improve on their own presets - MeshCore to 22-53% of unicasts,
+# Meshtastic to 6-50% - and candidate 3 still delivers 83-97% from 0 dBm up, against at most 53%,
+# for 5 to 10 times the best other's deliveries per second of airtime. Most likely it wins because
+# it sends each unicast along one route at the power that route needs, where the others flood or
+# flood to find a path: the denser the network, the more that saves, and MeshCore and Meshtastic
+# fall away as density rises while it holds. It loses in three places. Broadcast where the network
+# is sparsest: at -5 dBm 10-16%, no better than flooding's 14-18%, its broadcasts going only as loud
+# as its routes need over a few links per node. Robustness: churn costs it 17-30 points and movement
+# 11-29, where every other candidate moves by 4 or less, a route outliving the relay or the leaf it
+# leads to until announces correct it (MSH-62); even so it stays ahead of every incumbent but at SF7
+# -5 dBm, where MeshCore's 35% and 37% beat its 22% and 33%. And the sparsest network itself, where
+# its routes have not settled - reach 47% at SF7 -5 dBm - and its results swing most from seed to
+# seed. SF8 is worse for it than SF7 from 0 dBm up, more airtime per frame for the same load, as
+# MSH-49 found; at -5 dBm, where SF7 leaves 5 links per node, SF8's reach helps, 65% against 47%.
 nodes     = 1000
 placement = uniform
 area      = 18000 x 18000

@@ -2,6 +2,11 @@
 # region-distvec-fast.tsim share (MSH-66): SF7 at 125 kHz, coding rate 4/5, a 16-symbol preamble.
 # Every node relays, three hops, behind ALOHA - the floor. It has no sites to share. SF8 is
 # -s radio.sf=8 -s sites.sf=8, which tools/density.py --fast --sf 8 sets for every candidate.
+#
+# Measured with tools/density.py --fast (3 seeds, -5 to 20 dBm; MSH-66); the scorecard for every
+# candidate, and the verdict, are in region-distvec-fast.tsim. Flooding delivered 14-51% of
+# unicasts on time at SF7 and 19-36% at SF8, best at 10 dBm, for 3-6 deliveries per second of
+# airtime; churn and movement change it by 2 points or less.
 nodes     = 1000
 placement = uniform
 area      = 18000 x 18000
