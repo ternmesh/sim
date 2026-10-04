@@ -25,11 +25,11 @@
  * leaf is reached through the infrastructure node that hears it. "all" makes every node
  * infrastructure: an untiered mesh, for measuring what tiering is worth.
  *
- * Leaves and their parents (MSH-53), when `leaves` is parent_oracle. Above, infrastructure still
- * keeps and repairs a route to every leaf, so a tier of 200 relays in 1000 nodes repairs 1000
- * destinations with fewer paths around each break. Here it routes among itself only: no node
- * announces a route to a leaf, and a relay keeps its routes to the leaves it hears only for the
- * last hop. Each leaf takes a parent: of the infrastructure neighbours it can use, the one with
+ * Leaves and their parents (MSH-53), when `leaves` is parent_oracle or parent. Above,
+ * infrastructure keeps and repairs a route to every leaf, so a tier of 200 relays in 1000 nodes
+ * repairs 1000 destinations with fewer paths around each break. Here it routes among itself only:
+ * no node announces a route to a leaf, and a relay keeps its routes to the leaves it hears only for
+ * the last hop. Each leaf takes a parent: of the infrastructure neighbours it can use, the one with
  * the best ETX, kept unless another beats it by `hysteresis`. A frame for a leaf this node has no
  * route to goes along its route to that leaf's parent, which hands it over; one for a leaf with no
  * parent, or a parent this node is but cannot reach the leaf from, goes nowhere, and nothing is
@@ -37,11 +37,45 @@
  * infrastructure neighbours rather than the power_k nearest of any kind: a leaf must be heard by
  * relays, and a relay by its leaves and by the relays it routes over.
  *
- * Where a leaf's parent is, the node routing to it learns, for now, from an oracle: every leaf
- * writes its parent into `parents`, which every node reads, and a relay is its own parent - what a
- * lookup never wrong and never late would tell. It measures what routing over relays could gain
- * before the binding a real network would need, the leaf naming its parent and a source finding
- * that out, is designed.
+ * Where a leaf's parent is, the node routing to it learns, with parent_oracle, from an oracle:
+ * every leaf writes its parent into `parents`, which every node reads, and a relay is its own
+ * parent - what a lookup never wrong and never late would tell. With `leaves` parent (MSH-68) it is
+ * learned instead. A leaf names its parent in every announce, and the binding's seq, which it
+ * raises each time it takes another, after the head (and the power byte, and the election's
+ * fields, below):
+ *
+ *     ... | parent 4 | binding seq 2 | binding count 1
+ *
+ * and a relay - its own parent, so naming itself - lists bindings it has heard after its routes,
+ *
+ *     ... routes | binding: leaf 4, parent 4, seq 2 ...
+ *
+ * Every node keeps the newest binding it has heard of each leaf, from the leaf or a relay, and a
+ * relay announces each new one once, as a change, up to 8 to a frame, and 2 more in turn; a frame
+ * for a leaf it has no route to goes towards the parent it knows of, as with the oracle. Listing
+ * them all in turn, as routes are, filled every relay's frame - at the start every leaf's binding
+ * is new - so that the cap let relays announce a third less often, and with links by strength
+ * relays' routes to each other reached 1-9% of pairs at 20 dBm, against 85% with the oracle.
+ *
+ * What learning costs, measured with tools/density.py (3 seeds, -5 to 20 dBm), unicast on time:
+ * deployed (region-distvec-deployed.tsim, cds 200), 28.7%, 27.5%, 20.1%, 13.5% and 11.3%, against
+ * 27.0%, 28.2%, 20.8%, 14.2% and 10.6% with the oracle - the same - and broadcast 22-43% against
+ * 6-34%, the messages a source finds no binding for leaving the channel to them; but on the region
+ * at SF9 (cds 200), 45.9%, 56.4%, 51.6%, 43.3% and 38.5% against 57.8%, 61.2%, 57.4%, 47.9% and
+ * 47.3%, 5 to 12 points short. There, a thousand nodes each need every leaf's binding, as many
+ * entries as routes to every leaf and longer, and under the cap they come round slowly: what the
+ * warmup ends with reaches 48-71% of pairs, against 85-99% with the oracle.
+ *
+ * Neither beats routed leaves once a leaf hears many relays. Deployed, unicast on time with routed
+ * leaves was 28.8%, 31.6%, 27.1%, 24.6% and 25.6%: the oracle's parents lose 2 points at -5 dBm and
+ * 15 at 20 dBm. A route to a leaf ends at its one parent, the relay it hears best, where a routed
+ * leaf is reached through whichever relay hearing it is nearest the source; at -5 dBm a leaf hears
+ * a relay or two, at 20 dBm dozens. In region-distvec-deployed.tsim at 20 dBm (seed 1), the
+ * oracle's parents sent 14145 data frames for 237 unicasts delivered, against 9114 for 519 routed;
+ * hops given up on their retries 5259 against 2980, and a third of the broadcast deliveries
+ * (28071 against 93731), the data taking the channel from them. Routed leaves also fail fast: a
+ * source with no route to a leaf sends nothing (571 such against 190), where with parents it sends
+ * towards the parent and the frame is lost on the way.
  *
  * What it gained on the region (3 seeds, 100 to 400 relays, 0 and 20 dBm): unicast within 4
  * points of routed leaves either way - 22.7% against 20.5% with 200 relays at 0 dBm, 7.9% against
@@ -383,10 +417,12 @@ enum tsim_distvec_routes {
     TSIM_DISTVEC_ROUTES_DEMAND,
 };
 
-/* How a leaf is reached: by routes to it that infrastructure announces, or through its parent. */
+/* How a leaf is reached: by routes to it that infrastructure announces, or through its parent -
+ * looked up in the oracle's table, or learned from announces. */
 enum tsim_distvec_leaves {
     TSIM_DISTVEC_LEAVES_ROUTED,
     TSIM_DISTVEC_LEAVES_PARENT_ORACLE,
+    TSIM_DISTVEC_LEAVES_PARENT,
 };
 
 /* How a node judges its links: by announces counted and IHUs, from the oracle's (below), or by
@@ -419,6 +455,8 @@ enum tsim_distvec_links {
  *    relays of each part of the network join up. With a relay_count it stops there, and tops up
  *    with the most linked nodes if it finished short; 0 takes as many as it needs.
  * Which nodes are relays is the deployment's to say. These bound what siting could be worth.
+ *  - elect (MSH-68): no pick before the run; every node starts a leaf, and the nodes elect
+ *    themselves from what they hear, as below.
  *
  * What it was worth on the region under the oracle (parent_oracle, 3 seeds): at 0 dBm, nodes
  * 0-199 left the oracle without a route at the source for 29.8% of unicasts and delivered 57.5% on
@@ -428,11 +466,66 @@ enum tsim_distvec_links {
  * 84.0% for nodes 0-99; at 20 dBm every rule joins up and makes 96-99%. Siting did not make hops
  * fail less: about half of data hops were decoded whatever the rule, a little fewer with more
  * messages routed. That is the MAC's to fix. */
+/* Relays elected (MSH-68), when relay_pick is elect: a rule each node runs on its own neighbour
+ * table, with nothing planned and no oracle. Each announce carries, after the head and the power
+ * byte,
+ *
+ *     ... | relays 1 | tier 4 | tier hops 1 | score 1 | choice 4
+ *
+ * the relays its sender can use (up to 255), the tier it is in, its score and its choice.
+ *
+ * Covering. A leaf that can use fewer than elect_cover relays is an orphan. Its score is how many
+ * of the nodes it can use, itself among them, are orphans by their last announce; an orphan's
+ * choice is, of itself and the leaves it can use, the one with the highest score and of those the
+ * lowest number - a greedy dominating set, as Guha and Khuller pick one, each orphan naming the
+ * candidate that would cover most. A leaf some orphan has chosen waits from a quarter to three
+ * quarters of elect_wait and stands if one still has, by an announce newer than the last change of
+ * role it heard. Without the choice, every node near an orphan stood: power control leaves links
+ * one-sided enough that a node seldom hears the relay its orphan neighbour has just found, and the
+ * region elected 600 to 990 relays of its 1000.
+ *
+ * Joining. Relays dominating the network are not yet joined. A relay's tier is the lowest-numbered
+ * root of itself and those its relay neighbours name, with the hops to it, the fewest of those,
+ * never hop_max or more - so the tier a relay names is the lowest relay its part of the tier
+ * reaches, and a part cut off counts up to hop_max and takes its own; a leaf's is the lowest its
+ * relay neighbours name. A leaf next to two relays in different tiers stands, from 2 to 4 times
+ * elect_wait after it first sees them, to join them; one next to a relay and to a leaf naming
+ * another tier, twice that, to bring it a hop nearer. It weighs only what neighbours announced
+ * within their promise and imax more: links by strength stay up long unheard, and tiers named an
+ * hour ago made hundreds of false gaps. Election news - the relays a node hears, its tier and its
+ * choice changed - is never suppressed by Trickle, or the tiers took hours to join.
+ *
+ * Nobody stands before 4 elect_waits from its start, nor within half of one of a link coming up:
+ * a node's links come up over minutes, eight IHUs a frame, and one elected on its first two
+ * neighbours covers no one else. A relay that has been one for elect_hold, if that is above 0,
+ * stands down once every leaf it can use hears more than elect_cover relays, every relay it can
+ * use is a hop from another of them, as their routes say, and every neighbour names its tier - and
+ * still does from half to one and a half elect_waits on, on news since the last change of role.
+ * Off by default: the network here does not move.
+ *
+ * With power control, power_k counts every neighbour, as with relays picked. Counting only relays,
+ * as with parents, raised every node to full power until it knew power_k relays, and lowered it as
+ * relays came: links came and went with the election and it elected 800 to 1000.
+ *
+ * What it is worth, measured with tools/density.py (3 seeds, -5 to 20 dBm, elect_wait 10 min),
+ * unicast on time and broadcast, against the 200 relays cds picks over the oracle's links:
+ * deployed, 31.1%, 32.6%, 29.9%, 25.5% and 22.2%, against 28.8%, 31.6%, 27.1%, 24.6% and 25.6%,
+ * and broadcast 15-39% against 12-35% - 37.3% at 20 dBm against 19.1% - with 174 to 262 relays
+ * elected (seed 1); on the region at SF9, routed leaves, 53.7%, 64.2%, 60.5%, 57.1% and 53.9%,
+ * against 53.0%, 65.4%, 59.5%, 54.2% and 56.0%, and 57.8%, 61.2%, 57.4%, 47.9% and 47.3% with
+ * parent_oracle too, with 103 to 238 elected. Never more than 4.1 points short of either, and
+ * ahead at most powers, with nothing planned. With 5-minute waits it elected 500 relays and made
+ * 16% at 20 dBm deployed (seed 1), joining tiers
+ * whose news had not yet come round: a relay announcing full frames under the cap does so every
+ * few minutes. With 15-minute waits, 20.5% at 20 dBm: the warmup ends before routes have settled.
+ * With every node a relay, 9.3% (seed 1). With parents learned too (below), deployed, 27.1%,
+ * 27.7%, 21.0%, 12.5% and 5.8%. */
 enum tsim_distvec_pick {
     TSIM_DISTVEC_PICK_LIST,
     TSIM_DISTVEC_PICK_DEGREE,
     TSIM_DISTVEC_PICK_SPACED,
     TSIM_DISTVEC_PICK_CDS,
+    TSIM_DISTVEC_PICK_ELECT,
 };
 
 struct tsim_distvec_oracle;
@@ -452,6 +545,12 @@ struct tsim_distvec_config {
     uint8_t relay_pick;       /* enum tsim_distvec_pick */
     uint32_t relay_count;     /* how many: at least 1, or with cds 0 for as many as it needs */
     const uint8_t *relay_set; /* [node] 1 for infrastructure, shared; set by the driver */
+    /* With relay_pick elect (MSH-68, above): the relays each node wants to hear, 1..8; how long a
+     * node waits before it stands, at most; and how long a relay stays one before it may stand
+     * down, 0 for never. */
+    uint8_t elect_cover;
+    tsim_time elect_wait;
+    tsim_time elect_hold;
 
     tsim_time imin;    /* Trickle */
     uint8_t doublings; /* imax is imin times 2^doublings, 0..16 */
@@ -662,17 +761,17 @@ struct tsim_pos;
 
 /* Picks infrastructure by `config`'s relay_pick and relay_count from the links `phy` has now, and
  * for spaced the nodes' positions, setting set[node] to 1 for each relay and 0 for the rest.
- * Returns false when memory runs out, the modulation is invalid or the pick is list. */
+ * Returns false when memory runs out, the modulation is invalid or the pick is list or elect. */
 bool tsim_distvec_pick_relays(const struct tsim_phy *phy, const struct tsim_pos *pos,
                               const struct tsim_distvec_config *config, uint8_t *set);
 
 struct tsim_relay_tier;
 
-/* How well `config`'s infrastructure joins up over the oracle's links, from those `phy` has now;
- * `present` only when some nodes are leaves. Returns false, leaving `out` zero, when memory runs
- * out or the modulation is invalid. */
+/* How well `config`'s infrastructure - or with `relay` non-NULL, the nodes it marks 1 - joins up
+ * over the oracle's links, from those `phy` has now; `present` only when some nodes are leaves.
+ * Returns false, leaving `out` zero, when memory runs out or the modulation is invalid. */
 bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_config *config,
-                       struct tsim_relay_tier *out);
+                       const uint8_t *relay, struct tsim_relay_tier *out);
 
 /* Every node infrastructure, leaves routed; Trickle from 8 s to 8 min (six doublings), redundancy
  * 3, announcing at least every third interval and forgetting a neighbour after an hour; a 0.5% cap,
@@ -686,7 +785,8 @@ bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_con
  * fell from 22% to 2% as density rose (MSH-45) - frames going no quieter than -9 dBm, the SX1262's
  * least, with a 10 dB margin and 3 dB more for each try lost, and the SNR floor Semtech's for the
  * SF: -7.5 dB at SF7, 2.5 dB lower for each SF above. Per-link SF off, with sf_k 8 for when it is
- * on. The oracle off and links by strength, with a 3 dB margin for either oracle.
+ * on. The oracle off and links by strength, with a 3 dB margin for either oracle. Relays, when
+ * elected, covering every node once, with 10-minute waits, and never standing down.
  *
  * The cap is per node, so in a neighbourhood of n nodes routing may take n times it of the
  * channel: 2% - Reticulum's announce cap - saturated a 200-node town at SF9, which 0.5% did not.
@@ -748,6 +848,9 @@ struct tsim_distvec_stats {
     uint64_t probes;
     uint64_t probes_answered;
     uint64_t probe_acks;
+    /* With relay_pick elect: the times the node stood as a relay, and stood down. */
+    uint64_t elected;
+    uint64_t stood_down;
     /* Now, not summed: of the destinations it announces, has had a route to and has none to, how
      * many it holds a route to through a usable neighbour that is infeasible, and how many none. */
     uint32_t unrouted_infeasible;
@@ -756,6 +859,9 @@ struct tsim_distvec_stats {
 
 /* The node's books, up to now. */
 void tsim_distvec_stats(const void *self, struct tsim_distvec_stats *stats);
+
+/* Whether the node is infrastructure now: as configured, or with relay_pick elect, as elected. */
+bool tsim_distvec_infra(const void *self);
 
 /* Whether the node can use its link to `nb`: heard both ways, within etx_max. */
 bool tsim_distvec_uses(const void *self, uint32_t nb);

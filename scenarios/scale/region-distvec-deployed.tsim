@@ -1,7 +1,9 @@
 # Candidate 3 deployed as region-meshcore-deployed.tsim is: the same radio, MeshCore's UK/EU narrow
 # preset, and the same 200 sites as relays, the rest leaves its relays keep routes to. No oracle:
 # leaves are routed, as a real network would have to route them; -s routing.leaves=parent_oracle
-# gives the ceiling a lookup of each leaf's relay, never wrong and never late, would allow.
+# gives the ceiling a lookup of each leaf's relay, never wrong and never late, would allow. The
+# sites stand in for ones a person planned, as the incumbents' do; -s routing.relay_pick=elect
+# has the nodes elect their own relays instead (MSH-68).
 #
 # Measured with tools/density.py --deployed (3 seeds, -5 to 20 dBm; MSH-63), unicast on time:
 #   flooding                        11-14%    every node relaying, on this preset
@@ -12,6 +14,10 @@
 #   candidate 3, links by strength  29-41% (the default since), broadcast 1-16%
 #   and broadcasts as loud as routes need  25-32% (the default since, MSH-67), broadcast 12-35%
 #   the same with parent_oracle     12-31%: the lookup does not help here
+#   with relays elected, not sited  31-33% falling to 22% (MSH-68, -s routing.relay_pick=elect),
+#                                   broadcast 15-39%, 174-262 relays: nothing planned, no oracle
+#   the same with parents learned   27-28% falling to 6%: no oracle, and no better
+#   with parents learned, sited     28-29% falling to 11%, as with parent_oracle
 # Every candidate is overloaded at this preset and this traffic, a message from each node every
 # half hour: the slow presets real meshes run carry far less than SF7 or SF8 at 125 kHz, where
 # region-distvec.tsim's candidate 3 delivered 93-99% of unicasts with both oracles.

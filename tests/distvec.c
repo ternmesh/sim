@@ -1109,8 +1109,136 @@ static void a_leaf_with_no_parent_is_not_asked_about(void) {
     rig_close(&r);
 
     struct tsim_distvec_config bad = r.rc;
-    bad.leaves = TSIM_DISTVEC_LEAVES_PARENT_ORACLE + 1;
+    bad.leaves = TSIM_DISTVEC_LEAVES_PARENT + 1;
     CHECK(tsim_distvec_check(&bad) != NULL);
+}
+
+/* Whether node `a` is next to a relay, or is one: a line's or a clique's links as these rigs lay
+ * them. */
+static bool covered_on(struct rig *r, uint32_t a, bool clique) {
+    for (uint32_t b = 0; b < r->nodes; b++) {
+        bool next = clique ? a != b : (a + 1 == b || b + 1 == a);
+        if ((a == b || next) && tsim_distvec_infra(at(r, b))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* On a line, the nodes elect themselves relays (MSH-68): every node is one or is next to one, the
+ * relays join up, so a message crosses from end to end, and the ends, each covered by its one
+ * neighbour, stay leaves. */
+static void elected_relays_cover_a_line_and_join_up(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.relay_pick = TSIM_DISTVEC_PICK_ELECT;
+    r.rc.elect_wait = TSIM_S(20);
+    line(&r, 7, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(3600));
+    uint32_t first = r.nodes, last = 0, count = 0;
+    for (uint32_t i = 0; i < r.nodes; i++) {
+        CHECK(covered_on(&r, i, false));
+        if (tsim_distvec_infra(at(&r, i))) {
+            first = i < first ? i : first;
+            last = i;
+            count++;
+        }
+    }
+    CHECK_EQ_U64(last - first + 1, count); /* no leaf between two relays: they are joined */
+    CHECK(!tsim_distvec_infra(at(&r, 0)) && !tsim_distvec_infra(at(&r, 6)));
+    struct tsim_distvec_stats st;
+    tsim_distvec_stats(at(&r, 3), &st);
+    CHECK_EQ_U64(st.stood_down, 0);
+    uint64_t m = tsim_net_originate(r.net, 0, 6, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(3700));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    rig_close(&r);
+}
+
+/* In a clique every node is an orphan at first, and each names the same one - the best score, the
+ * lowest number - so one relay stands, not one per node. With elect_cover 2 the rest then name a
+ * second, and one more may stand before the news of the second goes round: two nodes chosen on
+ * news a few seconds apart both stand, a race no rule run on local news can close. */
+static void a_clique_elects_as_many_relays_as_its_cover(void) {
+    for (uint8_t cover = 1; cover <= 2; cover++) {
+        struct rig r;
+        rig_init(&r);
+        r.rc.relay_pick = TSIM_DISTVEC_PICK_ELECT;
+        r.rc.elect_wait = TSIM_S(20);
+        r.rc.elect_cover = cover;
+        build(&r, 6, 2);
+        for (uint32_t a = 0; a < 6; a++) {
+            for (uint32_t b = a + 1; b < 6; b++) {
+                link(&r, a, b, LOSS_LOUD);
+            }
+        }
+        tsim_net_start(r.net);
+        tsim_sched_run_until(r.sched, TSIM_S(3600));
+        uint32_t count = 0;
+        for (uint32_t i = 0; i < r.nodes; i++) {
+            count += tsim_distvec_infra(at(&r, i));
+            CHECK(covered_on(&r, i, true));
+        }
+        CHECK(count >= cover && count <= cover + (cover > 1u ? 1u : 0u));
+        rig_close(&r);
+    }
+    struct rig r;
+    rig_init(&r);
+    r.rc.relay_pick = TSIM_DISTVEC_PICK_ELECT;
+    CHECK(tsim_distvec_check(&r.rc) == NULL);
+    r.rc.elect_cover = 0;
+    CHECK(tsim_distvec_check(&r.rc) != NULL);
+    r.rc.elect_cover = 1;
+    r.rc.oracle = true; /* the oracle's routes need relays known before it starts */
+    CHECK(tsim_distvec_check(&r.rc) != NULL);
+}
+
+/* Two relays a leaf apart: the leaf, next to both and seeing two tiers, stands to join them. */
+static void a_leaf_between_two_tiers_joins_them(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.relay_pick = TSIM_DISTVEC_PICK_ELECT;
+    r.rc.elect_wait = TSIM_S(20);
+    /* 0 - 1 - 2 - 3 - 4, and leaves 5 and 6 hanging off 1 and 3: 1 and 3 each cover three nodes,
+     * and 2, next to both, joins them. */
+    build(&r, 7, 3);
+    for (uint32_t i = 0; i + 1 < 5; i++) {
+        link(&r, i, i + 1, LOSS_LOUD);
+    }
+    link(&r, 1, 5, LOSS_LOUD);
+    link(&r, 3, 6, LOSS_LOUD);
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(3600));
+    CHECK(tsim_distvec_infra(at(&r, 1)) && tsim_distvec_infra(at(&r, 2)) &&
+          tsim_distvec_infra(at(&r, 3)));
+    uint32_t next;
+    CHECK(route(&r, 1, 3, &next) && next == 2);
+    uint64_t m = tsim_net_originate(r.net, 5, 6, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(3700));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    rig_close(&r);
+}
+
+/* With leaves = parent, a leaf names its parent in its announces and the relays pass the binding
+ * on: leaf 0, three hops from leaf 4 and hearing only relay 1, still learns that 4's parent is 3
+ * and sends to it through the relays, with no oracle. */
+static void a_leaf_s_parent_is_learned_from_the_relays(void) {
+    struct rig r;
+    rig_init(&r);
+    strcpy(r.rc.relays, "1-3");
+    r.rc.leaves = TSIM_DISTVEC_LEAVES_PARENT;
+    line(&r, 5, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(300));
+    uint32_t next;
+    CHECK(!route(&r, 2, 4, &next)); /* no route to the leaf: only its binding */
+    CHECK(tsim_distvec_next(at(&r, 0), 4, &next) && next == 1);
+    CHECK(tsim_distvec_next(at(&r, 2), 4, &next) && next == 3);
+    CHECK(tsim_distvec_next(at(&r, 4), 0, &next) && next == 3);
+    uint64_t m = tsim_net_originate(r.net, 0, 4, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(400));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    CHECK(tsim_net_message(r.net, m)->finished);
+    rig_close(&r);
 }
 
 static void trickle_backs_off_and_resets_on_a_new_neighbour(void) {
@@ -2066,7 +2194,7 @@ static void relays_picked_as_a_connected_dominating_set_join_and_reach_every_nod
     CHECK(!set[0] && !set[6] && picked(set, 7) == 5);
     c.relay_set = set;
     struct tsim_relay_tier t;
-    CHECK(tsim_distvec_tier(phy, &c, &t));
+    CHECK(tsim_distvec_tier(phy, &c, NULL, &t));
     CHECK(t.present);
     CHECK_EQ_U64(t.count, 5);
     CHECK_EQ_U64(t.components, 1);
@@ -2083,7 +2211,7 @@ static void relays_picked_as_a_connected_dominating_set_join_and_reach_every_nod
     c.relay_count = 7;
     CHECK(tsim_distvec_pick_relays(phy, NULL, &c, set));
     CHECK(picked(set, 7) == 7);
-    CHECK(tsim_distvec_tier(phy, &c, &t));
+    CHECK(tsim_distvec_tier(phy, &c, NULL, &t));
     CHECK(!t.present);
     c.relay_pick = TSIM_DISTVEC_PICK_CDS;
     tsim_phy_destroy(phy);
@@ -2098,7 +2226,7 @@ static void relays_picked_as_a_connected_dominating_set_join_and_reach_every_nod
     c.relay_count = 0;
     CHECK(tsim_distvec_pick_relays(phy, NULL, &c, set));
     CHECK(set[0] && set[3] && picked(set, 6) == 2);
-    CHECK(tsim_distvec_tier(phy, &c, &t));
+    CHECK(tsim_distvec_tier(phy, &c, NULL, &t));
     CHECK_EQ_U64(t.components, 2);
     CHECK_EQ_U64(t.largest, 1);
     CHECK(t.pairs == 0 && t.covered == 1);
@@ -2145,7 +2273,7 @@ static void picked_relays_are_checked(void) {
     CHECK(tsim_distvec_check(&r.rc) != NULL);
     r.rc.relay_pick = TSIM_DISTVEC_PICK_CDS;
     CHECK(tsim_distvec_check(&r.rc) == NULL);
-    r.rc.relay_pick = TSIM_DISTVEC_PICK_CDS + 1;
+    r.rc.relay_pick = TSIM_DISTVEC_PICK_ELECT + 1;
     CHECK(tsim_distvec_check(&r.rc) != NULL);
     r.rc.relay_pick = TSIM_DISTVEC_PICK_CDS;
     build(&r, 3, 1);
@@ -2193,6 +2321,10 @@ static void a_lost_message_is_booked_where_it_was_lost(void) {
 
 int main(void) {
     RUN(a_line_converges_on_its_one_path);
+    RUN(elected_relays_cover_a_line_and_join_up);
+    RUN(a_clique_elects_as_many_relays_as_its_cover);
+    RUN(a_leaf_between_two_tiers_joins_them);
+    RUN(a_leaf_s_parent_is_learned_from_the_relays);
     RUN(the_oracle_routes_by_the_fewest_hops_and_announces_nothing);
     RUN(the_link_oracle_uses_its_links_and_no_others);
     RUN(links_by_strength_come_up_and_go_down_on_margin);
