@@ -329,24 +329,24 @@
  * Sensing other SFs, or meeting without the copies, is the slotted MAC's to give.
  *
  * Off by default. Measured with tools/density.py (cds 200, parent_oracle, 3 seeds), unicast on
- * time from -5 to 20 dBm was 57.1%, 90.1%, 96.7%, 98.3% and 98.5% with sf_min 7, against 57.8%,
+ * time from -5 to 20 dBm was 56.1%, 88.6%, 96.0%, 98.4% and 98.6% with sf_min 7, against 57.8%,
  * 66.3%, 63.4%, 68.1% and 70.3% off. But the region at one faster SF did as well for far less:
  * SF7 made 47.6%, 88.9%, 99.0%, 99.3% and 99.4%, and SF8 68.2%, 92.7%, 93.5%, 93.2% and 95.8%.
- * Per-link SF never beat the best single SF, and took 3 to 5 times its airtime per delivery: at
- * 0 dBm 8.2 deliveries a second of airtime against 25 at SF8 and 42 at SF7, and 11.7 at SF9.
+ * Per-link SF never beat the best single SF, and took 3 to 7 times its airtime per delivery: at
+ * 0 dBm 7.6 deliveries a second of airtime against 25 at SF8 and 42 at SF7, and 11.7 at SF9.
  * Most of it is copies: with 70% of nodes still on SF9 there, every relay sends broadcasts and
  * announces at SF9 and a faster SF too; sending only at the SFs of neighbours it has links to
  * changed nothing (seed 1, -5 to 5 dBm). At -5 dBm it gained nothing, though SF8 alone gains 10
- * points: a node keeps every link it has, so a sparse network stays slow. Keeping fewer links, sf_k
- * 4, 2 or 1, went faster and lost routes: 59.2%, 52.3% and 30.8% at -5 dBm, 87.4%, 81.9% and 77.8%
- * at 0 (seed 1). Ending the ladder at SF8 made 61.7% and 88.2%.
+ * points: a node keeps every link it has, so a sparse network stays slow. Keeping fewer links,
+ * sf_k 4, 2 or 1, went faster and lost routes: 59.2%, 52.3% and 30.8% at -5 dBm, 87.4%, 81.9%
+ * and 77.8% at 0 (seed 1). Ending the ladder at SF8 made 61.7% and 88.2%.
  *
- * Where it pays is uneven density, which no one SF fits: the region's nodes half in a 3 km
- * town at its middle and half spread as before (3 seeds). At 0 dBm per-link SF made 83.7%,
- * against 58.1% off, 82.2% at SF8 and 81.2% at SF7, which cut the spread nodes off - relays'
- * routes reached 35-49% of pairs, against 75-87%. At 10 dBm SF7 joined them up and made 96.4%,
- * per-link SF 87.7%. The choice of one SF for the whole network matters far more than letting
- * links choose: from 0 dBm up the region wants SF7 or SF8, not SF9, whatever the routing.
+ * Nor did uneven density, which no one SF fits, change that: with the region's nodes half in a
+ * 3 km town at its middle and half spread as before (3 seeds), per-link SF made 82.0% at 0 dBm,
+ * against 58.1% off, 82.2% at SF8 and 81.2% at SF7 - which cut the spread nodes off, relays'
+ * routes reaching 35-49% of pairs against 71-87% - and 86.7% at 10 dBm, where SF7 joined them up
+ * and made 96.4%. The choice of one SF for the whole network matters far more than letting links
+ * choose: from 0 dBm up the region wants SF7 or SF8, not SF9, whatever the routing.
  *
  * Not yet here, and left out of MSH-41 for an issue of its own: the store-and-forward floor,
  * which only shows its worth under mobility and churn. */

@@ -191,6 +191,8 @@ struct held {
     tsim_time due;
     uint64_t handle; /* 0 while it waits */
     uint8_t heard;
+    bool acks;          /* with per-link SF: queues `ack` once `tx` is queued */
+    struct tsim_tx ack; /* the hop_ack for the frame `tx` passes on */
     struct tsim_tx tx;
 };
 
@@ -2357,8 +2359,9 @@ struct answer {
 
 /* With per-link SF, what stands in for the implicit acknowledgement when the frame that answers
  * `a` goes at an SF its sender does not listen on: the head of `a`, as that frame would carry it
- * one hop further on, sent back at the sender's SF, loud enough for it. */
-static void hop_ack(struct router *r, const struct answer *a) {
+ * one hop further on, sent back at the sender's SF, loud enough for it - and only once that frame
+ * is queued, so a frame the queue refuses is never acknowledged. */
+static struct tsim_tx hop_ack(const struct router *r, const struct answer *a) {
     const struct tsim_distvec_config *c = &r->config;
     struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_CONTROL);
     tx.lora.sf = a->sf;
@@ -2372,7 +2375,7 @@ static void hop_ack(struct router *r, const struct answer *a) {
     tx.bytes[18] = power_byte(tx.tx_dbm);
     tx.bytes[19] = a->b[0];
     tx.len = HOP_ACK_LEN;
-    hold(r, &tx, 0, false, c->jitter);
+    return tx;
 }
 
 /* A data or acknowledgement frame towards `dst`, along the selected route: at once if this node
@@ -2449,10 +2452,12 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
             *queued = handle;
         }
     } else {
+        size_t was = r->held_count;
         hold(r, &tx, 0, listen, r->config.jitter);
-    }
-    if (other_sf) {
-        hop_ack(r, ans);
+        if (other_sf && r->held_count > was) {
+            r->held[was].acks = true;
+            r->held[was].ack = hop_ack(r, ans);
+        }
     }
     return true;
 }
@@ -2573,14 +2578,20 @@ static void out_fire(void *ctx) {
         struct held *h = &r->held[i];
         if (h->handle == 0 && h->due <= t) {
             if (h->listen) {
-                struct tsim_tx tx = h->tx;
+                struct held was = *h;
                 r->held[i] = r->held[--r->held_count];
-                send_hop(r, &tx, true);
+                if (send_hop(r, &was.tx, true) && was.acks) {
+                    tsim_node_send(r->node, &was.ack);
+                }
                 continue;
             }
             h->handle = tsim_node_send(r->node, &h->tx);
             if (h->handle && h->tx.bytes[0] == TYPE_PROBE_ACK) {
                 r->stats.probe_acks++;
+            }
+            if (h->handle && h->acks) {
+                tsim_node_send(r->node, &h->ack);
+                h->acks = false;
             }
             if (h->handle == 0 || h->key == 0) {
                 r->held[i] = r->held[--r->held_count];
@@ -2808,12 +2819,13 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
 }
 
 /* Another copy heard of a flooded frame this node holds to pass on: counted, and with
- * bcast_cancel of them, the frame is dropped. */
-static void heard_again(struct router *r, uint64_t key, uint8_t cancel) {
-    /* With per-link SF it may hold a copy for each SF. */
+ * bcast_cancel of them, the frame is dropped. With per-link SF it may hold a copy for each SF, and
+ * a copy heard at `sf` counts only against its copy at that SF - the only one whose neighbours it
+ * says have heard it; 0 counts against every copy. */
+static void heard_again(struct router *r, uint64_t key, uint8_t cancel, uint8_t sf) {
     for (size_t i = 0; i < r->held_count;) {
         struct held *h = &r->held[i];
-        if (h->key != key) {
+        if (h->key != key || (per_sf(r) && sf && h->tx.lora.sf != sf)) {
             i++;
             continue;
         }
@@ -2833,12 +2845,12 @@ static void heard_again(struct router *r, uint64_t key, uint8_t cancel) {
     }
 }
 
-static void on_bcast(struct router *r, const uint8_t *b, uint32_t len) {
+static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t heard_sf) {
     uint32_t src = get32(b + 1), id = get32(b + 5);
     uint8_t hops = b[9];
     uint64_t key = frame_key(TYPE_BCAST, src, id);
     if (seen(r, key)) {
-        heard_again(r, key, r->config.bcast_cancel);
+        heard_again(r, key, r->config.bcast_cancel, heard_sf);
         return;
     }
     mark_seen(r, key);
@@ -2935,7 +2947,7 @@ static void on_rreq(struct router *r, const uint8_t *b, uint32_t len) {
     }
     uint64_t key = frame_key(TYPE_RREQ, origin, id);
     if (seen(r, key)) {
-        heard_again(r, key, r->config.req_cancel);
+        heard_again(r, key, r->config.req_cancel, 0);
         return;
     }
     mark_seen(r, key);
@@ -2996,7 +3008,7 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
         return;
     case TYPE_BCAST:
         if (rx->len >= BCAST_HEAD) {
-            on_bcast(r, rx->bytes, rx->len);
+            on_bcast(r, rx->bytes, rx->len, rx->lora.sf);
         }
         return;
     case TYPE_PROBE:
