@@ -457,12 +457,13 @@ static void a_run_relays_across_its_map(void) {
 }
 
 /* Candidate 3 announces through its warmup: what that cost is reported apart from the window, which
- * it leaves every node on the line holding a route to every other, and each route reaching. */
+ * it leaves every node on the line holding a route to every other, and each route reaching. Links
+ * sensed: the line's are within 3 dB of the floor, under the margin links by strength want. */
 static void a_warmup_is_reported_apart(void) {
     struct tsim_scenario s;
     const char *text = "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
                        "routing = distvec\nmac = meshcore\ntraffic.interval = 24 h\n"
-                       "warmup = %s\nduration = 10 min\n";
+                       "warmup = %s\nduration = 10 min\nrouting.links = sensed\n";
     char buf[512];
     snprintf(buf, sizeof buf, text, "30 min");
     CHECK(parse(&s, buf));
