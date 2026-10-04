@@ -19,6 +19,12 @@ routing             = meshtastic
 mac                 = meshtastic
 routing.relay_pick  = cds
 routing.relay_count = 200
+# The firmware's own traffic as well: NodeInfo, position and telemetry, stretched and held back as
+# the firmware does them (MSH-64). It costs 2-3 points of unicast here at -5 and 0 dBm and nothing
+# denser, where this traffic keeps the channel over the 25% that holds it back; on MediumFast
+# 3-9 points; and with a message from each node every 2 h instead, on LongFast, 35-41% falls to
+# 19-29%. routing.background = no for the workload alone.
+routing.background  = yes
 # The sites are picked over links at MeshCore's narrow preset, whatever this run's preset, so
 # every deployed candidate - and any run of one on another preset - gets the same 200.
 sites.sf            = 8

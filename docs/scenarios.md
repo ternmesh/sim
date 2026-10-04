@@ -274,4 +274,5 @@ The latency percentiles are rounded down by at most 1.6%. The maximum latency is
   MeshCore on the UK/EU narrow preset, candidate 3 and flooding on MeshCore's - and candidates 1 to
   3 over the same 200 sites, picked as a connected dominating set: Meshtastic's routers,
   MeshCore's repeaters and candidate 3's relays, the rest clients, companions and leaves.
+  Meshtastic and MeshCore there also send their firmware's own traffic (`routing.background`).
   `tools/density.py --deployed` sweeps them.
