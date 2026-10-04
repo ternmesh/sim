@@ -1829,6 +1829,62 @@ static void power_k_reaches_the_k_nearest(void) {
     rig_close(&r);
 }
 
+/* A broadcast goes as loud as bcast_power says (MSH-67): from a node whose three neighbours'
+ * floors are -24.5, -14.5 and -4.5 dBm, with power_k 2 and margin 10, as announces go (-4), for
+ * every relay it has a link to (6) or the nearest one only (-4, no quieter than announces), for
+ * every neighbour its routes go through (6), or at tx_dbm. */
+static void a_broadcast_goes_as_loud_as_bcast_power_says(void) {
+    struct {
+        uint8_t mode, k;
+        int64_t dbm;
+    } cases[] = {
+        {TSIM_DISTVEC_BCAST_K, 0, -4},      {TSIM_DISTVEC_BCAST_RELAYS, 0, 6},
+        {TSIM_DISTVEC_BCAST_RELAYS, 1, -4}, {TSIM_DISTVEC_BCAST_ROUTES, 0, 6},
+        {TSIM_DISTVEC_BCAST_FULL, 0, 14},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        struct rig r;
+        rig_init(&r);
+        r.rc.power = true;
+        r.rc.power_k = 2;
+        r.rc.bcast_power = cases[i].mode;
+        r.rc.bcast_k = cases[i].k;
+        build(&r, 4, 1);
+        link(&r, 0, 1, 100);
+        link(&r, 0, 2, 110);
+        link(&r, 0, 3, 120);
+        tsim_net_start(r.net);
+        if (cases[i].mode != TSIM_DISTVEC_BCAST_FULL) {
+            CHECK_EQ_I64((int64_t)tsim_distvec_bcast_power(at(&r, 0)), 14); /* none known yet */
+        }
+        tsim_sched_run_until(r.sched, TSIM_S(300));
+        CHECK_EQ_I64((int64_t)ceil(tsim_distvec_bcast_power(at(&r, 0))), cases[i].dbm);
+        rig_close(&r);
+    }
+}
+
+/* Under the oracle, a broadcast by routes goes as loud as the oracle's routes to relays need: node
+ * 1 between a neighbour at 100 dB and one at 120, with power_k 1, sends announces for the near one
+ * (-9, its least) and broadcasts for the far one too (120 - 114.5, up). */
+static void the_oracle_broadcasts_as_loud_as_its_routes_need(void) {
+    struct rig r;
+    struct tsim_distvec_oracle o = {0};
+    rig_init(&r);
+    r.rc.oracle = true;
+    r.rc.oracle_routes = &o;
+    r.rc.power = true;
+    r.rc.power_k = 1;
+    build(&r, 3, 1);
+    link(&r, 0, 1, 100);
+    link(&r, 1, 2, 120);
+    CHECK(tsim_distvec_oracle_build(&o, tsim_net_phy(r.net), &r.rc));
+    tsim_net_start(r.net);
+    CHECK_EQ_I64((int64_t)tsim_distvec_node_power(at(&r, 1)), -9);
+    CHECK_EQ_I64((int64_t)ceil(tsim_distvec_bcast_power(at(&r, 1))), 6);
+    rig_close(&r);
+    tsim_distvec_oracle_free(&o);
+}
+
 /* A tx_dbm that is not a whole dBm is still what full power means: not rounded down. */
 static void a_fractional_tx_dbm_is_kept_at_the_top(void) {
     struct rig r;
@@ -2149,6 +2205,8 @@ int main(void) {
     RUN(a_relay_goes_loud_enough_for_the_hop_before);
     RUN(a_hop_lost_at_its_power_is_tried_again_louder);
     RUN(power_k_reaches_the_k_nearest);
+    RUN(a_broadcast_goes_as_loud_as_bcast_power_says);
+    RUN(the_oracle_broadcasts_as_loud_as_its_routes_need);
     RUN(a_fractional_tx_dbm_is_kept_at_the_top);
     RUN(power_settings_are_checked);
     RUN(a_strong_link_goes_at_a_faster_sf);

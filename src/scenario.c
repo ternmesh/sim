@@ -797,6 +797,19 @@ static const char *distvec_set(void *config, const char *key, const char *value)
         }
         return NULL;
     }
+    if (strcmp(key, "bcast_power") == 0) {
+        static const char *const names[] = {"k", "relays", "full", "routes"};
+        for (uint8_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+            if (strcmp(value, names[i]) == 0) {
+                c->bcast_power = i;
+                return NULL;
+            }
+        }
+        return "expected k, relays, full or routes";
+    }
+    if (strcmp(key, "bcast_k") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->bcast_k);
+    }
     if (strcmp(key, "link_margin") == 0) {
         return distvec_factor(value, 0, 60, &c->link_margin_db);
     }

@@ -359,7 +359,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .ack_factor = 4,
         .jitter = 2,
         .bcast_hops = 4,
-        .bcast_window = 3,
+        .bcast_window = 8,
         .bcast_cancel = 2,
         .power = true,
         .tx_min_dbm = -9,
@@ -367,6 +367,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .step_db = 3,
         .snr_floor_db = -7.5 - 2.5 * (lora->sf - 7), /* Semtech's */
         .power_k = 8,
+        .bcast_power = TSIM_DISTVEC_BCAST_ROUTES,
         .sf_k = 8,
         .links = TSIM_DISTVEC_LINKS_STRENGTH,
         .oracle_margin_db = 3,
@@ -426,6 +427,9 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
          !(c->step_db >= 0 && c->step_db <= 60) || !isfinite(c->snr_floor_db))) {
         return "with power control, tx_dbm and tx_min_dbm are not whole dBm apart within -128 to "
                "127, or a margin is out of range";
+    }
+    if (c->bcast_power > TSIM_DISTVEC_BCAST_ROUTES) {
+        return "bcast_power is not k, relays, full or routes";
     }
     if (c->links > TSIM_DISTVEC_LINKS_STRENGTH) {
         return "links is not sensed, oracle or strength";
@@ -636,6 +640,76 @@ static void node_power(struct router *r) {
         double p = ceil(low[k - 1] + c->margin_db);
         r->node_dbm = p < lo ? lo : p > hi ? hi : p;
     }
+}
+
+/* The power a broadcast goes at: see enum tsim_distvec_bcast_power. */
+static double bcast_dbm(const struct router *r) {
+    const struct tsim_distvec_config *c = &r->config;
+    if (!c->power || c->bcast_power == TSIM_DISTVEC_BCAST_FULL) {
+        return c->tx_dbm;
+    }
+    if (c->bcast_power == TSIM_DISTVEC_BCAST_K) {
+        return r->node_dbm;
+    }
+    double p = -INFINITY;
+    if (c->bcast_power == TSIM_DISTVEC_BCAST_ROUTES && r->oracle) {
+        /* The oracle's own routes to relays, each first hop at the power it hands the node. */
+        for (uint32_t d = 0; d < r->nodes; d++) {
+            const struct tsim_distvec_oracle_route *o =
+                &r->oracle->route[(size_t)r->self * r->nodes + d];
+            if (d != r->self && o->next != TSIM_BROADCAST && tsim_distvec_relay(c, d) &&
+                o->dbm > p) {
+                p = o->dbm;
+            }
+        }
+    } else if (c->bcast_power == TSIM_DISTVEC_BCAST_ROUTES) {
+        /* Every neighbour a selected route to a relay goes through. */
+        double need = -INFINITY;
+        for (uint32_t d = 0; d < r->nodes; d++) {
+            const struct dest *ds = &r->dest[d];
+            if (d == r->self || !ds->sel || ds->leaf) {
+                continue;
+            }
+            const struct neighbour *n = &r->nb[ds->sel - 1];
+            if (isnan(n->floor)) {
+                return c->tx_dbm; /* a next hop it cannot yet tell the need of */
+            }
+            need = n->floor > need ? n->floor : need;
+        }
+        p = need == -INFINITY ? need : ceil(need + c->margin_db);
+    } else {
+        /* The bcast_k relays it has a usable link to with the lowest floors, or all of them. */
+        double low[UINT8_MAX], top = -INFINITY;
+        unsigned have = 0, k = c->bcast_k;
+        for (size_t i = 0; i < r->nb_count; i++) {
+            const struct neighbour *n = &r->nb[i];
+            if (!n->used || n->cost == INF || !n->infra || isnan(n->floor)) {
+                continue;
+            }
+            have++;
+            if (!k) {
+                top = n->floor > top ? n->floor : top;
+                continue;
+            }
+            if (have > k && n->floor >= low[k - 1]) {
+                continue;
+            }
+            unsigned at = have <= k ? have - 1 : k - 1;
+            while (at > 0 && low[at - 1] > n->floor) {
+                low[at] = low[at - 1];
+                at--;
+            }
+            low[at] = n->floor;
+        }
+        if (have) {
+            p = ceil((k ? low[(have < k ? have : k) - 1] : top) + c->margin_db);
+        }
+    }
+    if (p == -INFINITY) {
+        return c->tx_dbm; /* no relay known: as loud as it may, to find one */
+    }
+    p = p < r->node_dbm ? r->node_dbm : p;
+    return p > c->tx_dbm ? c->tx_dbm : p;
 }
 
 /* --- Links --- */
@@ -2698,6 +2772,7 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
             return false;
         }
         struct tsim_tx tx = frame(r, TSIM_PURPOSE_DATA, PRIORITY_DATA);
+        tx.tx_dbm = bcast_dbm(r);
         tx.bytes[0] = TYPE_BCAST;
         put32(tx.bytes + 1, r->self);
         put32(tx.bytes + 5, (uint32_t)msg->id);
@@ -2860,6 +2935,7 @@ static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t h
         return;
     }
     struct tsim_tx tx = frame(r, TSIM_PURPOSE_RELAY, PRIORITY_RELAY);
+    tx.tx_dbm = bcast_dbm(r);
     memcpy(tx.bytes, b, len);
     tx.bytes[9] = (uint8_t)(hops - 1);
     tx.len = len;
@@ -3365,6 +3441,8 @@ double tsim_distvec_power(const void *self, uint32_t nb) {
 }
 
 double tsim_distvec_node_power(const void *self) { return ((const struct router *)self)->node_dbm; }
+
+double tsim_distvec_bcast_power(const void *self) { return bcast_dbm(self); }
 
 uint8_t tsim_distvec_listen_sf(const void *self) {
     return ((const struct router *)self)->listen_sf;

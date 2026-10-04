@@ -214,6 +214,29 @@
  * airtimes of the frame and dropping it if it hears bcast_cancel copies first. Scoped broadcast
  * is MSH-34's.
  *
+ * How loud a broadcast goes, with power control (MSH-67): bcast_power. Broadcasts went as announces
+ * do, loud enough for the power_k neighbours with the lowest floors. At high power those are near
+ * leaves, so a relay's copy reached no other relay and the flood died within a hop or two: in
+ * region-distvec-deployed.tsim at 20 dBm, seed 1, 5514 broadcast deliveries against 85505 with
+ * links sensed, on less airtime (19.2 ks against 24.9 ks), so not for want of channel. It is the
+ * power, not the links: power_k 0 brought broadcast back to 111064, and unicast down from 507 on
+ * time to 35, announces at full power taking the channel. So broadcasts now go loud enough for
+ * every neighbour a selected route to a relay goes through, which keeps the relay tier as routing
+ * sees it connected, and no quieter than announces; or, if bcast_power says, for the bcast_k
+ * relays with the lowest floors (0 for every relay with a link), as announces, or at tx_dbm.
+ * Reaching only the few nearest relays did not carry the flood: 4 made 10673 deliveries there,
+ * 8 made 36908, 16 made 115173 - and more hops or no cancelling did not help, the copies dying
+ * out a hop or two on. A longer wait before relaying, 8 airtimes rather than 3, lets more copies
+ * be heard first, and so fewer sent.
+ *
+ * It costs unicast what broadcast gains: the channel is the same. With routes and a window of 8,
+ * measured with tools/density.py (3 seeds, -5 to 20 dBm), unicast on time and broadcast went from
+ * 29.0-41.3% and 1.1-16.3% to 24.6-31.6% and 11.7-34.9% deployed; with a message every 2 h, from
+ * 75.7-87.8% and 26.6-47.5% to 69.0-84.3% and 29.8-77.6%; and on the region with every node a
+ * relay, from 53.9-75.5% and 8.5-25.4% to 26.5-54.4% and 21.8-49.2%, unicast losing most where it
+ * is densest. A mesh whose broadcasts reach one node in ten is no use for the group chat most of
+ * its traffic is, so routes is the default; bcast_power = k is what unicast alone would want.
+ *
  * Power control (MSH-45), when `power` is on. A frame sent to one neighbour - a message's hop, an
  * acknowledgement's - goes only as loud as that neighbour needs, so it takes the channel from
  * fewer of the nodes around it: topology control, as in the ad-hoc literature. Announces, requests
@@ -368,6 +391,16 @@ enum tsim_distvec_leaves {
 
 /* How a node judges its links: by announces counted and IHUs, from the oracle's (below), or by
  * how strongly each end hears the other (MSH-58, below). */
+/* How loud a broadcast goes, with power control (MSH-67): as announces do, for the power_k
+ * neighbours with the lowest floors; loud enough for every infrastructure neighbour it has a link
+ * to as well; or at tx_dbm. */
+enum tsim_distvec_bcast_power {
+    TSIM_DISTVEC_BCAST_K,
+    TSIM_DISTVEC_BCAST_RELAYS,
+    TSIM_DISTVEC_BCAST_FULL,
+    TSIM_DISTVEC_BCAST_ROUTES,
+};
+
 enum tsim_distvec_links {
     TSIM_DISTVEC_LINKS_SENSED,
     TSIM_DISTVEC_LINKS_ORACLE,
@@ -460,6 +493,8 @@ struct tsim_distvec_config {
     double step_db;    /* added for each try a hop has lost, 0 to 60 */
     double snr_floor_db; /* the lowest SNR the modulation demodulates at */
     uint8_t power_k;     /* neighbours frames for all of them reach; 0 for tx_dbm */
+    uint8_t bcast_power; /* enum tsim_distvec_bcast_power: what a broadcast goes loud enough for */
+    uint8_t bcast_k;     /* with relays: the infrastructure neighbours it reaches; 0 for all */
     /* Per-link SF (MSH-49, above): the fastest SF a node may listen on, from 7 up to the radio's,
      * or 0 for every node on the radio's; and how many of its links it must keep to go faster -
      * all it would have on the radio's, up to sf_k. */
@@ -645,8 +680,9 @@ bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_con
  * a link kept through 8 rounds without one; a 32-byte reference frame, every link costing the same
  * (ETX off) and none used over ETX 32, 10% hysteresis and a 25% change threshold, a request every
  * 10 s while starved; a jitter of up to 2 airtimes; 32 hops, 2 hop retries after 4 s, 3 retries
- * waiting 5 s plus 4 times the metric; broadcasts over 4 hops, waiting up to 3 airtimes and dropped
- * on the second copy heard. Power control on, with power_k 8 - without it, the region's unicast
+ * waiting 5 s plus 4 times the metric; broadcasts over 4 hops, waiting up to 8 airtimes and dropped
+ * on the second copy heard, as loud as the routes to relays need. Power control on, with power_k 8
+ * - without it, the region's unicast
  * fell from 22% to 2% as density rose (MSH-45) - frames going no quieter than -9 dBm, the SX1262's
  * least, with a 10 dB margin and 3 dB more for each try lost, and the SNR floor Semtech's for the
  * SF: -7.5 dB at SF7, 2.5 dB lower for each SF above. Per-link SF off, with sf_k 8 for when it is
@@ -744,6 +780,9 @@ uint32_t tsim_distvec_round(const void *self);
  * every neighbour go at, in dBm. */
 double tsim_distvec_power(const void *self, uint32_t nb);
 double tsim_distvec_node_power(const void *self);
+
+/* The power a broadcast from this node goes at now, by bcast_power. */
+double tsim_distvec_bcast_power(const void *self);
 
 /* The SF the node listens on, and the SF a frame from it to neighbour `nb` would go at. */
 uint8_t tsim_distvec_listen_sf(const void *self);

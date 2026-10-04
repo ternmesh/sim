@@ -188,7 +188,9 @@ default.
 | `routing.ack_wait`, `routing.ack_factor` (`distvec`) | `5 s`, 4 | the source waits this long, plus this many times the route's metric in milliseconds, for the acknowledgement |
 | `routing.jitter` (`distvec`) | 2 | the longest a frame sent in answer to one received waits before it is queued, in its own airtimes |
 | `routing.bcast_hops` (`distvec`) | 4 | relays a broadcast may have along any path, 0 to 254 |
-| `routing.bcast_window` (`distvec`) | 3 | the longest a broadcast relay waits, in airtimes of the frame |
+| `routing.bcast_window` (`distvec`) | 8 | the longest a broadcast relay waits, in airtimes of the frame |
+| `routing.bcast_power` (`distvec`) | `routes` | how loud a broadcast goes, with power control: `routes` (every neighbour a selected route to a relay goes through), `relays` (the `routing.bcast_k` relays with the lowest floors), `k` (as announces, for the `power_k` nearest) or `full` (`radio.tx_dbm`); never quieter than announces |
+| `routing.bcast_k` (`distvec`) | 0 | with `bcast_power = relays`, how many relays a broadcast reaches; 0 for every one it has a link to |
 | `routing.bcast_cancel` (`distvec`) | 2 | copies of a broadcast heard, the first included, that drop a relay still waiting; 0 never drops one |
 | `routing.power` (`distvec`) | `yes` | power control: frames to one neighbour go at its floor plus `routing.margin`, and a relay loud enough for the hop before too |
 | `routing.power_k` (`distvec`) | 8 | with `routing.power`, announces, requests and broadcasts go loud enough for this many nearest neighbours; 0 sends them at `radio.tx_dbm` |
