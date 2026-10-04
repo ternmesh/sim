@@ -774,6 +774,35 @@ static void background_packets_are_passed_on_as_announces(void) {
     rig_close(&r);
 }
 
+/* At a 1% duty cycle, as the firmware holds to it: once a node has sent 36 s in the hour, what it
+ * is handed is dropped - booked as the duty cycle's - until the hour lets its first frames go. */
+static void over_the_duty_cycle_nothing_is_sent(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.want_ack = false;
+    r.rc.duty_cycle = 1;
+    line(&r, 2, 1);
+    uint64_t first = 0, last = 0;
+    for (int i = 0; i < 600; i++) {
+        tsim_sched_run_until(r.sched, TSIM_S(i));
+        last = tsim_net_originate(r.net, 0, TSIM_BROADCAST, 200);
+        first = first ? first : last;
+    }
+    tsim_sched_run_until(r.sched, TSIM_S(660));
+    tsim_time sent = tsim_net_ledger(r.net, 0)->airtime[TSIM_PURPOSE_DATA];
+    /* The check is made as a frame is queued, so it can go over by what was queued already. */
+    CHECK(sent >= TSIM_S(36) && sent <= TSIM_S(36) + 2 * airtime(217));
+    CHECK_EQ_U64(tsim_net_message(r.net, first)->drops[TSIM_DROP_DUTY], 0);
+    CHECK_EQ_U64(tsim_net_message(r.net, last)->drops[TSIM_DROP_DUTY], 1);
+    CHECK_EQ_U64(tsim_net_message(r.net, last)->delivered, 0);
+    /* An hour after it began, the first minutes' frames are out of it, and it sends again. */
+    tsim_sched_run_until(r.sched, TSIM_S(3700));
+    uint64_t later = tsim_net_originate(r.net, 0, TSIM_BROADCAST, 200);
+    tsim_sched_run_until(r.sched, TSIM_S(3760));
+    CHECK_EQ_U64(tsim_net_message(r.net, later)->delivered, 1);
+    rig_close(&r);
+}
+
 static void bad_configs_are_refused(void) {
     struct rig r;
     struct tsim_net_params p = tsim_net_defaults(1);
@@ -822,6 +851,9 @@ static void bad_configs_are_refused(void) {
     rig_init(&r);
     r.rc.background = true;
     r.rc.position_share = 1.5;
+    CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
+    rig_init(&r);
+    r.rc.duty_cycle = 101;
     CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
     tsim_sched_destroy(sched);
 }
@@ -891,6 +923,7 @@ int main(void) {
     RUN(a_busy_channel_holds_position_back);
     RUN(a_client_asks_a_node_it_does_not_know_for_its_nodeinfo);
     RUN(background_packets_are_passed_on_as_announces);
+    RUN(over_the_duty_cycle_nothing_is_sent);
     RUN(bad_configs_are_refused);
     RUN(the_longest_window_fits_the_clock);
     RUN(destroy_mid_flood_leaves_the_scheduler_runnable);

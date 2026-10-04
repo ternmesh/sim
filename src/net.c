@@ -26,7 +26,21 @@ struct tsim_node {
     struct tsim_timer *timers; /* every timer its plugins hold, so destroy can free them */
     bool off;                  /* powered down: no plugins, no radio (MSH-59) */
     bool air_orphaned;         /* the frame on the air was sent before a power cycle */
+    /* Duty cycle: its frames that may still count in the hour, oldest first, from sent[sent_at];
+     * and the kick waiting for the frame it held back. */
+    struct burst *sent;
+    size_t sent_at;
+    size_t sent_len;
+    size_t sent_cap;
+    struct tsim_event duty_kick;
 };
+
+struct burst {
+    tsim_time start;
+    tsim_time end;
+};
+
+#define DUTY_WINDOW TSIM_S(3600)
 
 struct tsim_timer {
     struct tsim_node *node;
@@ -143,7 +157,7 @@ struct tsim_net *tsim_net_create(struct tsim_sched *sched, const struct tsim_net
                                  uint32_t nodes, const struct tsim_routing *routing,
                                  const void *routing_config, const struct tsim_mac *mac,
                                  const void *mac_config) {
-    if (nodes == 0 || !routing || !mac) {
+    if (nodes == 0 || !routing || !mac || !(params->duty_cycle >= 0 && params->duty_cycle <= 1)) {
         return NULL;
     }
     struct tsim_net *net = calloc(1, sizeof *net);
@@ -217,6 +231,8 @@ void tsim_net_destroy(struct tsim_net *net) {
             net->mac->destroy(net->nodes[i].mac);
         }
         free(net->nodes[i].queue);
+        free(net->nodes[i].sent);
+        tsim_sched_cancel(net->sched, net->nodes[i].duty_kick);
         while (net->nodes[i].timers) {
             tsim_timer_destroy(net->nodes[i].timers);
         }
@@ -247,6 +263,8 @@ bool tsim_net_power(struct tsim_net *net, uint32_t node, bool on) {
         tsim_phy_power(net->phy, node, false);
         nd->off = true;
         nd->air_orphaned = nd->sending;
+        tsim_sched_cancel(net->sched, nd->duty_kick);
+        nd->duty_kick = (struct tsim_event){0};
         net->routing->destroy(nd->routing);
         nd->routing = NULL;
         net->mac->destroy(nd->mac);
@@ -540,7 +558,12 @@ uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
         tsim_lora_airtime(&tx->lora, tx->len) < 0 || !carries_what_it_claims(nd, tx)) {
         return 0;
     }
-    if (net->params.queue_limit && nd->queue_len >= net->params.queue_limit) {
+    /* A frame longer than the duty cycle's whole share could never go: refused as a full queue
+     * refuses one. */
+    bool too_long =
+        net->params.duty_cycle > 0 && tsim_lora_airtime(&tx->lora, tx->len) >
+                                          (tsim_time)(net->params.duty_cycle * (double)DUTY_WINDOW);
+    if (too_long || (net->params.queue_limit && nd->queue_len >= net->params.queue_limit)) {
         nd->stats.dropped++;
         if (tx->carries) {
             tsim_node_drop(nd, tx->carries, TSIM_DROP_QUEUE,
@@ -667,9 +690,90 @@ const struct tsim_tx *tsim_net_on_air(const struct tsim_net *net, uint32_t node)
     return node < net->n && net->nodes[node].sending ? &net->nodes[node].air.tx : NULL;
 }
 
+/* --- Duty cycle --- */
+
+static void duty_fire(struct tsim_sched *sched, void *ctx) {
+    (void)sched;
+    struct tsim_node *nd = ctx;
+    nd->duty_kick = (struct tsim_event){0};
+    if (!nd->off && nd->mac) {
+        nd->net->mac->kick(nd->mac);
+    }
+}
+
+/* Whether a frame of `airtime` may start now. If not, and it ever could, the MAC is kicked when
+ * the hour has let go of enough of the node's earlier frames. */
+static bool duty_allows(struct tsim_node *nd, tsim_time airtime) {
+    struct tsim_net *net = nd->net;
+    tsim_time now = tsim_sched_now(net->sched);
+    tsim_time budget = (tsim_time)(net->params.duty_cycle * (double)DUTY_WINDOW);
+    /* Frames that ended an hour ago count for no frame from now on, whichever goes next. */
+    while (nd->sent_len > 0 && nd->sent[nd->sent_at].end <= now - DUTY_WINDOW) {
+        nd->sent_at++;
+        nd->sent_len--;
+    }
+    /* The hour ending as this frame would end, and what of the node's frames falls in it. */
+    tsim_time from = now + airtime - DUTY_WINDOW;
+    tsim_time used = 0;
+    for (size_t i = 0; i < nd->sent_len; i++) {
+        const struct burst *b = &nd->sent[nd->sent_at + i];
+        if (b->end > from) {
+            used += b->end - (b->start > from ? b->start : from);
+        }
+    }
+    if (used + airtime <= budget) {
+        return true;
+    }
+    /* Over by `over`: the hour must slide past that much more of the earlier frames. */
+    tsim_time over = used + airtime - budget;
+    tsim_time cum = 0;
+    for (size_t i = 0; i < nd->sent_len; i++) {
+        const struct burst *b = &nd->sent[nd->sent_at + i];
+        if (b->end <= from) {
+            continue;
+        }
+        tsim_time a = b->start > from ? b->start : from;
+        if (cum + (b->end - a) >= over) {
+            tsim_time when = a + (over - cum) + DUTY_WINDOW - airtime;
+            if (!tsim_sched_pending(net->sched, nd->duty_kick)) {
+                nd->duty_kick =
+                    tsim_sched_at(net->sched, when > now ? when : now + 1, duty_fire, nd);
+            }
+            return false;
+        }
+        cum += b->end - a;
+    }
+    return false;
+}
+
+static void duty_remember(struct tsim_node *nd, tsim_time start, tsim_time end) {
+    if (nd->sent_at > 0 && nd->sent_at + nd->sent_len == nd->sent_cap) {
+        memmove(nd->sent, nd->sent + nd->sent_at, nd->sent_len * sizeof *nd->sent);
+        nd->sent_at = 0;
+    }
+    if (nd->sent_at + nd->sent_len == nd->sent_cap) {
+        size_t cap = nd->sent_cap ? 2 * nd->sent_cap : 16;
+        struct burst *grown = realloc(nd->sent, cap * sizeof *grown);
+        if (!grown) {
+            return; /* out of memory: this frame goes uncounted */
+        }
+        nd->sent = grown;
+        nd->sent_cap = cap;
+    }
+    nd->sent[nd->sent_at + nd->sent_len++] = (struct burst){start, end};
+}
+
 bool tsim_node_transmit(struct tsim_node *nd) {
     if (nd->sending || nd->queue_len == 0) {
         return false;
+    }
+    if (nd->net->params.duty_cycle > 0) {
+        const struct tsim_tx *head = &nd->queue[0].tx;
+        tsim_time airtime = tsim_lora_airtime(&head->lora, head->len);
+        if (!duty_allows(nd, airtime)) {
+            nd->stats.held++;
+            return false;
+        }
     }
     const struct tsim_routing *routing = nd->net->routing;
     if (routing->sending && !routing->sending(nd->routing, nd->queue[0].handle)) {
@@ -699,6 +803,9 @@ bool tsim_node_transmit(struct tsim_node *nd) {
     tsim_time airtime = tsim_lora_airtime(&tx->lora, tx->len);
     nd->air_end = tsim_sched_now(nd->net->sched) + airtime;
     nd->ledger.airtime[tx->purpose] += airtime;
+    if (net->params.duty_cycle > 0) {
+        duty_remember(nd, tsim_sched_now(net->sched), nd->air_end);
+    }
     return true;
 }
 

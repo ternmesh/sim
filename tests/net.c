@@ -911,6 +911,51 @@ static void an_addressed_frame_reports_its_fate(void) {
     rig_close(&r);
 }
 
+/* At a 1% duty cycle a radio sends 36 s of frames in any hour: a node with frames queued sends
+ * that much, holds the rest, and sends again as the hour lets the first ones go. */
+static void the_radio_holds_to_the_duty_cycle(void) {
+    struct tsim_net_params p = tsim_net_defaults(1);
+    p.queue_limit = 0;
+    p.duty_cycle = 0.01;
+    struct rig r;
+    rig_open(&r, p, 2);
+    r.log.eager = true;
+    struct tsim_node *n0 = tsim_net_node(r.net, 0);
+    struct tsim_tx tx = frame(TSIM_PURPOSE_DATA, 0, 200);
+    for (int i = 0; i < 400; i++) {
+        tsim_node_send(n0, &tx);
+    }
+    uint64_t fit = (uint64_t)(TSIM_S(36) / airtime(200));
+    run_for(&r, TSIM_S(1800));
+    CHECK_EQ_U64(tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_DATA], fit);
+    CHECK(tsim_net_stats(r.net, 0)->held >= 1);
+    /* The hour slides past the first frames from an hour on, one by one. */
+    run_for(&r, TSIM_S(1800) - TSIM_S(1));
+    CHECK_EQ_U64(tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_DATA], fit);
+    run_for(&r, TSIM_S(60));
+    CHECK_EQ_U64(tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_DATA], 2 * fit);
+    rig_close(&r);
+
+    /* A frame longer than the whole share can never go: it is refused, as a full queue refuses
+     * one, and the next goes. */
+    p.duty_cycle = (double)airtime(200) / (double)TSIM_S(3600) * 0.99;
+    rig_open(&r, p, 2);
+    r.log.eager = true;
+    n0 = tsim_net_node(r.net, 0);
+    CHECK_EQ_U64(tsim_node_send(n0, &tx), 0);
+    struct tsim_tx small = frame(TSIM_PURPOSE_DATA, 0, 10);
+    tsim_node_send(n0, &small);
+    run_for(&r, TSIM_S(1));
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->dropped, 1);
+    CHECK_EQ_U64(tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_DATA], 1);
+    rig_close(&r);
+
+    p.duty_cycle = 1.5;
+    struct tsim_sched *sched = tsim_sched_create();
+    CHECK(tsim_net_create(sched, &p, 2, &recorder, &r.log, &manual, &r.log) == NULL);
+    tsim_sched_destroy(sched);
+}
+
 int main(void) {
     RUN(head_handle_names_the_frame_at_the_head);
     RUN(a_node_knows_its_own_airtime);
@@ -938,5 +983,6 @@ int main(void) {
     RUN(destroy_frees_timers_left_running);
     RUN(a_node_powered_down_comes_back_with_nothing);
     RUN(destroy_leaves_the_scheduler_runnable);
+    RUN(the_radio_holds_to_the_duty_cycle);
     return CHECK_DONE();
 }

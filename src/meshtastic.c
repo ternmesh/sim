@@ -233,6 +233,7 @@ static const uint32_t bg_frame_len[BG_KINDS] = {100, 52, 50};
 #define ONLINE_REFRESH TSIM_S(5 * 60)
 #define NODEINFO_HOLD TSIM_S(5 * 60)
 #define NEVER INT64_MAX
+#define TX_MINUTES 60
 
 static void put32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)v;
@@ -298,6 +299,10 @@ struct router {
     uint32_t online;               /* as last counted, itself included */
     tsim_time online_at;           /* when, or -1 */
     uint32_t next_bg;
+    /* The firmware's duty cycle: its transmit time at the start of each of the last minutes. */
+    struct tsim_timer *minute;
+    tsim_time tx_at[TX_MINUTES];
+    uint64_t minutes; /* minutes begun */
 };
 
 struct tsim_meshtastic_config tsim_meshtastic_default(uint16_t channel,
@@ -458,11 +463,18 @@ static void finish(struct awaiting *a) {
     forget(a);
 }
 
+static bool over_duty(const struct router *r);
+
 /* Queues the message's frame and waits from when it has gone - or, polling, from now. If the
- * queue refuses it, it waits as though it had gone. */
+ * queue refuses it, or the duty cycle does, it waits as though it had gone. */
 static void send_awaited(struct awaiting *a) {
     struct router *r = a->owner;
-    uint64_t handle = tsim_node_send(r->node, &a->tx);
+    uint64_t handle = 0;
+    if (over_duty(r)) {
+        tsim_node_drop(r->node, a->id, TSIM_DROP_DUTY, TSIM_BROADCAST);
+    } else {
+        handle = tsim_node_send(r->node, &a->tx);
+    }
     if (handle) {
         a->queued[a->queued_count++] = handle;
     }
@@ -510,7 +522,11 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
     tx.carries_at = TSIM_MESHTASTIC_OVERHEAD;
     tx.len = TSIM_MESHTASTIC_OVERHEAD + msg->len;
     if (!r->config.want_ack) {
-        tsim_node_send(r->node, &tx);
+        if (over_duty(r)) {
+            tsim_node_drop(r->node, id, TSIM_DROP_DUTY, TSIM_BROADCAST);
+        } else {
+            tsim_node_send(r->node, &tx);
+        }
         tsim_node_finished(r->node, id);
         return true;
     }
@@ -539,7 +555,37 @@ static void send_ack(struct router *r, uint32_t to, uint32_t id) {
     header(&tx, r, to, ACK_ID_BIT | r->next_ack++, false, PORT_ROUTING);
     put32(tx.bytes + TSIM_MESHTASTIC_OVERHEAD, id);
     tx.len = ACK_LEN;
-    tsim_node_send(r->node, &tx);
+    if (!over_duty(r)) {
+        tsim_node_send(r->node, &tx);
+    }
+}
+
+/* --- Duty cycle --- */
+
+/* The firmware's utilizationTXPercent(): its transmit time in the current minute and the 59
+ * before it, over an hour. */
+static double hourly_tx_percent(const struct router *r) {
+    uint64_t current = r->minutes - 1;
+    tsim_time from =
+        current >= TX_MINUTES - 1 ? r->tx_at[(current - (TX_MINUTES - 1)) % TX_MINUTES] : 0;
+    return (double)(tsim_node_tx_airtime(r->node) - from) / (double)TSIM_S(3600) * 100.0;
+}
+
+/* Router::send()'s check: over the region's duty cycle in the last hour, nothing goes. */
+static bool over_duty(const struct router *r) {
+    return r->config.duty_cycle > 0 && hourly_tx_percent(r) > r->config.duty_cycle;
+}
+
+/* isTxAllowedAirUtil(), which NodeInfo and telemetry also ask: under half the duty cycle. */
+static bool polite_duty(const struct router *r) {
+    return r->config.duty_cycle == 0 || hourly_tx_percent(r) < r->config.duty_cycle / 2;
+}
+
+static void minute_tick(void *ctx) {
+    struct router *r = ctx;
+    r->tx_at[r->minutes % TX_MINUTES] = tsim_node_tx_airtime(r->node);
+    r->minutes++;
+    tsim_timer_start(r->minute, TSIM_S(60));
 }
 
 /* --- Background traffic --- */
@@ -624,7 +670,7 @@ static uint64_t send_bg(struct router *r, int kind, uint32_t to, uint8_t flags) 
     header(&tx, r, to, BG_ID_BIT | (r->next_bg++ & (BG_ID_BIT - 1)), false, bg_port[kind]);
     tx.bytes[TSIM_MESHTASTIC_OVERHEAD] = flags;
     tx.len = bg_frame_len[kind];
-    return tsim_node_send(r->node, &tx);
+    return over_duty(r) ? 0 : tsim_node_send(r->node, &tx);
 }
 
 /* NodeInfo, as allocReply() lets it go: under 40% utilisation, and not within 5 min of the last.
@@ -651,7 +697,9 @@ static void bg_check(struct router *r) {
         }
         if (k == BG_NODEINFO) {
             r->due[k] = now + base_interval(r, k);
-            send_nodeinfo(r, TSIM_BROADCAST, false);
+            if (polite_duty(r)) {
+                send_nodeinfo(r, TSIM_BROADCAST, false);
+            }
             continue;
         }
         /* Looked at again within ONLINE_REFRESH, so a count that falls brings it forward. */
@@ -662,7 +710,7 @@ static void bg_check(struct router *r) {
             continue;
         }
         double limit = k == BG_TELEMETRY && is_router(r) ? 40 : 25;
-        if (recent_utilisation(r) >= limit) {
+        if (recent_utilisation(r) >= limit || (k == BG_TELEMETRY && !polite_duty(r))) {
             r->retry[k] = now + (k == BG_POSITION ? TSIM_S(5) : TSIM_S(60));
             continue;
         }
@@ -789,6 +837,12 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
         tx.carries = id;
         tx.carries_at = TSIM_MESHTASTIC_OVERHEAD;
     }
+    if (over_duty(r)) {
+        if (data) {
+            tsim_node_drop(r->node, id, TSIM_DROP_DUTY, TSIM_BROADCAST);
+        }
+        return;
+    }
     h->relay = tsim_node_send(r->node, &tx);
 }
 
@@ -828,6 +882,8 @@ static bool router_sending(void *self, uint64_t handle) {
     return true;
 }
 
+static void router_destroy(void *self);
+
 static void *router_create(struct tsim_node *node, const void *config) {
     const struct tsim_meshtastic_config *c = config;
     if (c->hop_limit > TSIM_MESHTASTIC_HOPS_MAX || c->processing < 0 ||
@@ -837,7 +893,8 @@ static void *router_create(struct tsim_node *node, const void *config) {
         (c->background &&
          (c->cancel_late || c->nodeinfo_interval < 0 || c->position_interval < 0 ||
           c->telemetry_interval < 0 || !(c->position_share >= 0 && c->position_share <= 1) ||
-          c->nodedb_max < 2 || c->nodedb_max > 250 || !(c->throttle >= 0 && c->throttle <= 1)))) {
+          c->nodedb_max < 2 || c->nodedb_max > 250 || !(c->throttle >= 0 && c->throttle <= 1))) ||
+        !(c->duty_cycle >= 0 && c->duty_cycle <= 100)) {
         return NULL;
     }
     struct router *r = calloc(1, sizeof *r);
@@ -869,6 +926,15 @@ static void *router_create(struct tsim_node *node, const void *config) {
         }
         r->nodeinfo_sent = -1;
         r->online_at = -1;
+    }
+    if (c->duty_cycle > 0) {
+        r->minute = tsim_timer_create(node, minute_tick, r);
+        if (!r->minute) {
+            router_destroy(r);
+            return NULL;
+        }
+    }
+    if (c->background || c->duty_cycle > 0) {
         tsim_node_rng(node, TSIM_STREAM_ROUTING, &r->rng);
     }
     return r;
@@ -878,7 +944,13 @@ static void *router_create(struct tsim_node *node, const void *config) {
  * point of its interval, and the utilisation's periods start at a random offset. */
 static void router_start(void *self) {
     struct router *r = self;
+    if (r->config.duty_cycle > 0) {
+        r->minutes = 1; /* the one under way at the start, from no transmit time */
+    }
     if (!r->config.background) {
+        if (r->minute) {
+            tsim_timer_start(r->minute, (tsim_time)tsim_rng_below(&r->rng, (uint64_t)TSIM_S(60)));
+        }
         return;
     }
     tsim_timer_start(r->tick, (tsim_time)tsim_rng_below(&r->rng, (uint64_t)CU_PERIOD));
@@ -891,6 +963,9 @@ static void router_start(void *self) {
     if (!position) {
         r->due[BG_POSITION] = NEVER;
     }
+    if (r->minute) {
+        tsim_timer_start(r->minute, (tsim_time)tsim_rng_below(&r->rng, (uint64_t)TSIM_S(60)));
+    }
 }
 
 static void router_destroy(void *self) {
@@ -902,6 +977,7 @@ static void router_destroy(void *self) {
     free(r->withdrawn);
     tsim_timer_destroy(r->tick);
     tsim_timer_destroy(r->recheck);
+    tsim_timer_destroy(r->minute);
     free(r->seen);
     free(r->has_user);
     free(r);

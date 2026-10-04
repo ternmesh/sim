@@ -15,6 +15,10 @@ routing.hops  = 3
 mac           = aloha
 mac.max_delay = 2 s
 
+# The 869.4-869.65 MHz sub-band's 10%, held by every radio (MSH-65): no node comes near it at this
+# traffic, the busiest sending under 4% of the hour.
+duty_cycle = 10%
+
 traffic.interval  = 30 min
 traffic.len       = 16..64
 traffic.broadcast = 0.25

@@ -25,6 +25,9 @@ routing.relay_count = 200
 # 3-9 points; and with a message from each node every 2 h instead, on LongFast, 35-41% falls to
 # 19-29%. routing.background = no for the workload alone.
 routing.background  = yes
+# EU_868's 10%, as the firmware holds to it (MSH-65). No node comes near it at this traffic: the
+# busiest sends under 4% of the hour.
+routing.duty_cycle  = 10%
 # The sites are picked over links at MeshCore's narrow preset, whatever this run's preset, so
 # every deployed candidate - and any run of one on another preset - gets the same 200.
 sites.sf            = 8

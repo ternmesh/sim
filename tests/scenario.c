@@ -221,6 +221,12 @@ static void problems_say_where_they_are(void) {
          "relay_count is 0"},
         {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.background = maybe\n", 4,
          "yes or no"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nduty_cycle = 10\n", 4,
+         "a percentage such as 10%"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nduty_cycle = 0%\n", 4,
+         "a percentage such as 10%"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.duty_cycle = 101%\n", 4,
+         "a percentage such as 10%"},
         {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.nodedb_max = 1\n", 4,
          "a count from 2 to 250"},
         {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.position_interval = 0 s\n", 4,
@@ -882,6 +888,18 @@ static void background_settings_read(void) {
     CHECK(c->flood_max_advert == 3);
 }
 
+/* The duty cycle, held by every radio or by Meshtastic's firmware. */
+static void duty_cycle_settings_read(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 2\nrouting = meshtastic\nmac = meshtastic\n"));
+    CHECK(s.net.duty_cycle == 0 && meshtastic_of(&s)->duty_cycle == 0);
+    CHECK(parse(&s, "nodes = 2\nrouting = meshtastic\nmac = meshtastic\nduty_cycle = 1%\n"
+                    "routing.duty_cycle = 10 %\n"));
+    CHECK(s.net.duty_cycle == 0.01 && meshtastic_of(&s)->duty_cycle == 10);
+    CHECK(parse(&s, "nodes = 2\nrouting = flood\nmac = aloha\nduty_cycle = none\n"));
+    CHECK(s.net.duty_cycle == 0);
+}
+
 int main(void) {
     RUN(the_documented_example_parses);
     RUN(every_value_kind_reads);
@@ -906,6 +924,7 @@ int main(void) {
     RUN(positions_read_from_text);
     RUN(meshcore_settings_read);
     RUN(background_settings_read);
+    RUN(duty_cycle_settings_read);
     RUN(sends_add_up_and_interval_none_stops_the_process);
     RUN(links_read_from_text);
     RUN(a_run_with_links_uses_them);

@@ -89,8 +89,8 @@ static void print_counts(const char *const *names, const uint64_t *counts, int c
 }
 
 static void print_losses(const struct tsim_losses *l) {
-    static const char *drops[TSIM_DROP_COUNT] = {"no_route", "retries", "hop_limit", "queue",
-                                                 "other"};
+    static const char *drops[TSIM_DROP_COUNT] = {"no_route", "retries", "hop_limit",
+                                                 "queue",    "other",   "duty"};
     static const char *places[TSIM_PLACE_COUNT] = {"source", "partway", "last_hop"};
     static const char *fates[TSIM_PHY_FATE_COUNT] = {"decoded", "weak", "interfered",
                                                      "taken",   "busy", "deaf"};
@@ -219,10 +219,11 @@ static void print_report(const char *path, const struct tsim_scenario *s,
         printf("%s\"%s\": %" PRIu64, p ? ", " : "", purposes[p], r->frames[p]);
     }
     printf("},\n");
-    printf("  \"queue_dropped\": %" PRIu64 ", \"rx_ok\": %" PRIu64 ", \"rx_lost\": %" PRIu64
-           ", \"rx_preempted\": %" PRIu64 ", \"rx_aborted\": %" PRIu64 ", \"rx_missed\": %" PRIu64
-           "\n",
-           r->queue_dropped, r->rx_ok, r->rx_lost, r->rx_preempted, r->rx_aborted, r->rx_missed);
+    printf("  \"queue_dropped\": %" PRIu64 ", \"duty_held\": %" PRIu64 ", \"rx_ok\": %" PRIu64
+           ", \"rx_lost\": %" PRIu64 ", \"rx_preempted\": %" PRIu64 ", \"rx_aborted\": %" PRIu64
+           ", \"rx_missed\": %" PRIu64 "\n",
+           r->queue_dropped, r->duty_held, r->rx_ok, r->rx_lost, r->rx_preempted, r->rx_aborted,
+           r->rx_missed);
     printf("}\n");
 }
 
