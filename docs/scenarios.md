@@ -119,6 +119,7 @@ default.
 |---|---|---|
 | `routing.hops` (`flood`) | 3 | how many times a message can be rebroadcast along any path |
 | `mac.max_delay` (`aloha`) | `1 s` | longest random wait before sending |
+| `routing.relay_pick`, `routing.relay_count` (`meshtastic`) | `list`, 0 | routers picked as `distvec`'s infrastructure is (below), over links at `radio.tx_dbm` with 3 dB to spare; the picked nodes are `router`s and the rest take `routing.role`. `list` picks none |
 | `routing.role` (`meshtastic`) | `client` | `client`, `client_mute` (never rebroadcasts) or `router` (waits less to rebroadcast, and cancels on the third copy heard, not the second) |
 | `routing.hop_limit` (`meshtastic`) | 3 | rebroadcasts a packet may have, 0 to 7 |
 | `routing.want_ack` (`meshtastic`) | `yes` | whether a message wants an acknowledgement (`yes` or `no`); broadcasts take an implicit one |
@@ -134,6 +135,8 @@ default.
 | `mac.snr_min`, `mac.snr_max` (`meshtastic`) | -20, 10 | the SNR range, in dB, over which a rebroadcast's window grows from `cw_min` to `cw_max` |
 | `mac.busy_chance` (`meshtastic`) | 0 | chance, each time the MAC looks, that the channel is busy with traffic from outside the mesh: Meshtasticator's interference level |
 | `routing.relays` (`meshcore`) | `all` | which nodes are repeaters and relay, as `all` or numbers and ranges such as `0-45,50`; the rest are companions |
+| `sites.sf`, `sites.bw` | 0, 0 | the SF and bandwidth whose floor the links relays, repeaters and routers are picked over are judged at, with `routing.relay_pick`; 0 for the radio's. Runs on different presets that set the same ones and the same pick get the same sites |
+| `routing.relay_pick`, `routing.relay_count` (`meshcore`) | `list`, 0 | repeaters picked as `distvec`'s infrastructure is (below), over links at `radio.tx_dbm` with 3 dB to spare, `routing.relays` then ignored: so both run over the same sites |
 | `routing.hash_size` (`meshcore`) | 1 | bytes per node on a path, 1 to 3 |
 | `routing.scoped` (`meshcore`) | `yes` | whether floods carry region codes, 4 bytes |
 | `routing.flood_max` (`meshcore`) | 64 | a flood that has made this many hops is not relayed, 1 to 64 |
@@ -185,7 +188,7 @@ default.
 | `routing.req_hops` (`distvec`) | 16 | with demand routes, relays a route request crosses, at most |
 | `routing.req_cancel` (`distvec`) | 2 | with demand routes, copies of a route request a relay hears before it drops its own; 0 never |
 | `routing.oracle` (`distvec`) | `no` | `yes` makes candidate 3 a yardstick, not a candidate: no announces or requests, and routes and powers handed down from the simulator's own links - the fewest hops over links with `routing.oracle_margin` to spare - with the data path, broadcasts and MAC unchanged. What it delivers is the most better routing could gain |
-| `routing.links` (`distvec`) | `sensed` | how a node judges its links: `sensed`, by announces counted and IHUs; `strength` (MSH-58), by how strongly each end hears the other - from announces, and frames heard passed on - with IHUs carrying the margin, `routing.link_margin` to come up and `routing.link_band` of hysteresis, a lost hop never taking a link down until `routing.dead_hops` of them, and silence only after `routing.silent_max`; or `oracle`, a yardstick for link sensing alone (MSH-57) - the protocol runs as ever, announces and their IHUs included, but a neighbour once heard is judged by the oracle's links: used, at an ETX of 1, if it is one, never if not, at its true floor, and never forgotten. Ignored under `routing.oracle` |
+| `routing.links` (`distvec`) | `strength` | how a node judges its links: `sensed`, by announces counted and IHUs; `strength` (MSH-58, the default since MSH-63), by how strongly each end hears the other - from announces, and frames heard passed on - with IHUs carrying the margin, `routing.link_margin` to come up and `routing.link_band` of hysteresis, a lost hop never taking a link down until `routing.dead_hops` of them, and silence only after `routing.silent_max`; strength leaves unused a link within `routing.link_margin` of the floor that sensing would use, so a network held together by such links stays apart; or `oracle`, a yardstick for link sensing alone (MSH-57) - the protocol runs as ever, announces and their IHUs included, but a neighbour once heard is judged by the oracle's links: used, at an ETX of 1, if it is one, never if not, at its true floor, and never forgotten. Ignored under `routing.oracle` |
 | `routing.link_margin` (`distvec`) | 3 | with `routing.links` strength: dB of margin both ends of a link must hear each other with, below `radio.tx_dbm`, for it to come up, 0 to 60 |
 | `routing.link_band` (`distvec`) | 3 | with `routing.links` strength: dB below `routing.link_margin` either margin may fall before the link goes down, 0 to 60 |
 | `routing.dead_hops` (`distvec`) | 24 | with `routing.links` strength: hops to a neighbour given up on in a row, with nothing heard from it between, that forget it, 1 to 255 |
@@ -253,4 +256,10 @@ The latency percentiles are rounded down by at most 1.6%. The maximum latency is
   links per node; `tools/density.py --tsim build/tsim` runs all four at several powers and seeds,
   from about 12 links per node to that, and prints each candidate's delivery at each density. Power
   stands in for spacing: under the log-distance channel, 5 dB quieter loses what standing 1.64
-  times further apart does. The script says more.
+  times further apart does. The script says more. Those four run every candidate at SF9 and
+  125 kHz with every node relaying, which is how neither existing protocol is deployed;
+  `region*-deployed.tsim`, which CI runs too, put each on its own preset - Meshtastic on LongFast,
+  MeshCore on the UK/EU narrow preset, candidate 3 and flooding on MeshCore's - and candidates 1 to
+  3 over the same 200 sites, picked as a connected dominating set: Meshtastic's routers,
+  MeshCore's repeaters and candidate 3's relays, the rest clients, companions and leaves.
+  `tools/density.py --deployed` sweeps them.

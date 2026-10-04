@@ -385,6 +385,13 @@ struct tsim_meshcore_config tsim_meshcore_default(uint16_t channel, const struct
     };
 }
 
+int tsim_meshcore_relay(const struct tsim_meshcore_config *c, uint32_t node) {
+    if (c->relay_pick) {
+        return c->relay_set ? c->relay_set[node] != 0 : -1;
+    }
+    return tsim_nodeset_contains(c->relays, node);
+}
+
 bool tsim_meshcore_relays_valid(const char *spec) {
     return strlen(spec) < sizeof((struct tsim_meshcore_config *)0)->relays &&
            tsim_nodeset_contains(spec, 0) >= 0;
@@ -1121,7 +1128,7 @@ static void router_start(void *self) {
 
 static void *router_create(struct tsim_node *node, const void *config) {
     const struct tsim_meshcore_config *c = config;
-    int relay = tsim_nodeset_contains(c->relays, tsim_node_index(node));
+    int relay = tsim_meshcore_relay(c, tsim_node_index(node));
     if (relay < 0 || c->hash_size < 1 || c->hash_size > 3 || c->flood_max < 1 ||
         c->flood_max > 64 || !(c->rx_delay_base >= 0 && c->rx_delay_base <= 20) ||
         !(c->tx_delay_factor >= 0 && c->tx_delay_factor <= 2) ||

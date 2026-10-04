@@ -128,6 +128,12 @@ struct tsim_meshtastic_config {
     struct tsim_lora lora;
     double tx_dbm;
     enum tsim_meshtastic_role role;
+    /* Routers picked as distvec's infrastructure and meshcore's repeaters can be: with relay_pick
+     * other than list - an enum tsim_distvec_pick - the driver picks relay_count nodes and points
+     * relay_set at them, [node] 1; those are routers, and the rest take `role`. */
+    uint8_t relay_pick;
+    uint32_t relay_count;
+    const uint8_t *relay_set;
     uint8_t hop_limit; /* rebroadcasts a packet may have, at most TSIM_MESHTASTIC_HOPS_MAX */
     bool want_ack;
     bool ack_duplicates;  /* acknowledge every copy of a message, not only the first */

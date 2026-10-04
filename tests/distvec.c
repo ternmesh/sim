@@ -27,6 +27,7 @@ static void rig_init(struct rig *r) {
     struct tsim_lora l = tsim_lora_default(7, 125000);
     r->rc = tsim_distvec_default(0, &l, 14.0);
     r->rc.power = false; /* frames and links as these tests know them; power_rig turns it on */
+    r->rc.links = TSIM_DISTVEC_LINKS_SENSED; /* the links they test; strength tests set theirs */
     r->mc = tsim_meshcore_mac_default();
 }
 

@@ -100,6 +100,11 @@ struct tsim_scenario {
     struct tsim_channel_params channel; /* its seed is the run's */
     struct tsim_net_params net;         /* its listen settings and seed are the run's */
     struct tsim_radio radio;
+    /* The modulation relays, repeaters and routers are picked over, when picked: its SF and
+     * bandwidth, 0 for the radio's. Runs on different presets that set the same pick the same
+     * sites: the links are the losses under one floor, not each preset's. */
+    uint8_t sites_sf;
+    uint32_t sites_bw;
 
     const struct tsim_plugin *routing;
     const struct tsim_plugin *mac;

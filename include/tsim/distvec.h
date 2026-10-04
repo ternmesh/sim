@@ -556,6 +556,16 @@ struct tsim_distvec_config {
  * retries: what announcing to power_k neighbours leaves unknown, and what learning more costs
  * more than it gains.
  *
+ * The default since MSH-63: with no oracle at all - every node infrastructure, leaves routed -
+ * strength took unicast on time on the region (3 seeds, -5 to 20 dBm) from 28.8%, 25.0%, 21.6%,
+ * 19.6% and 13.9% sensed to 56.7%, 53.9%, 56.7%, 68.5% and 75.5%, for broadcast down 3 to 17
+ * points (21.4% to 18.1%, 25.2% to 8.5%) - more delivered overall at every power, a quarter of the
+ * traffic being broadcast - and the town's from 97.4% to 100%. Deployed, in
+ * region-distvec-deployed.tsim - 200 relays on MeshCore's narrow preset - it took unicast from
+ * 4.9-13.4% to 29.0-41.3%, and broadcast from 16.1-23.0% to 1.1-16.3%. What it costs: a link
+ * within link_margin_db of the floor, which sensing would use, goes unused, so a line 2 km apart
+ * at SF9, whose links are that close, never routes.
+ *
  * The liveness probe (MSH-61), with links by strength and probe_hops above 0. A dead neighbour
  * wants a signal a live one never gives, and a live one always gives an answer when asked. After
  * probe_hops hops to a neighbour are lost in a row, with nothing heard from it between, the node
@@ -640,7 +650,7 @@ bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_con
  * fell from 22% to 2% as density rose (MSH-45) - frames going no quieter than -9 dBm, the SX1262's
  * least, with a 10 dB margin and 3 dB more for each try lost, and the SNR floor Semtech's for the
  * SF: -7.5 dB at SF7, 2.5 dB lower for each SF above. Per-link SF off, with sf_k 8 for when it is
- * on. The oracle off and links sensed, with a 3 dB margin for either oracle.
+ * on. The oracle off and links by strength, with a 3 dB margin for either oracle.
  *
  * The cap is per node, so in a neighbourhood of n nodes routing may take n times it of the
  * channel: 2% - Reticulum's announce cap - saturated a 200-node town at SF9, which 0.5% did not.

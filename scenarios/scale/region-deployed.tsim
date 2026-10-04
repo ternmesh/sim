@@ -1,0 +1,26 @@
+# Flooding on region-meshcore-deployed.tsim's radio, MeshCore's UK/EU narrow preset, for a floor:
+# every node relays, three hops, behind ALOHA. It has no sites to share.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf       = 8
+radio.bw       = 62500
+radio.cr       = 4
+radio.preamble = 32
+radio.tx_dbm   = 20
+
+routing       = flood
+routing.hops  = 3
+mac           = aloha
+mac.max_delay = 2 s
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+# As region.tsim: six hours to settle, the last three carrying traffic, and one measured.
+warmup       = 6 h
+traffic.lead = 3 h
+duration     = 1 h
+deadline     = 60 s

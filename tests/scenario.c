@@ -213,6 +213,18 @@ static void problems_say_where_they_are(void) {
          "expected a time"},
         {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.relay_pick = degree\n", 0,
          "relay_count is 0"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.relay_pick = best\n", 4,
+         "list, degree, spaced or cds"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.relay_pick = degree\n", 0,
+         "relay_count is 0"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.relay_pick = spaced\n", 0,
+         "relay_count is 0"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.relay_pick = cds\n"
+         "routing.relay_count = 3\n",
+         0, "relay_count is 3, more than the 2 nodes"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nrouting.relay_pick = cds\n", 4, "not a setting"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nsites.sf = 6\n", 4, "from 7 to 12"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nsites.bw = 600000\n", 4, "bandwidth in Hz"},
         {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.relay_pick = cds\n"
          "routing.relay_count = 3\n",
          0, "relay_count is 3, more than the 2 nodes"},
@@ -371,6 +383,64 @@ static void a_meshtastic_run_floods_a_line(void) {
     CHECK(rep.frames[TSIM_PURPOSE_RELAY] > 0);
 }
 
+/* MeshCore's repeaters picked as candidate 3's relays are: a connected dominating set of a line is
+ * its four inner nodes, which carry a broadcast end to end; one repeater cannot. */
+static void a_meshcore_run_relays_through_its_picked_repeaters(void) {
+    const char *text = "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
+                       "routing = meshcore\nmac = meshcore\nrouting.relay_pick = cds\n"
+                       "routing.relay_count = %d\ntraffic.interval = 2 min\n"
+                       "traffic.broadcast = 1\nduration = 30 min\n";
+    char buf[512];
+    struct tsim_scenario s;
+    struct tsim_report all, one;
+    snprintf(buf, sizeof buf, text, 0);
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &all));
+    snprintf(buf, sizeof buf, text, 1);
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &one));
+    CHECK(all.broadcast.messages > 50);
+    CHECK(all.broadcast.on_time > all.broadcast.wanted * 3 / 4);
+    CHECK(one.broadcast.on_time < one.broadcast.wanted / 2);
+}
+
+/* Sites are picked over links at sites.sf: on a line, SF12 reaches far enough for one relay to
+ * cover every node, SF7 needs the four inner ones, and SF12 picking at SF7 picks those four. */
+static void sites_are_picked_at_the_sites_modulation(void) {
+    const char *text = "nodes = 6\nplacement = line\nspacing = 1500\nchannel.sigma = 0\n"
+                       "routing = distvec\nmac = meshcore\nrouting.relay_pick = cds\n"
+                       "traffic.interval = none\nwarmup = 0 s\nduration = 1 min\n%s";
+    char buf[512];
+    struct tsim_scenario s;
+    struct tsim_report seven, twelve, picked;
+    snprintf(buf, sizeof buf, text, "radio.sf = 7\n");
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &seven));
+    snprintf(buf, sizeof buf, text, "radio.sf = 12\n");
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &twelve));
+    snprintf(buf, sizeof buf, text, "radio.sf = 12\nsites.sf = 7\n");
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &picked));
+    CHECK_EQ_U64(seven.relays.count, 4);
+    CHECK_EQ_U64(twelve.relays.count, 1);
+    CHECK_EQ_U64(picked.relays.count, 4);
+}
+
+/* Meshtastic's picked routers are its relays to churn: of a line's six nodes, its four inner ones,
+ * so churning every leaf takes the two ends, and no more than two are ever down. */
+static void churn_takes_meshtastics_leaves_from_its_picked_routers(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 6\nplacement = line\nspacing = 1500\nchannel.sigma = 0\n"
+                    "routing = meshtastic\nmac = meshtastic\nrouting.relay_pick = cds\n"
+                    "churn.share = 1\nchurn.nodes = leaves\nchurn.up = 2 min\nchurn.down = 2 min\n"
+                    "traffic.interval = none\nduration = 2 h\n"));
+    struct tsim_report rep;
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK(rep.churn.downs > 0);
+    CHECK(rep.churn.down_mean > 0 && rep.churn.down_mean <= 2);
+}
+
 static void a_run_relays_across_its_map(void) {
     struct tsim_scenario s;
     CHECK(parse(&s, line_text));
@@ -387,12 +457,13 @@ static void a_run_relays_across_its_map(void) {
 }
 
 /* Candidate 3 announces through its warmup: what that cost is reported apart from the window, which
- * it leaves every node on the line holding a route to every other, and each route reaching. */
+ * it leaves every node on the line holding a route to every other, and each route reaching. Links
+ * sensed: the line's are within 3 dB of the floor, under the margin links by strength want. */
 static void a_warmup_is_reported_apart(void) {
     struct tsim_scenario s;
     const char *text = "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
                        "routing = distvec\nmac = meshcore\ntraffic.interval = 24 h\n"
-                       "warmup = %s\nduration = 10 min\n";
+                       "warmup = %s\nduration = 10 min\nrouting.links = sensed\n";
     char buf[512];
     snprintf(buf, sizeof buf, text, "30 min");
     CHECK(parse(&s, buf));
@@ -778,6 +849,9 @@ int main(void) {
     RUN(a_moved_node_s_links_change);
     RUN(a_run_talks_to_its_peers_and_answers);
     RUN(a_meshtastic_run_floods_a_line);
+    RUN(a_meshcore_run_relays_through_its_picked_repeaters);
+    RUN(sites_are_picked_at_the_sites_modulation);
+    RUN(churn_takes_meshtastics_leaves_from_its_picked_routers);
     RUN(a_run_repeats_with_its_seed);
     RUN(compatibility_settings_read);
     RUN(positions_read_from_text);

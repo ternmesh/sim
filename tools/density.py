@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Runs every candidate on the 1000-node region at several densities.
 
-    density.py --tsim PATH [--seeds N] [--power DBM,...] [--candidates N,...] [--jobs N]
-               [-s key=value]...
+    density.py --tsim PATH [--deployed] [--seeds N] [--power DBM,...] [--candidates N,...]
+               [--jobs N] [-s key=value]...
 
 A routing result means little without the density it was measured at: the same protocol ranks
 differently where every node hears a dozen others and where it hears hundreds. This runs each of
@@ -29,6 +29,12 @@ traffic.reply=0.5` gives each node three regular correspondents who answer half 
 is what lets a routed candidate use a route more than once. A setting only one candidate has, such
 as candidate 3's `routing.sf_min`, wants `--candidates 3`: the others would refuse it.
 
+--deployed runs scenarios/scale/region*-deployed.tsim instead: each candidate on the preset it is
+deployed on - Meshtastic on LongFast, MeshCore, and candidate 3 and flooding with it, on the UK/EU
+narrow preset - and candidates 1 to 3 over the same 200 sites, Meshtastic's routers, MeshCore's
+repeaters and candidate 3's relays, the rest clients, companions and leaves. Without it every
+candidate runs at SF9 and 125 kHz with every node relaying, which no deployment of either is.
+
 The sweep is too long for CI, which runs each region scenario once, at 20 dBm. It wants a release
 build: each run takes 5 to 60 s of CPU there, the warmup included, and the runs go in parallel.
 """
@@ -50,6 +56,7 @@ CANDIDATES = [
     ("2 meshcore", "region-meshcore.tsim"),
     ("3 distvec", "region-distvec.tsim"),
 ]
+DEPLOYED = {s: s.replace(".tsim", "-deployed.tsim") for _, s in CANDIDATES}
 METRICS = ["links", "unicast", "bcast", "per_s", "reach"]
 
 
@@ -86,9 +93,12 @@ def cell(rows, metric):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--tsim", required=True, help="the tsim binary, a release build")
+    parser.add_argument("--deployed", action="store_true",
+                        help="run each candidate as deployed: its own preset, 200 shared sites")
     parser.add_argument("--seeds", type=int, default=3, help="seeds per candidate and power")
     parser.add_argument("--power", default="-5,0,5,10,20",
-                        help="transmit powers in dBm, comma-separated, quietest (sparsest) first")
+                        help="transmit powers in dBm, comma-separated, quietest (sparsest) first; "
+                        "--power=-5,0 for a list starting below zero")
     parser.add_argument("--candidates", default="flood,1,2,3",
                         help="which to run, comma-separated: flood, 1, 2 and 3")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="runs at once")
@@ -109,7 +119,8 @@ def main():
             parser.error("-s %s: the sweep sets seed and radio.tx_dbm; use --seeds and --power" % s)
 
     wanted = [c.strip() for c in args.candidates.split(",")]
-    chosen = [(name, scenario) for name, scenario in CANDIDATES if name.split()[0] in wanted]
+    chosen = [(name, DEPLOYED[scenario] if args.deployed else scenario)
+              for name, scenario in CANDIDATES if name.split()[0] in wanted]
     if len(chosen) != len(set(wanted)):
         parser.error("--candidates takes flood, 1, 2 and 3, comma-separated")
 

@@ -368,6 +368,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .snr_floor_db = -7.5 - 2.5 * (lora->sf - 7), /* Semtech's */
         .power_k = 8,
         .sf_k = 8,
+        .links = TSIM_DISTVEC_LINKS_STRENGTH,
         .oracle_margin_db = 3,
         .link_margin_db = 3,
         .link_band_db = 3,
