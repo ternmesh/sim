@@ -29,6 +29,7 @@
 #define TYPE_RREP 0x07
 #define TYPE_PROBE 0x08
 #define TYPE_PROBE_ACK 0x09
+#define TYPE_HOP_ACK 0x0A
 
 #define ANNOUNCE_HEAD 16
 #define IHU_LEN 5
@@ -43,9 +44,10 @@
  * request's length: see the header. */
 #define TRAIL_LEN 10
 #define RREQ_LEN 27
-#define PROBE_LEN 10  /* a probe or its answer */
-#define PARKED_MAX 16 /* frames a relay holds while it asks for a route */
-#define RREQ_SEQ 0x01 /* a route request's flag: it asks for the target's seq */
+#define PROBE_LEN 10   /* a probe or its answer */
+#define HOP_ACK_LEN 20 /* with per-link SF: a data frame's head, power byte and type */
+#define PARKED_MAX 16  /* frames a relay holds while it asks for a route */
+#define RREQ_SEQ 0x01  /* a route request's flag: it asks for the target's seq */
 /* The longest IHU round an announce can tell, in its two bytes. */
 #define ROUND_MAX 32767
 /* The most announces a neighbour may go without an IHU, whatever its round: half the 16-bit count,
@@ -55,6 +57,9 @@
 #define IHU_AGE_MAX 0x7FFFu
 
 #define FLAG_INFRA 0x01
+#define FLAG_SF_SHIFT 4 /* with per-link SF, bits 4-6 are the listening SF less 7 */
+/* Semtech's demodulation floors: each SF faster needs this much more SNR. */
+#define SF_STEP_DB 2.5
 
 /* A promise is two bytes: up to 32767 seconds, or with the top bit set a number of minutes up to
  * 32766, or - all ones - no promise at all, for a node whose MAC has held its announces back for
@@ -161,6 +166,7 @@ struct neighbour {
     uint64_t probe_handle; /* its probe in the queue, until it goes; 0 for none */
     tsim_time probe_due;   /* when the next probe goes, or the last is given up on; -1 queued */
     bool mute;             /* left the probe unanswered: unused until something is heard from it */
+    uint8_t sf; /* with per-link SF, the SF it listens on, from its announces; 0 unknown */
 };
 
 /* A frame sent to a next hop, waiting to hear the next hop pass it on. */
@@ -185,6 +191,8 @@ struct held {
     tsim_time due;
     uint64_t handle; /* 0 while it waits */
     uint8_t heard;
+    bool acks;          /* with per-link SF: queues `ack` once `tx` is queued */
+    struct tsim_tx ack; /* the hop_ack for the frame `tx` passes on */
     struct tsim_tx tx;
 };
 
@@ -246,7 +254,9 @@ struct router {
     const struct tsim_distvec_oracle *truth;  /* with links oracle: whose links are used */
     struct tsim_distvec_config config;
     struct tsim_rng rng;
-    double ref_ms; /* the reference frame's airtime */
+    double ref_ms;                   /* the reference frame's airtime */
+    double ref_ms_sf[TSIM_SF_COUNT]; /* ... at each SF, from SF7 */
+    uint8_t listen_sf;               /* the SF it listens on */
 
     uint16_t seq;     /* this node's own route */
     uint16_t ann_seq; /* its announces */
@@ -357,6 +367,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .step_db = 3,
         .snr_floor_db = -7.5 - 2.5 * (lora->sf - 7), /* Semtech's */
         .power_k = 8,
+        .sf_k = 8,
         .oracle_margin_db = 3,
         .link_margin_db = 3,
         .link_band_db = 3,
@@ -433,6 +444,11 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
         return "with probe_hops, probe_tries is not 1 to 32, or probe_wait is not above 0";
     }
     bool oracle = c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE;
+    if (c->sf_min && (c->sf_min < TSIM_SF_MIN || c->sf_min > c->lora.sf || !strength || !c->power ||
+                      c->routes != TSIM_DISTVEC_ROUTES_PROACTIVE || c->sf_k < 1)) {
+        return "sf_min is not 7 to the radio's SF, or wants links by strength, power control, "
+               "proactive routes and sf_k 1 or more";
+    }
     if (oracle && !(c->oracle_margin_db >= 0 && c->oracle_margin_db <= 60)) {
         return "oracle_margin is out of range";
     }
@@ -490,6 +506,57 @@ static struct tsim_tx frame(const struct router *r, enum tsim_purpose purpose, u
     };
 }
 
+/* --- Spreading factors --- */
+
+static uint8_t power_byte(double dbm);
+
+static bool per_sf(const struct router *r) { return r->config.sf_min != 0; }
+
+/* The SF a neighbour listens on: what it last announced, or the radio's. */
+static uint8_t sf_of(const struct router *r, const struct neighbour *n) {
+    return n->sf ? n->sf : r->config.lora.sf;
+}
+
+/* The SF a frame to node `id` goes at: the one it listens on, if it is a neighbour. */
+static uint8_t sf_to(const struct router *r, uint32_t id) {
+    uint16_t s = id < r->nodes ? r->slot_of[id] : 0;
+    return s ? sf_of(r, &r->nb[s - 1]) : r->config.lora.sf;
+}
+
+/* How much louder a frame at `sf` must be than one at the radio's SF to be heard as well. */
+static double sf_gap(const struct router *r, uint8_t sf) {
+    return SF_STEP_DB * (r->config.lora.sf - sf);
+}
+
+/* The SFs a frame for every neighbour goes at, as a mask from SF7: every SF its neighbours listen
+ * on - or, knowing none, every SF it may use, so whoever is there hears it. */
+static unsigned sf_mask(const struct router *r) {
+    unsigned base = 1u << (r->config.lora.sf - TSIM_SF_MIN), m = 0;
+    if (!per_sf(r)) {
+        return base;
+    }
+    for (size_t i = 0; i < r->nb_count; i++) {
+        if (r->nb[i].used) {
+            m |= 1u << (sf_of(r, &r->nb[i]) - TSIM_SF_MIN);
+        }
+    }
+    return m ? m : (base << 1) - (1u << (r->config.sf_min - TSIM_SF_MIN));
+}
+
+/* A copy of `tx`, a frame for every neighbour, at `sf`: louder by the gap, up to tx_dbm, and the
+ * power byte at `power` - an index, or 0 for none - saying so. */
+static struct tsim_tx at_sf(const struct router *r, const struct tsim_tx *tx, uint8_t sf,
+                            uint32_t power) {
+    struct tsim_tx t = *tx;
+    t.lora.sf = sf;
+    double p = t.tx_dbm + sf_gap(r, sf);
+    t.tx_dbm = p > r->config.tx_dbm ? r->config.tx_dbm : p;
+    if (power) {
+        t.bytes[power] = power_byte(t.tx_dbm);
+    }
+    return t;
+}
+
 /* --- Power --- */
 
 /* The quietest a neighbour would decode this node at: what its frame went at, a byte of dBm, less
@@ -503,7 +570,8 @@ static double floor_of(const struct router *r, uint8_t sent, double snr) {
 static uint8_t power_byte(double dbm) { return (uint8_t)(int8_t)ceil(dbm); }
 
 /* What a frame to a neighbour goes at: its floor and margin, and loud enough too for the node the
- * frame answers, whose floor is `back` - NAN for none. */
+ * frame answers, whose floor is `back` - NAN for none - and with per-link SF, louder by the gap
+ * for the SF the neighbour listens on. */
 static double power_for(const struct router *r, const struct neighbour *n, double back) {
     const struct tsim_distvec_config *c = &r->config;
     if (!c->power) {
@@ -512,9 +580,10 @@ static double power_for(const struct router *r, const struct neighbour *n, doubl
     if (isnan(n->floor)) {
         return c->tx_dbm;
     }
-    double p = n->floor + c->margin_db + n->boost;
-    if (!isnan(back) && back + c->margin_db > p) {
-        p = back + c->margin_db;
+    double gap = sf_gap(r, sf_of(r, n));
+    double p = n->floor + c->margin_db + n->boost + gap;
+    if (!isnan(back) && back + c->margin_db + gap > p) {
+        p = back + c->margin_db + gap;
     }
     double lo = ceil(c->tx_min_dbm);
     p = ceil(p);
@@ -620,11 +689,18 @@ static uint8_t margin_byte(double m) {
 }
 
 /* With links by strength, the margin of a link: the least of how far below tx_dbm this node's
- * floor at the neighbour lies, and of the margin its IHU reports - -INFINITY without either. */
-static double margin(const struct router *r, const struct neighbour *n) {
-    double ours = isnan(n->floor) ? -INFINITY : r->config.tx_dbm - n->floor;
-    double theirs = n->dr ? (double)n->dr - MARGIN_ZERO : -INFINITY;
+ * floor at the neighbour lies, and of the margin its IHU reports - -INFINITY without either. With
+ * per-link SF each is less the gap for the SF it is heard at: this node's for the SF the neighbour
+ * listens on, the neighbour's for `listen`, this node's. */
+static double margin_at(const struct router *r, const struct neighbour *n, uint8_t listen) {
+    double ours =
+        isnan(n->floor) ? -INFINITY : r->config.tx_dbm - n->floor - sf_gap(r, sf_of(r, n));
+    double theirs = n->dr ? (double)n->dr - MARGIN_ZERO - sf_gap(r, listen) : -INFINITY;
     return ours < theirs ? ours : theirs;
+}
+
+static double margin(const struct router *r, const struct neighbour *n) {
+    return margin_at(r, n, r->listen_sf);
 }
 
 /* With links by strength, whether the link is in use: once up with link_margin_db each way, until
@@ -636,7 +712,8 @@ static void judge(const struct router *r, struct neighbour *n) {
 
 static uint16_t link_cost(const struct router *r, const struct neighbour *n) {
     if (r->truth || by_strength(r)) {
-        double cost = ceil(r->ref_ms); /* an ETX of 1 */
+        /* An ETX of 1, at the SF frames to it go at. */
+        double cost = ceil(r->truth ? r->ref_ms : r->ref_ms_sf[sf_of(r, n) - TSIM_SF_MIN]);
         bool up = r->truth ? true_link(r, n->id) : n->up && !n->mute;
         return !up ? INF : cost < 1 ? 1 : cost >= INF ? INF - 1 : (uint16_t)cost;
     }
@@ -855,7 +932,16 @@ static void ask_fire(void *ctx) {
                 n++;
             }
         }
-        double cost = (double)tsim_lora_airtime(&tx.lora, REQUEST_HEAD + (uint32_t)n * ASK_LEN);
+        /* To its next hop at the SF that listens on, or to every neighbour at every SF they do. */
+        unsigned mask = next == BROADCAST_HOP ? sf_mask(r) : 1u << (sf_to(r, next) - TSIM_SF_MIN);
+        double cost = 0;
+        for (uint8_t sf = TSIM_SF_MIN; sf < TSIM_SF_MIN + TSIM_SF_COUNT; sf++) {
+            if (mask >> (sf - TSIM_SF_MIN) & 1) {
+                struct tsim_lora l = tx.lora;
+                l.sf = sf;
+                cost += (double)tsim_lora_airtime(&l, REQUEST_HEAD + (uint32_t)n * ASK_LEN);
+            }
+        }
         if (b->ns < cost) {
             r->ask_count = 0;
             return;
@@ -879,11 +965,22 @@ static void ask_fire(void *ctx) {
         }
         tx.bytes[5] = (uint8_t)n;
         tx.len = i;
-        if (!tsim_node_send(r->node, &tx)) {
+        bool queued = false;
+        for (uint8_t sf = TSIM_SF_MIN; sf < TSIM_SF_MIN + TSIM_SF_COUNT; sf++) {
+            if (!(mask >> (sf - TSIM_SF_MIN) & 1)) {
+                continue;
+            }
+            struct tsim_tx copy = at_sf(r, &tx, sf, 0);
+            if (!tsim_node_send(r->node, &copy)) {
+                break;
+            }
+            queued = true;
+            b->ns -= (double)tsim_lora_airtime(&copy.lora, copy.len);
+        }
+        if (!queued) {
             r->ask_count = 0; /* the queue is full: dropped uncharged, and asked again */
             return;
         }
-        b->ns -= (double)tsim_lora_airtime(&tx.lora, tx.len);
     }
 }
 
@@ -1413,7 +1510,8 @@ static uint32_t build(struct router *r, uint8_t *b) {
     put32(b + 1, r->self);
     put16(b + 5, r->ann_seq);
     put16(b + 7, r->seq);
-    b[9] = r->infra ? FLAG_INFRA : 0;
+    b[9] = (uint8_t)((r->infra ? FLAG_INFRA : 0) |
+                     (per_sf(r) ? (r->listen_sf - TSIM_SF_MIN) << FLAG_SF_SHIFT : 0));
     uint16_t promise = promise_code(promise_s(r));
     r->promised = promise_time(promise);
     put16(b + 10, promise);
@@ -1528,18 +1626,85 @@ static void unsent(struct router *r, const uint8_t *b) {
     }
 }
 
+/* With per-link SF, how many links this node would have listening on `sf`: neighbours -
+ * infrastructure, with parent_oracle - with `want` dB to spare each way. */
+static unsigned links_at(const struct router *r, uint8_t sf, double want) {
+    unsigned have = 0;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        if (n->used && !n->mute && (n->infra || !by_parent(r)) && margin_at(r, n, sf) >= want) {
+            have++;
+        }
+    }
+    return have;
+}
+
+/* With per-link SF, the SF this node listens on: the fastest at which it keeps as many links as
+ * it would have on the radio's, or sf_k of them if it has more - with link_margin_db each way,
+ * and link_band_db more to go faster than it is. Moving retunes the radio and judges every link
+ * again, its neighbours learning of it from the next announce, which the change hastens. */
+static void choose_sf(struct router *r) {
+    const struct tsim_distvec_config *c = &r->config;
+    if (!per_sf(r)) {
+        return;
+    }
+    unsigned base = links_at(r, c->lora.sf, c->link_margin_db);
+    unsigned need = base < c->sf_k ? base : c->sf_k;
+    uint8_t best = c->lora.sf;
+    for (uint8_t sf = c->sf_min; need && sf < c->lora.sf && best == c->lora.sf; sf++) {
+        double want = c->link_margin_db + (sf < r->listen_sf ? c->link_band_db : 0);
+        if (links_at(r, sf, want) >= need) {
+            best = sf;
+        }
+    }
+    if (best == r->listen_sf) {
+        return;
+    }
+    r->listen_sf = best;
+    struct tsim_lora listen = c->lora;
+    listen.sf = best;
+    tsim_node_tune(r->node, c->channel, &listen);
+    for (size_t i = 0; i < r->nb_count; i++) {
+        struct neighbour *n = &r->nb[i];
+        if (!n->used) {
+            continue;
+        }
+        uint16_t was = n->cost;
+        judge(r, n);
+        n->cost = link_cost(r, n);
+        link_down(r, n, was, TSIM_DISTVEC_DOWN_RATE);
+        if (n->cost != was) {
+            n->cost_used = n->cost;
+            reselect_through(r, (uint16_t)(i + 1));
+        }
+    }
+    choose_parent(r);
+    r->changed = false;
+    trickle_reset(r);
+}
+
 static void announce(struct router *r) {
     if (r->announce_waiting) {
         return;
     }
     struct bucket *b = &r->announces;
     refill(r, b);
+    choose_sf(r);
     for (int sent = 0; sent < r->config.burst; sent++) {
         if (sent > 0 && r->urgent_count == 0) {
             return;
         }
-        /* A frame is built only when the bucket can pay for the longest it could come to. */
-        tsim_time cost = tsim_lora_airtime(&r->config.lora, planned(r));
+        /* A frame is built only when the bucket can pay for the longest it could come to, at
+         * every SF it goes at. */
+        unsigned mask = sf_mask(r);
+        struct tsim_lora l = r->config.lora;
+        tsim_time cost = 0;
+        for (uint8_t sf = TSIM_SF_MIN; sf < TSIM_SF_MIN + TSIM_SF_COUNT; sf++) {
+            if (mask >> (sf - TSIM_SF_MIN) & 1) {
+                l.sf = sf;
+                cost += tsim_lora_airtime(&l, planned(r));
+            }
+        }
         if (b->ns < (double)cost) {
             r->announce_waiting = true;
             double wait = ((double)cost - b->ns) / b->rate;
@@ -1549,7 +1714,22 @@ static void announce(struct router *r) {
         node_power(r);
         struct tsim_tx tx = frame(r, TSIM_PURPOSE_ANNOUNCE, PRIORITY_ANNOUNCE);
         tx.len = build(r, tx.bytes);
-        uint64_t handle = tsim_node_send(r->node, &tx);
+        /* One copy for each SF, the same frame but for its power: one the queue refuses after
+         * the first is lost as if on the air. */
+        uint64_t handle = 0;
+        double spent = 0;
+        for (uint8_t sf = TSIM_SF_MIN; sf < TSIM_SF_MIN + TSIM_SF_COUNT; sf++) {
+            if (!(mask >> (sf - TSIM_SF_MIN) & 1)) {
+                continue;
+            }
+            struct tsim_tx copy = at_sf(r, &tx, sf, r->config.power ? 16 : 0);
+            uint64_t h = tsim_node_send(r->node, &copy);
+            if (!h) {
+                break;
+            }
+            handle = h;
+            spent += (double)tsim_lora_airtime(&copy.lora, copy.len);
+        }
         if (!handle) {
             unsent(r, tx.bytes);
             return; /* the queue is full: no use building more */
@@ -1560,7 +1740,7 @@ static void announce(struct router *r) {
          * announces lost on the air, which a refused one never reached. */
         r->ann_seq++;
         r->asked = false;
-        b->ns -= (double)tsim_lora_airtime(&tx.lora, tx.len);
+        b->ns -= spent;
     }
 }
 
@@ -1599,6 +1779,10 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     n->mute = false;
     probe_stop(r, n, true);
     n->infra = b[9] & FLAG_INFRA;
+    if (per_sf(r)) {
+        unsigned sf = TSIM_SF_MIN + (b[9] >> FLAG_SF_SHIFT & 7u);
+        n->sf = (uint8_t)(sf >= r->config.sf_min && sf <= r->config.lora.sf ? sf : 0);
+    }
     n->promise = promise_time(get16(b + 10));
     if (r->config.power && r->truth) {
         n->floor = true_need(r, from);
@@ -1775,6 +1959,7 @@ static struct tsim_tx probe_frame(const struct router *r, uint8_t type, uint32_t
                                   uint32_t from) {
     struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_CONTROL);
     tx.tx_dbm = r->config.tx_dbm;
+    tx.lora.sf = sf_to(r, to);
     tx.bytes[0] = type;
     put32(tx.bytes + 1, to);
     put32(tx.bytes + 5, from);
@@ -1964,6 +2149,9 @@ static void hop_fire(void *ctx) {
         if (h->tries < r->config.hop_retries) {
             h->tries++;
             h->due = -1;
+            if (per_sf(r)) {
+                h->tx.lora.sf = sf_to(r, h->next);
+            }
             if (r->config.power) {
                 double p = ceil(h->tx.tx_dbm + r->config.step_db), hi = r->config.tx_dbm;
                 h->tx.tx_dbm = p > hi ? hi : p;
@@ -2161,13 +2349,42 @@ static void found(struct router *r, uint32_t t);
 static void hold(struct router *r, const struct tsim_tx *tx, uint64_t key, bool listen,
                  double airtimes);
 
+/* A frame received that the one being sent answers: its bytes, or NULL; its sender's floor, or
+ * NAN; and with per-link SF the SF its sender listens on, or 0. */
+struct answer {
+    const uint8_t *b;
+    double back;
+    uint8_t sf;
+};
+
+/* With per-link SF, what stands in for the implicit acknowledgement when the frame that answers
+ * `a` goes at an SF its sender does not listen on: the head of `a`, as that frame would carry it
+ * one hop further on, sent back at the sender's SF, loud enough for it - and only once that frame
+ * is queued, so a frame the queue refuses is never acknowledged. */
+static struct tsim_tx hop_ack(const struct router *r, const struct answer *a) {
+    const struct tsim_distvec_config *c = &r->config;
+    struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_CONTROL);
+    tx.lora.sf = a->sf;
+    memcpy(tx.bytes, a->b, DATA_HEAD);
+    tx.bytes[0] = TYPE_HOP_ACK;
+    put32(tx.bytes + 1, r->self);
+    tx.bytes[17] = (uint8_t)(a->b[17] - 1);
+    double p = isnan(a->back) ? c->tx_dbm : ceil(a->back + c->margin_db + sf_gap(r, a->sf));
+    double lo = ceil(c->tx_min_dbm);
+    tx.tx_dbm = p < lo ? lo : p > c->tx_dbm ? c->tx_dbm : p;
+    tx.bytes[18] = power_byte(tx.tx_dbm);
+    tx.bytes[19] = a->b[0];
+    tx.len = HOP_ACK_LEN;
+    return tx;
+}
+
 /* A data or acknowledgement frame towards `dst`, along the selected route: at once if this node
- * made it, and after a jitter if it answers one received, whose sender's floor is `back` (NAN for
- * none). Returns false with no route; with one, `queued`, if given, is the handle of a frame this
- * node made, or 0 if the queue refused it. */
+ * made it, and after a jitter if it answers one received, `ans` (NULL for none). Returns false
+ * with no route; with one, `queued`, if given, is the handle of a frame this node made, or 0 if
+ * the queue refused it. */
 static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t dst, uint32_t id,
                         uint8_t hops, const uint8_t *content, uint32_t len,
-                        enum tsim_purpose purpose, uint64_t carries, double back,
+                        enum tsim_purpose purpose, uint64_t carries, const struct answer *ans,
                         uint64_t *queued) {
     const struct neighbour *n = NULL;
     uint32_t next;
@@ -2195,6 +2412,18 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
     put32(tx.bytes + 9, dst);
     put32(tx.bytes + 13, id);
     tx.bytes[17] = hops;
+    double back = ans ? ans->back : NAN;
+    /* With per-link SF it goes at the SF its next hop listens on, and says which its sender does.
+     * A node it answers that listens on another cannot hear it: that one gets a hop_ack instead. */
+    bool other_sf = false;
+    if (per_sf(r)) {
+        tx.lora.sf = sf_of(r, n);
+        tx.bytes[19] = r->listen_sf;
+        other_sf = ans && ans->b && ans->sf && ans->sf != tx.lora.sf;
+        if (other_sf) {
+            back = NAN;
+        }
+    }
     if (r->config.power) {
         tx.tx_dbm = n ? power_for(r, n, back) : oracle_power(r, dst, back);
         tx.bytes[18] = power_byte(tx.tx_dbm);
@@ -2223,7 +2452,12 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
             *queued = handle;
         }
     } else {
+        size_t was = r->held_count;
         hold(r, &tx, 0, listen, r->config.jitter);
+        if (other_sf && r->held_count > was) {
+            r->held[was].acks = true;
+            r->held[was].ack = hop_ack(r, ans);
+        }
     }
     return true;
 }
@@ -2264,7 +2498,7 @@ static void send_attempt(struct awaiting *a) {
     tsim_time wait = r->config.ack_wait;
     uint64_t handle = 0;
     if (route_frame(r, TYPE_DATA, r->self, a->dst, a->id, r->config.hop_max, a->content, a->len,
-                    TSIM_PURPOSE_DATA, a->id, NAN, &handle)) {
+                    TSIM_PURPOSE_DATA, a->id, NULL, &handle)) {
         uint16_t route_metric = INF;
         if (!r->oracle) {
             next_toward(r, a->dst, &route_metric);
@@ -2344,14 +2578,20 @@ static void out_fire(void *ctx) {
         struct held *h = &r->held[i];
         if (h->handle == 0 && h->due <= t) {
             if (h->listen) {
-                struct tsim_tx tx = h->tx;
+                struct held was = *h;
                 r->held[i] = r->held[--r->held_count];
-                send_hop(r, &tx, true);
+                if (send_hop(r, &was.tx, true) && was.acks) {
+                    tsim_node_send(r->node, &was.ack);
+                }
                 continue;
             }
             h->handle = tsim_node_send(r->node, &h->tx);
             if (h->handle && h->tx.bytes[0] == TYPE_PROBE_ACK) {
                 r->stats.probe_acks++;
+            }
+            if (h->handle && h->acks) {
+                tsim_node_send(r->node, &h->ack);
+                h->acks = false;
             }
             if (h->handle == 0 || h->key == 0) {
                 r->held[i] = r->held[--r->held_count];
@@ -2466,7 +2706,13 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
         tx.carries = msg->id;
         tx.carries_at = BCAST_HEAD;
         mark_seen(r, frame_key(TYPE_BCAST, r->self, (uint32_t)msg->id));
-        tsim_node_send(r->node, &tx);
+        unsigned mask = sf_mask(r);
+        for (uint8_t sf = TSIM_SF_MIN; sf < TSIM_SF_MIN + TSIM_SF_COUNT; sf++) {
+            if (mask >> (sf - TSIM_SF_MIN) & 1) {
+                struct tsim_tx copy = at_sf(r, &tx, sf, 0);
+                tsim_node_send(r->node, &copy);
+            }
+        }
         tsim_node_finished(r->node, msg->id);
         return true;
     }
@@ -2495,6 +2741,8 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
 static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr) {
     uint8_t type = b[0], hops = b[17];
     double back = r->config.power ? floor_of(r, b[18], snr) : NAN;
+    uint8_t sf = per_sf(r) && b[19] >= r->config.sf_min && b[19] <= r->config.lora.sf ? b[19] : 0;
+    const struct answer ans = {.b = b, .back = back, .sf = sf};
     uint32_t next = get32(b + 1), src = get32(b + 5), dst = get32(b + 9), id = get32(b + 13);
     if (src >= r->nodes || dst >= r->nodes) {
         return;
@@ -2522,7 +2770,7 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
     if (type == TYPE_DATA && dst == r->self) {
         tsim_node_deliver(r->node, id);
         if (!route_frame(r, TYPE_ACK, r->self, src, id, r->config.hop_max, NULL, 0,
-                         TSIM_PURPOSE_CONTROL, 0, back, NULL)) {
+                         TSIM_PURPOSE_CONTROL, 0, &ans, NULL)) {
             no_route(r, src, false);
         }
         return;
@@ -2542,7 +2790,7 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
     bool data = type == TYPE_DATA;
     if (!route_frame(r, type, src, dst, id, (uint8_t)(hops - 1), b + r->data_head,
                      data ? len - r->data_head : 0,
-                     data ? TSIM_PURPOSE_RELAY : TSIM_PURPOSE_CONTROL, data ? id : 0, back, NULL)) {
+                     data ? TSIM_PURPOSE_RELAY : TSIM_PURPOSE_CONTROL, data ? id : 0, &ans, NULL)) {
         uint32_t to = target_of(r, dst);
         if (data && demand(r) && to < r->nodes && to != r->self && park(r, to, b, len, back)) {
             no_route(r, dst, false);
@@ -2571,11 +2819,14 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
 }
 
 /* Another copy heard of a flooded frame this node holds to pass on: counted, and with
- * bcast_cancel of them, the frame is dropped. */
-static void heard_again(struct router *r, uint64_t key, uint8_t cancel) {
-    for (size_t i = 0; i < r->held_count; i++) {
+ * bcast_cancel of them, the frame is dropped. With per-link SF it may hold a copy for each SF, and
+ * a copy heard at `sf` counts only against its copy at that SF - the only one whose neighbours it
+ * says have heard it; 0 counts against every copy. */
+static void heard_again(struct router *r, uint64_t key, uint8_t cancel, uint8_t sf) {
+    for (size_t i = 0; i < r->held_count;) {
         struct held *h = &r->held[i];
-        if (h->key != key) {
+        if (h->key != key || (per_sf(r) && sf && h->tx.lora.sf != sf)) {
+            i++;
             continue;
         }
         if (h->heard < UINT8_MAX) {
@@ -2585,17 +2836,21 @@ static void heard_again(struct router *r, uint64_t key, uint8_t cancel) {
             (h->handle == 0 || tsim_node_cancel(r->node, h->handle))) {
             r->held[i] = r->held[--r->held_count];
             arm_out(r);
+        } else {
+            i++;
         }
-        break;
+        if (!per_sf(r)) {
+            break;
+        }
     }
 }
 
-static void on_bcast(struct router *r, const uint8_t *b, uint32_t len) {
+static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t heard_sf) {
     uint32_t src = get32(b + 1), id = get32(b + 5);
     uint8_t hops = b[9];
     uint64_t key = frame_key(TYPE_BCAST, src, id);
     if (seen(r, key)) {
-        heard_again(r, key, r->config.bcast_cancel);
+        heard_again(r, key, r->config.bcast_cancel, heard_sf);
         return;
     }
     mark_seen(r, key);
@@ -2609,7 +2864,13 @@ static void on_bcast(struct router *r, const uint8_t *b, uint32_t len) {
     tx.len = len;
     tx.carries = id;
     tx.carries_at = BCAST_HEAD;
-    hold(r, &tx, key, false, r->config.bcast_window);
+    unsigned mask = sf_mask(r);
+    for (uint8_t sf = TSIM_SF_MIN; sf < TSIM_SF_MIN + TSIM_SF_COUNT; sf++) {
+        if (mask >> (sf - TSIM_SF_MIN) & 1) {
+            struct tsim_tx copy = at_sf(r, &tx, sf, 0);
+            hold(r, &copy, key, false, r->config.bcast_window);
+        }
+    }
 }
 
 /* A reply reached this node, which asked for a route to `t`: the messages waiting on it go now. */
@@ -2626,7 +2887,8 @@ static void found(struct router *r, uint32_t t) {
         const uint8_t *b = p.bytes;
         if (route_frame(r, TYPE_DATA, get32(b + 5), get32(b + 9), get32(b + 13),
                         (uint8_t)(b[17] - 1), b + r->data_head, p.len - r->data_head,
-                        TSIM_PURPOSE_RELAY, get32(b + 13), p.back, NULL)) {
+                        TSIM_PURPOSE_RELAY, get32(b + 13), &(struct answer){.back = p.back},
+                        NULL)) {
             r->parked[i] = r->parked[--r->parked_count];
         } else {
             i++;
@@ -2685,7 +2947,7 @@ static void on_rreq(struct router *r, const uint8_t *b, uint32_t len) {
     }
     uint64_t key = frame_key(TYPE_RREQ, origin, id);
     if (seen(r, key)) {
-        heard_again(r, key, r->config.req_cancel);
+        heard_again(r, key, r->config.req_cancel, 0);
         return;
     }
     mark_seen(r, key);
@@ -2702,7 +2964,7 @@ static void on_rreq(struct router *r, const uint8_t *b, uint32_t len) {
         /* A reply goes as the target's, so it takes an id of the target's own: the request's id
          * is the origin's, and two origins' requests for one target may share it. */
         if (route_frame(r, TYPE_RREP, target, origin, ++r->rreq_id, r->config.hop_max, NULL, 0,
-                        TSIM_PURPOSE_CONTROL, 0, NAN, NULL)) {
+                        TSIM_PURPOSE_CONTROL, 0, NULL, NULL)) {
             r->stats.route_replies++;
         }
         return;
@@ -2746,12 +3008,22 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
         return;
     case TYPE_BCAST:
         if (rx->len >= BCAST_HEAD) {
-            on_bcast(r, rx->bytes, rx->len);
+            on_bcast(r, rx->bytes, rx->len, rx->lora.sf);
         }
         return;
     case TYPE_PROBE:
     case TYPE_PROBE_ACK:
         on_probe(r, rx->bytes, rx->len, rx->snr_db);
+        return;
+    case TYPE_HOP_ACK:
+        /* Heard as the frame it stands for, passed on. */
+        if (per_sf(r) && rx->len >= HOP_ACK_LEN &&
+            (rx->bytes[19] == TYPE_DATA || rx->bytes[19] == TYPE_ACK)) {
+            uint8_t b[HOP_ACK_LEN];
+            memcpy(b, rx->bytes, HOP_ACK_LEN);
+            b[0] = b[19];
+            overheard(r, b, rx->snr_db);
+        }
         return;
     default:
         return;
@@ -2843,6 +3115,7 @@ static void house_fire(void *ctx) {
     }
     choose_parent(r);
     node_power(r);
+    choose_sf(r);
     unpark_expired(r);
     tsim_timer_start(r->house, house_period(r));
 }
@@ -2852,6 +3125,9 @@ static void router_start(void *self) {
     if (r->oracle) {
         r->node_dbm = r->config.power ? r->oracle->node_dbm[r->self] : r->config.tx_dbm;
         return; /* nothing to announce, and no neighbours to keep */
+    }
+    if (per_sf(r)) {
+        tsim_node_tune(r->node, r->config.channel, &r->config.lora); /* as it may have been left */
     }
     trickle_begin(r);
     tsim_timer_start(r->house, house_period(r));
@@ -2925,15 +3201,29 @@ static void *router_create(struct tsim_node *node, const void *config) {
         c->parents[r->self] = r->infra ? r->self : TSIM_DISTVEC_NO_PARENT;
     }
     r->ann_head = ANNOUNCE_HEAD + (c->power ? 1 : 0);
-    r->trail_at = DATA_HEAD + (c->power ? 1 : 0);
+    r->trail_at = DATA_HEAD + (c->power ? 1 : 0) + (c->sf_min ? 1 : 0);
     r->data_head = r->trail_at + (demand(r) ? TRAIL_LEN : 0);
     node_power(r);
     tsim_node_rng(node, TSIM_STREAM_ROUTING, &r->rng);
     r->ref_ms = (double)tsim_lora_airtime(&c->lora, c->ref_len) / (double)TSIM_MS(1);
+    for (uint8_t sf = TSIM_SF_MIN; sf < TSIM_SF_MIN + TSIM_SF_COUNT; sf++) {
+        struct tsim_lora l = c->lora;
+        l.sf = sf;
+        r->ref_ms_sf[sf - TSIM_SF_MIN] =
+            (double)tsim_lora_airtime(&l, c->ref_len) / (double)TSIM_MS(1);
+    }
+    r->listen_sf = c->lora.sf;
     r->dest = calloc(r->nodes, sizeof *r->dest);
     r->slot_of = calloc(r->nodes, sizeof *r->slot_of);
     r->interval = c->imin;
-    double head = (double)tsim_lora_airtime(&c->lora, FRAME_MAX);
+    /* A bucket holds at least a full frame at every SF it may go at, or a frame for every
+     * neighbour could cost more than it ever holds. */
+    double head = 0;
+    for (uint8_t sf = c->sf_min ? c->sf_min : c->lora.sf; sf <= c->lora.sf; sf++) {
+        struct tsim_lora l = c->lora;
+        l.sf = sf;
+        head += (double)tsim_lora_airtime(&l, FRAME_MAX);
+    }
     bucket_init(&r->announces, c->cap * (1 - c->request_share), c->cap_window, head);
     bucket_init(&r->requests, c->cap * c->request_share, c->cap_window, head);
     r->trickle = tsim_timer_create(node, trickle_fire, r);
@@ -3074,6 +3364,15 @@ double tsim_distvec_power(const void *self, uint32_t nb) {
 }
 
 double tsim_distvec_node_power(const void *self) { return ((const struct router *)self)->node_dbm; }
+
+uint8_t tsim_distvec_listen_sf(const void *self) {
+    return ((const struct router *)self)->listen_sf;
+}
+
+uint8_t tsim_distvec_sf_to(const void *self, uint32_t nb) {
+    const struct router *r = self;
+    return per_sf(r) ? sf_to(r, nb) : r->config.lora.sf;
+}
 
 uint16_t tsim_distvec_seq(const void *self) { return ((const struct router *)self)->seq; }
 

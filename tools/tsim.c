@@ -160,12 +160,15 @@ static void print_report(const char *path, const struct tsim_scenario *s,
             "\"gave_up_per_h\": %.6g, \"seq_raised_per_h\": %.6g, \"route_replies_per_h\": %.6g,\n"
             "             \"probes_per_h\": %.6g, \"probes_answered_per_h\": %.6g, "
             "\"probe_acks_per_h\": %.6g,\n"
-            "             \"unrouted_infeasible\": %.6g, \"unrouted_empty\": %.6g},\n",
+            "             \"unrouted_infeasible\": %.6g, \"unrouted_empty\": %.6g,\n"
+            "             \"listen_sf\": {\"7\": %" PRIu32 ", \"8\": %" PRIu32 ", \"9\": %" PRIu32
+            ", \"10\": %" PRIu32 ", \"11\": %" PRIu32 ", \"12\": %" PRIu32 "}},\n",
             h->outages_per_h, h->outage_mean_s, h->unrouted_mean, h->urgent_mean,
             h->relay_reach_begin, h->relay_reach_end, h->seqno_requests_per_h,
             h->route_requests_per_h, h->gave_up_per_h, h->seq_raised_per_h, h->route_replies_per_h,
             h->probes_per_h, h->probes_answered_per_h, h->probe_acks_per_h, h->unrouted_infeasible,
-            h->unrouted_empty);
+            h->unrouted_empty, h->listen_sf[0], h->listen_sf[1], h->listen_sf[2], h->listen_sf[3],
+            h->listen_sf[4], h->listen_sf[5]);
     }
     if (r->relays.present) {
         printf("  \"relays\": {\"count\": %" PRIu32 ", \"components\": %" PRIu32

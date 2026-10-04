@@ -105,15 +105,15 @@
  *
  * The metric is time on air: a link's cost is the airtime of a reference frame, ref_len bytes at
  * the link's modulation, in milliseconds, at least 1, and with `etx` that times the link's ETX.
- * Every link runs the one modulation until the slotted MAC lets links choose their own, so for now
- * the airtime is the same on every link: the metric counts hops, or with `etx`, ETX times a
- * constant. ETX is off by default because, measured from announces heard, it measures the load on
- * the channel more than the link: as traffic loads the region its routes' metrics rise, fail the
- * feasibility condition below, and starve the nodes downstream, so on the region at 0 dBm unicast
- * on time is 8% with it and 19% without (MSH-48). It still decides, against etx_max, whether a
- * link is used at all; 32 rather than 8 lets a link the load is costing announces stay up, and
- * still drops one that has stopped carrying. There is no queue term. A route's metric is the
- * neighbour's advertised metric plus the link's cost, up to 0xFFFE.
+ * Every link runs the one modulation unless per-link SF (below) is on, so the airtime is the same
+ * on every link: the metric counts hops, or with `etx`, ETX times a constant. ETX is off by default
+ * because, measured from announces heard, it measures the load on the channel more than the link:
+ * as traffic loads the region its routes' metrics rise, fail the feasibility condition below, and
+ * starve the nodes downstream, so on the region at 0 dBm unicast on time is 8% with it and 19%
+ * without (MSH-48). It still decides, against etx_max, whether a link is used at all; 32 rather
+ * than 8 lets a link the load is costing announces stay up, and still drops one that has stopped
+ * carrying. There is no queue term. A route's metric is the neighbour's advertised metric plus the
+ * link's cost, up to 0xFFFE.
  *
  * Selection is Babel's. Each node keeps, for every source, a feasibility distance: the best
  * (seq, metric) it has itself advertised. An advertisement from a neighbour is feasible if its
@@ -291,9 +291,65 @@
  * they heard it from. Announces did not get cheaper either: without routes they were shorter but
  * more often, as many as the cap allowed - at 20 dBm Trickle wanted more than it.
  *
- * Not yet here, and left out of MSH-41 for issues of their own: the store-and-forward floor, which
- * only shows its worth under mobility and churn, and per-link modulation, which needs the slotted
- * MAC. */
+ * Per-link SF (MSH-49), when sf_min is above 0 - with links by strength, power control and
+ * proactive routes. A strong link can go faster than the radio's SF: SF7 takes about a third of
+ * SF9's airtime, for 5 dB less reach. A radio decodes only the SF it listens on, so sender and
+ * receiver must meet. Here the receiver chooses and tells, as Tern's slotted MAC would not need
+ * it to:
+ *
+ *  - each node listens on one SF, from sf_min to the radio's, and announces it in bits 4-6 of its
+ *    flags, the SF less 7. It starts on the radio's. At every announce and housekeeping round it
+ *    takes the fastest SF at which it keeps as many links as it would have on the radio's, or
+ *    sf_k if that is more: neighbours - infrastructure, with parent_oracle - whose margins, each
+ *    less the gap for the SF it is heard at, are link_margin_db or more, and link_band_db more to
+ *    go faster. The gap is Semtech's, 2.5 dB an SF. A change of SF judges every link again and
+ *    restarts Trickle, so its neighbours learn of it soon;
+ *  - a frame to one neighbour goes at the SF that neighbour listens on, louder by the gap: a
+ *    data, acknowledgement or probe frame, a request to one next hop. A link's cost is the
+ *    reference frame's airtime at that SF, so routes favour the fast links;
+ *  - a frame for every neighbour - an announce, a request to all, a broadcast - goes once at each
+ *    SF a neighbour it has heard listens on, or at every SF from sf_min while it has heard none,
+ *    so a node coming up is heard by whoever is there. Copies of an announce share its number,
+ *    and its cap pays for them all; each bucket holds a full frame at every SF it may use. The
+ *    neighbours being those it ever heard, a node keeps sending at the SF of one it can no longer
+ *    reach until it forgets it, which keeps links between nodes on different SFs discoverable;
+ *  - the implicit acknowledgement fails when a relay passes a frame on at an SF the hop before does
+ *    not listen on. So every data and acknowledgement frame says, in a byte after the power byte,
+ *    which SF its sender listens on, which makes their head 20 bytes; and a node that passes such
+ *    a frame on - or answers a message with an acknowledgement - at another SF sends the hop
+ *    before a hop acknowledgement at its own SF, charged as control:
+ *
+ *        type 0x0A | sender 4 | source 4 | destination 4 | id 4 | hops 1 | power 1 | type 1
+ *
+ *    the head of the frame passed on, as the next hop would carry it, with its type at the end.
+ *    The hop before takes it as it would hearing the frame passed on.
+ *
+ * The MAC is untouched: it senses the channel only on the SF its radio listens on, as a radio
+ * must, so a node listening fast does not hear a frame on the radio's SF before it sends one.
+ * Sensing other SFs, or meeting without the copies, is the slotted MAC's to give.
+ *
+ * Off by default. Measured with tools/density.py (cds 200, parent_oracle, 3 seeds), unicast on
+ * time from -5 to 20 dBm was 56.1%, 88.6%, 96.0%, 98.4% and 98.6% with sf_min 7, against 57.8%,
+ * 66.3%, 63.4%, 68.1% and 70.3% off. But the region at one faster SF did as well for far less:
+ * SF7 made 47.6%, 88.9%, 99.0%, 99.3% and 99.4%, and SF8 68.2%, 92.7%, 93.5%, 93.2% and 95.8%.
+ * Per-link SF never beat the best single SF, and took 3 to 7 times its airtime per delivery: at
+ * 0 dBm 7.6 deliveries a second of airtime against 25 at SF8 and 42 at SF7, and 11.7 at SF9.
+ * Most of it is copies: with 70% of nodes still on SF9 there, every relay sends broadcasts and
+ * announces at SF9 and a faster SF too; sending only at the SFs of neighbours it has links to
+ * changed nothing (seed 1, -5 to 5 dBm). At -5 dBm it gained nothing, though SF8 alone gains 10
+ * points: a node keeps every link it has, so a sparse network stays slow. Keeping fewer links,
+ * sf_k 4, 2 or 1, went faster and lost routes: 59.2%, 52.3% and 30.8% at -5 dBm, 87.4%, 81.9%
+ * and 77.8% at 0 (seed 1). Ending the ladder at SF8 made 61.7% and 88.2%.
+ *
+ * Nor did uneven density, which no one SF fits, change that: with the region's nodes half in a
+ * 3 km town at its middle and half spread as before (3 seeds), per-link SF made 82.0% at 0 dBm,
+ * against 58.1% off, 82.2% at SF8 and 81.2% at SF7 - which cut the spread nodes off, relays'
+ * routes reaching 35-49% of pairs against 71-87% - and 86.7% at 10 dBm, where SF7 joined them up
+ * and made 96.4%. The choice of one SF for the whole network matters far more than letting links
+ * choose: from 0 dBm up the region wants SF7 or SF8, not SF9, whatever the routing.
+ *
+ * Not yet here, and left out of MSH-41 for an issue of its own: the store-and-forward floor,
+ * which only shows its worth under mobility and churn. */
 
 #define TSIM_DISTVEC_METRIC_INF 0xFFFF
 #define TSIM_DISTVEC_NO_PARENT 0xFFFFFFFFu
@@ -404,6 +460,11 @@ struct tsim_distvec_config {
     double step_db;    /* added for each try a hop has lost, 0 to 60 */
     double snr_floor_db; /* the lowest SNR the modulation demodulates at */
     uint8_t power_k;     /* neighbours frames for all of them reach; 0 for tx_dbm */
+    /* Per-link SF (MSH-49, above): the fastest SF a node may listen on, from 7 up to the radio's,
+     * or 0 for every node on the radio's; and how many of its links it must keep to go faster -
+     * all it would have on the radio's, up to sf_k. */
+    uint8_t sf_min;
+    uint8_t sf_k;
 
     /* The oracle, below: off for the protocol itself. */
     bool oracle;
@@ -578,8 +639,8 @@ bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_con
  * on the second copy heard. Power control on, with power_k 8 - without it, the region's unicast
  * fell from 22% to 2% as density rose (MSH-45) - frames going no quieter than -9 dBm, the SX1262's
  * least, with a 10 dB margin and 3 dB more for each try lost, and the SNR floor Semtech's for the
- * SF: -7.5 dB at SF7, 2.5 dB lower for each SF above. The oracle off and links sensed, with a 3 dB
- * margin for either oracle.
+ * SF: -7.5 dB at SF7, 2.5 dB lower for each SF above. Per-link SF off, with sf_k 8 for when it is
+ * on. The oracle off and links sensed, with a 3 dB margin for either oracle.
  *
  * The cap is per node, so in a neighbourhood of n nodes routing may take n times it of the
  * channel: 2% - Reticulum's announce cap - saturated a 200-node town at SF9, which 0.5% did not.
@@ -673,5 +734,9 @@ uint32_t tsim_distvec_round(const void *self);
  * every neighbour go at, in dBm. */
 double tsim_distvec_power(const void *self, uint32_t nb);
 double tsim_distvec_node_power(const void *self);
+
+/* The SF the node listens on, and the SF a frame from it to neighbour `nb` would go at. */
+uint8_t tsim_distvec_listen_sf(const void *self);
+uint8_t tsim_distvec_sf_to(const void *self, uint32_t nb);
 
 #endif
