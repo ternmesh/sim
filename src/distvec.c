@@ -359,7 +359,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .ack_factor = 4,
         .jitter = 2,
         .bcast_hops = 4,
-        .bcast_window = 3,
+        .bcast_window = 8,
         .bcast_cancel = 2,
         .power = true,
         .tx_min_dbm = -9,
@@ -367,6 +367,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .step_db = 3,
         .snr_floor_db = -7.5 - 2.5 * (lora->sf - 7), /* Semtech's */
         .power_k = 8,
+        .bcast_power = TSIM_DISTVEC_BCAST_ROUTES,
         .sf_k = 8,
         .links = TSIM_DISTVEC_LINKS_STRENGTH,
         .oracle_margin_db = 3,
