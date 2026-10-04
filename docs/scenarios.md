@@ -283,4 +283,9 @@ The latency percentiles are rounded down by at most 1.6%. The maximum latency is
   3 over the same 200 sites, picked as a connected dominating set: Meshtastic's routers,
   MeshCore's repeaters and candidate 3's relays, the rest clients, companions and leaves.
   Meshtastic and MeshCore there also send their firmware's own traffic (`routing.background`).
-  `tools/density.py --deployed` sweeps them.
+  `tools/density.py --deployed` sweeps them. `region*-fast.tsim` (MSH-66), which CI runs too, are the deployed
+  scenarios on one fast radio for every candidate - SF7 at 125 kHz, coding rate 4/5, a 16-symbol
+  preamble - with the sites picked over links at it, so that only the routing and its MAC differ;
+  `tools/density.py --fast` sweeps them, and `--sf 8` at SF8. Every sweep prints the same
+  scorecard: unicast and broadcast on time, median and 95th-percentile delay, deliveries per
+  second of airtime, the busiest node's duty cycle, and unicast under churn and under movement.
