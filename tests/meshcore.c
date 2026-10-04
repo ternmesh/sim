@@ -454,6 +454,48 @@ static void a_repeater_adverts_every_interval_and_a_companion_never(void) {
     rig_close(&r);
 }
 
+/* Background: three repeaters in a row each flood an advert every hour, first at a random point of
+ * the first, which every repeater passes on: 3 h makes 9 adverts sent 3 times each. Adverts stop
+ * at flood_max_advert hops: at 1, only the next node passes one on. */
+static void background_floods_a_repeaters_advert(void) {
+    uint8_t max[] = {8, 1};
+    uint64_t want[] = {27, 21};
+    for (int i = 0; i < 2; i++) {
+        struct rig r;
+        rig_init(&r);
+        r.rc.background = true;
+        r.rc.flood_advert_interval = TSIM_S(3600);
+        r.rc.flood_max_advert = max[i];
+        line(&r, 3, 1);
+        tsim_sched_run_until(r.sched, TSIM_S(3 * 3600));
+        uint64_t all = 0;
+        for (uint32_t n = 0; n < 3; n++) {
+            all += frames(&r, n, TSIM_PURPOSE_ANNOUNCE);
+        }
+        CHECK_EQ_U64(all, want[i]);
+        rig_close(&r);
+    }
+}
+
+/* A companion sends an advert only when companion_advert_interval is set: zero-hop, or flooded,
+ * when its repeater passes it on. */
+static void a_companion_adverts_only_when_set(void) {
+    for (int i = 0; i < 3; i++) {
+        struct rig r;
+        rig_init(&r);
+        r.rc.background = true;
+        r.rc.flood_advert_interval = 0;
+        r.rc.companion_advert_interval = i == 0 ? 0 : TSIM_S(1800);
+        r.rc.companion_advert_flood = i == 2;
+        strcpy(r.rc.relays, "0");
+        line(&r, 2, 1);
+        tsim_sched_run_until(r.sched, TSIM_S(2 * 3600));
+        CHECK_EQ_U64(frames(&r, 1, TSIM_PURPOSE_ANNOUNCE), i == 0 ? 0 : 4);
+        CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_ANNOUNCE), i == 2 ? 4 : 0);
+        rig_close(&r);
+    }
+}
+
 /* With a full path in front of it, 171 bytes of content still fit a frame; 172 do not. */
 static void a_message_a_frame_cannot_carry_is_refused(void) {
     struct rig r;
@@ -567,7 +609,7 @@ static void a_seed_repeats_a_run(void) {
 static void bad_configs_are_refused(void) {
     struct tsim_lora l = lora();
     struct tsim_meshcore_config ok = tsim_meshcore_default(0, &l, 14.0);
-    struct tsim_meshcore_config c[13];
+    struct tsim_meshcore_config c[16];
     for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
         c[i] = ok;
     }
@@ -584,6 +626,9 @@ static void bad_configs_are_refused(void) {
     strcpy(c[10].relays, "1,");
     c[11].cancel_heard = (enum tsim_meshcore_cancel)3;
     c[12].relay_pick = 3; /* picked, but no set to say by whom */
+    c[13].flood_max_advert = 0;
+    c[14].flood_max_advert = 65;
+    c[15].flood_advert_interval = -1;
     struct tsim_meshcore_mac_config mc = tsim_meshcore_mac_default();
     struct tsim_sched *sched = tsim_sched_create();
     struct tsim_net_params p = tsim_net_defaults(1);
@@ -638,6 +683,8 @@ int main(void) {
     RUN(the_mac_holds_off_while_the_radio_is_receiving);
     RUN(the_duty_cycle_budget_holds_a_node_back);
     RUN(a_repeater_adverts_every_interval_and_a_companion_never);
+    RUN(background_floods_a_repeaters_advert);
+    RUN(a_companion_adverts_only_when_set);
     RUN(a_message_a_frame_cannot_carry_is_refused);
     RUN(a_scoped_relay_waits_as_long_as_an_unscoped_one);
     RUN(estimate_cr_reckons_the_delays_at_another_coding_rate);

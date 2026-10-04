@@ -133,6 +133,13 @@ default.
 | `routing.cw_min`, `mac.cw_min` (`meshtastic`) | 3 | smallest contention window, as a power of two |
 | `routing.cw_max`, `mac.cw_max` (`meshtastic`) | 8 | largest, at most 15 |
 | `mac.snr_min`, `mac.snr_max` (`meshtastic`) | -20, 10 | the SNR range, in dB, over which a rebroadcast's window grows from `cw_min` to `cw_max` |
+| `routing.background` (`meshtastic`) | `no` | `yes` sends the firmware's own traffic beside the workload's: NodeInfo, position and device telemetry on timers, and NodeInfo asked of a node not yet known; see `include/tsim/meshtastic.h`. A client's intervals stretch with the nodes it has heard, and position and telemetry wait while its channel is 25% busy. Not with `routing.cancel_late` |
+| `routing.nodeinfo_interval` (`meshtastic`) | `default` | how often NodeInfo is broadcast: `default` is 3 h |
+| `routing.position_interval` (`meshtastic`) | `default` | how often position is: `default` is 15 min for a client, 12 h for a router, before the stretch |
+| `routing.telemetry_interval` (`meshtastic`) | `default` | how often device telemetry is: `default` is 1 h for a client, 12 h for a router, before the stretch |
+| `routing.position_share` (`meshtastic`) | 1 | the share of nodes with a position to send, 0 to 1 |
+| `routing.nodedb_max` (`meshtastic`) | 100 | nodes the database holds, which caps the count the stretch is reckoned from: 80 on nRF52 boards, 100 on most ESP32s, up to 250; 2 to 250 |
+| `routing.throttle` (`meshtastic`) | from the radio | how much each node heard over 40 stretches a client's intervals: 0.075, or 0.04 for MediumSlow, 0.02 for MediumFast and 0.01 for the Short presets; 0 to 1 |
 | `mac.busy_chance` (`meshtastic`) | 0 | chance, each time the MAC looks, that the channel is busy with traffic from outside the mesh: Meshtasticator's interference level |
 | `routing.relays` (`meshcore`) | `all` | which nodes are repeaters and relay, as `all` or numbers and ranges such as `0-45,50`; the rest are companions |
 | `sites.sf`, `sites.bw` | 0, 0 | the SF and bandwidth whose floor the links relays, repeaters and routers are picked over are judged at, with `routing.relay_pick`; 0 for the radio's. Runs on different presets that set the same ones and the same pick get the same sites |
@@ -144,6 +151,11 @@ default.
 | `routing.tx_delay_factor`, `routing.direct_tx_delay_factor` (`meshcore`) | 0.5, 0.3 | a relay waits 0 to 5 times this many of its own airtimes, flooded or direct; 0 to 2 |
 | `routing.retries` (`meshcore`) | 3 | attempts after the first, for a direct message no one acknowledges |
 | `routing.advert_interval` (`meshcore`) | `2 min` | how often a repeater announces itself to its neighbours, or `none` |
+| `routing.flood_max_advert` (`meshcore`) | 8 | a flooded advert that has made this many hops is not relayed, 1 to 64 |
+| `routing.background` (`meshcore`) | `no` | `yes` has repeaters flood an advert every `routing.flood_advert_interval`, and companions advertise every `routing.companion_advert_interval` |
+| `routing.flood_advert_interval` (`meshcore`) | `47 h` | how often a repeater floods its advert under `routing.background`, as the firmware ships, or `none` |
+| `routing.companion_advert_interval` (`meshcore`) | `none` | how often a companion advertises under `routing.background`, or `none`: the firmware has no timer for it, the app sending one when its user asks |
+| `routing.companion_advert_flood` (`meshcore`) | `no` | whether a companion's advert is flooded, not zero-hop |
 | `routing.cancel_heard` (`meshcore`) | `no` | not MeshCore's: MeshBench's idea of dropping a relay on hearing another node relay the packet first, while it waits out its receive delay (`waiting`) or until it is sent (`queued`) |
 | `routing.estimate_cr` (`meshcore`) | `radio` | the coding rate the firmware reckons its delays and timeouts from; MeshBench's firmware reckons at 4/5 (`1`) whatever the air runs at |
 | `mac.airtime_factor` (`meshcore`) | 1 | the duty cycle budget is 1/(1 + this) of an hour |
@@ -262,4 +274,5 @@ The latency percentiles are rounded down by at most 1.6%. The maximum latency is
   MeshCore on the UK/EU narrow preset, candidate 3 and flooding on MeshCore's - and candidates 1 to
   3 over the same 200 sites, picked as a connected dominating set: Meshtastic's routers,
   MeshCore's repeaters and candidate 3's relays, the rest clients, companions and leaves.
+  Meshtastic and MeshCore there also send their firmware's own traffic (`routing.background`).
   `tools/density.py --deployed` sweeps them.

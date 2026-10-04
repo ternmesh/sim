@@ -365,6 +365,7 @@ struct router {
     size_t paths_count;
     struct awaiting *awaiting;
     struct tsim_timer *advert_timer;
+    struct tsim_timer *flood_advert_timer; /* background: a repeater's flood, a companion's own */
 };
 
 struct tsim_meshcore_config tsim_meshcore_default(uint16_t channel, const struct tsim_lora *lora,
@@ -382,6 +383,8 @@ struct tsim_meshcore_config tsim_meshcore_default(uint16_t channel, const struct
         .direct_tx_delay_factor = 0.3,
         .retries = 3,
         .advert_interval = TSIM_S(120),
+        .flood_max_advert = 8,
+        .flood_advert_interval = TSIM_S(47 * 60 * 60),
     };
 }
 
@@ -797,6 +800,7 @@ static void relay_flood(struct router *r, const uint8_t *bytes, const struct pac
     /* The count is six bits. The firmware would write a 64th hop into the hash size's bits and
      * corrupt its own frame; this stops at 63 instead. */
     if (!r->relay || r->hold_relay || p->count >= r->config.flood_max || p->count >= 63 ||
+        (p->type == TYPE_ADVERT && p->count >= r->config.flood_max_advert) ||
         path_bytes + p->hash_size > TSIM_MESHCORE_PATH_MAX) {
         return;
     }
@@ -1102,8 +1106,8 @@ static void router_tx_done(void *self, uint64_t handle) {
 
 /* --- Adverts --- */
 
-static void advert_fire(void *ctx) {
-    struct router *r = ctx;
+/* Sends this node's advert, flooded or zero-hop. */
+static void advertise(struct router *r, bool flood) {
     uint8_t payload[ADVERT_LEN] = {0};
     put32(payload, r->self); /* the public key */
     memcpy(payload + 4, r->hash, sizeof r->hash);
@@ -1112,8 +1116,30 @@ static void advert_fire(void *ctx) {
         payload[i] = (uint8_t)tsim_rng_below(&r->rng, 256); /* the signature */
     }
     struct path none = {.len = empty_path(r)};
-    send_own(r, false, TYPE_ADVERT, payload, ADVERT_LEN, &none, 0, 0, TSIM_PURPOSE_ANNOUNCE, 0, 0);
+    /* The firmware's priorities: 0 for zero-hop, 3 - after everything - for a flooded advert. */
+    send_own(r, flood, TYPE_ADVERT, payload, ADVERT_LEN, &none, 0, flood ? 3 : 0,
+             TSIM_PURPOSE_ANNOUNCE, 0, 0);
+}
+
+static void advert_fire(void *ctx) {
+    struct router *r = ctx;
+    advertise(r, false);
     tsim_timer_start(r->advert_timer, r->config.advert_interval);
+}
+
+/* Background: a repeater's flooded advert, which restarts its zero-hop one; or a companion's. */
+static void flood_advert_fire(void *ctx) {
+    struct router *r = ctx;
+    if (r->relay) {
+        advertise(r, true);
+        tsim_timer_start(r->flood_advert_timer, r->config.flood_advert_interval);
+        if (r->advert_timer) {
+            tsim_timer_start(r->advert_timer, r->config.advert_interval);
+        }
+        return;
+    }
+    advertise(r, r->config.companion_advert_flood);
+    tsim_timer_start(r->flood_advert_timer, r->config.companion_advert_interval);
 }
 
 static void router_start(void *self) {
@@ -1121,6 +1147,12 @@ static void router_start(void *self) {
     if (r->advert_timer) {
         tsim_timer_start(r->advert_timer,
                          (tsim_time)tsim_rng_below(&r->rng, (uint64_t)r->config.advert_interval));
+    }
+    if (r->flood_advert_timer) {
+        tsim_time every =
+            r->relay ? r->config.flood_advert_interval : r->config.companion_advert_interval;
+        tsim_timer_start(r->flood_advert_timer,
+                         (tsim_time)tsim_rng_below(&r->rng, (uint64_t)every));
     }
 }
 
@@ -1133,7 +1165,9 @@ static void *router_create(struct tsim_node *node, const void *config) {
         c->flood_max > 64 || !(c->rx_delay_base >= 0 && c->rx_delay_base <= 20) ||
         !(c->tx_delay_factor >= 0 && c->tx_delay_factor <= 2) ||
         !(c->direct_tx_delay_factor >= 0 && c->direct_tx_delay_factor <= 2) ||
-        c->advert_interval < 0 || c->estimate_cr > 4 ||
+        c->advert_interval < 0 || c->estimate_cr > 4 || c->flood_max_advert < 1 ||
+        c->flood_max_advert > 64 || c->flood_advert_interval < 0 ||
+        c->companion_advert_interval < 0 ||
         (unsigned)c->cancel_heard > TSIM_MESHCORE_CANCEL_QUEUED) {
         return NULL;
     }
@@ -1153,10 +1187,17 @@ static void *router_create(struct tsim_node *node, const void *config) {
     if (r->relay && c->advert_interval > 0) {
         r->advert_timer = tsim_timer_create(node, advert_fire, r);
     }
-    if (!r->out_timer || !r->in_timer || (r->relay && c->advert_interval > 0 && !r->advert_timer)) {
+    bool own = c->background &&
+               (r->relay ? c->flood_advert_interval > 0 : c->companion_advert_interval > 0);
+    if (own) {
+        r->flood_advert_timer = tsim_timer_create(node, flood_advert_fire, r);
+    }
+    if (!r->out_timer || !r->in_timer || (r->relay && c->advert_interval > 0 && !r->advert_timer) ||
+        (own && !r->flood_advert_timer)) {
         tsim_timer_destroy(r->out_timer);
         tsim_timer_destroy(r->in_timer);
         tsim_timer_destroy(r->advert_timer);
+        tsim_timer_destroy(r->flood_advert_timer);
         free(r);
         return NULL;
     }
@@ -1171,6 +1212,7 @@ static void router_destroy(void *self) {
     tsim_timer_destroy(r->out_timer);
     tsim_timer_destroy(r->in_timer);
     tsim_timer_destroy(r->advert_timer);
+    tsim_timer_destroy(r->flood_advert_timer);
     free(r->held);
     free(r->in);
     free(r->paths);

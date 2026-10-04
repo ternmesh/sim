@@ -40,6 +40,49 @@
  * The routing reports a message finished when it is acknowledged or the last retry's wait runs
  * out, and at once for one that wants no acknowledgement.
  *
+ * Background traffic, if `background` is set: the packets a node sends of its own accord, written
+ * from the firmware itself (2.7.15, src/mesh/Default.h, src/modules/NodeInfoModule.cpp,
+ * PositionModule.cpp, Telemetry/DeviceTelemetry.cpp and src/mesh/MeshService.cpp):
+ *
+ *  - NodeInfo, its user record, broadcast every nodeinfo_interval (3 h);
+ *  - position, every position_interval: 15 min for a client, 12 h for a router - by a node with a
+ *    position to send, a share position_share of them, drawn per node;
+ *  - device telemetry, every telemetry_interval: 1 h for a client, 12 h for a router.
+ *
+ * A client stretches the position and telemetry intervals by the number of nodes it has heard in
+ * the last two hours - from broadcasts and packets for it, not those it only passes on - itself
+ * included, n: by 0.6, 0.7, 0.8 or 1 up to 10, 20, 30 and 40 nodes, then 1 + throttle (n - 40),
+ * throttle being 0.075 on most presets, 0.04 on MediumSlow, 0.02 on MediumFast and 0.01 on the
+ * Short ones. n can be no more than the node database holds, nodedb_max: 80 on nRF52 boards, 100
+ * on most ESP32s, 200 or 250 on an ESP32-S3 with 8 or 16 MB of flash. So 100 nodes heard on
+ * LongFast send position every 82.5 min and telemetry every 5.5 h. A router does not stretch them.
+ *
+ * Position and telemetry are held back while the node's channel utilisation is 25% or more - 40%
+ * for a router's telemetry - and tried again when the firmware next looks: every 5 s for position,
+ * every minute for telemetry. NodeInfo is skipped at 40%, until its next turn. The utilisation is
+ * the firmware's: the time the radio has spent sending or receiving in six 10-second periods, the
+ * current one included, over a minute - not the MAC's average over the run.
+ *
+ * And a client that hears a packet from a node whose NodeInfo it has not had - while its database
+ * is not full and the channel is under 25% - sends that node its own NodeInfo, asking for one back,
+ * which the other sends as its answer. Neither is sent within 5 min of the node's last NodeInfo. A
+ * router does not ask. In a mesh larger than the database, this stops once it fills.
+ *
+ * Each is a broadcast or a direct message like any other: flooded over hop_limit hops, wanting no
+ * acknowledgement, charged as an announce. The node's own go behind its messages and
+ * acknowledgements in its queue, as the firmware's BACKGROUND priority does; what it passes on goes
+ * in the order heard, as everything relayed does. The sizes are worked out from the protobuf
+ * definitions for typical values, the whole frame with its 16-byte header: NodeInfo 100 bytes,
+ * position 52, telemetry 50.
+ *
+ * Each node is taken to have booted at a random time before the run: each kind first goes at a
+ * random point of its unstretched interval, and the utilisation's periods start at a random
+ * offset. But every node starts knowing no other, as one with its database wiped would, so the
+ * NodeInfo exchanges of the first hour are heavier than a settled mesh's: a warmup covers them.
+ * The interval stretch reads the count of nodes heard at most every 5 minutes, where the firmware
+ * reads it as it changes. Smart position - more often while the node moves - and the firmware's
+ * duty-cycle check are not modelled.
+ *
  * Meshtasticator starts the acknowledgement wait when the message is queued; this port starts it
  * when the frame has been sent, as a radio that queues behind its own traffic has to. It also
  * cancels a queued frame only once the MAC has waited out its turn, where this port, as the
@@ -150,10 +193,26 @@ struct tsim_meshtastic_config {
      * withdrawn only when the MAC has waited out its turn and comes to send it. */
     bool cancel_late;
     struct tsim_meshtastic_window window;
+    /* Background traffic, as described above; off by default. Each interval 0 is the firmware's
+     * default for the node's role. */
+    bool background;
+    tsim_time nodeinfo_interval;
+    tsim_time position_interval;
+    tsim_time telemetry_interval;
+    double position_share; /* 0 to 1 */
+    uint16_t nodedb_max;   /* 2 to 250 */
+    double throttle;       /* the interval stretch for each node heard over 40 */
 };
 
+/* The firmware's interval stretch for the preset `lora` matches - 0.04 for SF10 at 250 kHz, 0.02
+ * for SF9 at 250 kHz, 0.01 for SF7 or SF8 at 250 kHz and SF7 at 500 kHz - and 0.075 for anything
+ * else. */
+double tsim_meshtastic_throttle(const struct tsim_lora *lora);
+
 /* A client on `lora`, three hops, acknowledgements wanted, three retries, 4.5 s of processing,
- * duplicates acknowledged, and the SNR the radio measured. */
+ * duplicates acknowledged, and the SNR the radio measured. Background traffic is off; on, it takes
+ * the firmware's intervals, a position for every node, a database of 100 and the preset's
+ * throttle. */
 struct tsim_meshtastic_config tsim_meshtastic_default(uint16_t channel,
                                                       const struct tsim_lora *lora, double tx_dbm);
 

@@ -14,6 +14,18 @@
 # Every candidate is overloaded at this preset and this traffic, a message from each node every
 # half hour: the slow presets real meshes run carry far less than SF7 or SF8 at 125 kHz, where
 # region-distvec.tsim's candidate 3 delivered 93-99% of unicasts with both oracles.
+#
+# With their firmware's own traffic on (MSH-64), as the deployed incumbents now run: meshtastic
+# on LongFast 11-12% falling to 1.5%, on MediumFast 14-33% and 7% at 20 dBm; meshcore unchanged.
+# With a message from each node every 2 h instead (-s traffic.interval=2h), unicast on time, and
+# broadcast after the slash:
+#   flooding                        22-39% / 21-38%
+#   meshtastic, LongFast            19-29%, 5% at 20 dBm / 5-27%
+#   meshtastic, MediumFast          16-64% / 17-63%
+#   meshcore, 200 repeaters         21-39% / 8-16%
+#   candidate 3                     76-88% / 27-48%
+# Without their own traffic Meshtastic made 35-41% on LongFast and 23-74% on MediumFast: its own
+# traffic costs it more than the workload's once the channel has room for it.
 nodes     = 1000
 placement = uniform
 area      = 18000 x 18000

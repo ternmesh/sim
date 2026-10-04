@@ -18,6 +18,9 @@ routing             = meshcore
 mac                 = meshcore
 routing.relay_pick  = cds
 routing.relay_count = 200
+# The firmware's own traffic as well: each repeater floods its advert every 47 h (MSH-64), which
+# changes nothing measurable. Companions send adverts only when their users ask, so none here.
+routing.background  = yes
 # The sites are picked over links at MeshCore's narrow preset, whatever this run's preset, so
 # every deployed candidate - and any run of one on another preset - gets the same 200.
 sites.sf            = 8
