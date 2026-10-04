@@ -67,6 +67,8 @@ struct tsim_route_health {
     double probe_acks_per_h;
     double unrouted_infeasible;
     double unrouted_empty;
+    /* As the run ends, the nodes up listening on each SF, from SF7 (MSH-49). */
+    uint32_t listen_sf[6];
 };
 
 /* How candidate 3's infrastructure joins up over the oracle's links (MSH-56), relays to relays

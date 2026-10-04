@@ -1864,6 +1864,108 @@ static void power_settings_are_checked(void) {
     CHECK(tsim_distvec_check(&bad) == NULL);
 }
 
+/* Per-link SF (MSH-49): radios at SF9, 14 dBm, power control with power_k 0 and links by
+ * strength, any node free to listen on SF7. A link's SNR is 131 - loss dB, as at SF7 - the noise
+ * is the bandwidth's - and its margin at SF9, 143.5 - loss: 5 dB less at SF7. */
+static void sf_rig(struct rig *r, uint32_t nodes, const double *losses) {
+    rig_init(r);
+    struct tsim_lora l = tsim_lora_default(9, 125000);
+    r->rc = tsim_distvec_default(0, &l, 14.0);
+    r->rc.power_k = 0;
+    r->rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r->rc.sf_min = 7;
+    struct tsim_net_params p = tsim_net_defaults(1);
+    p.queue_limit = 0;
+    p.listen = l;
+    r->nodes = nodes;
+    r->sched = tsim_sched_create();
+    r->net =
+        tsim_net_create(r->sched, &p, nodes, &tsim_distvec, &r->rc, &tsim_meshcore_mac, &r->mc);
+    for (uint32_t i = 0; i + 1 < nodes; i++) {
+        link(r, i, i + 1, losses[i]);
+    }
+    tsim_net_start(r->net);
+}
+
+static void a_strong_link_goes_at_a_faster_sf(void) {
+    struct rig r;
+    double strong[] = {100};
+    sf_rig(&r, 2, strong);
+    CHECK_EQ_I64(tsim_distvec_listen_sf(at(&r, 0)), 9); /* hearing nobody yet */
+    tsim_sched_run_until(r.sched, TSIM_S(1800));
+    CHECK_EQ_I64(tsim_distvec_listen_sf(at(&r, 0)), 7);
+    CHECK_EQ_I64(tsim_distvec_listen_sf(at(&r, 1)), 7);
+    CHECK_EQ_I64(tsim_distvec_sf_to(at(&r, 0), 1), 7);
+    uint64_t m = tsim_net_originate(r.net, 0, 1, 40);
+    tsim_sched_run_until(r.sched, TSIM_S(1860));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 1);
+    rig_close(&r);
+
+    /* A link with 5.5 dB at SF9 has 0.5 at SF7, under link_margin: both stay where it holds. */
+    double weak[] = {138};
+    sf_rig(&r, 2, weak);
+    tsim_sched_run_until(r.sched, TSIM_S(1800));
+    CHECK_EQ_I64(tsim_distvec_listen_sf(at(&r, 0)), 9);
+    CHECK_EQ_I64(tsim_distvec_listen_sf(at(&r, 1)), 9);
+    uint32_t next = 0;
+    CHECK(route(&r, 0, 1, &next) && next == 1);
+    rig_close(&r);
+
+    struct tsim_lora l = tsim_lora_default(9, 125000);
+    struct tsim_distvec_config c = tsim_distvec_default(0, &l, 14.0);
+    c.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    c.sf_min = 7;
+    CHECK(tsim_distvec_check(&c) == NULL);
+    struct tsim_distvec_config bad = c;
+    bad.sf_min = 10; /* slower than the radio */
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad = c;
+    bad.links = TSIM_DISTVEC_LINKS_SENSED; /* no margins to choose by */
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad = c;
+    bad.power = false;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+}
+
+static uint64_t deaf_relays; /* frames passed on that node 0 was tuned away from */
+static void count_deaf(void *ctx, const struct tsim_net_heard *h) {
+    (void)ctx;
+    if (h->from == 1 && h->purpose == TSIM_PURPOSE_RELAY && h->fate == TSIM_PHY_DEAF) {
+        deaf_relays++;
+    }
+}
+
+/* On the line 0 - 1 - 2, strong then weak, node 0 listens on SF7 and the others on SF9, so node 1
+ * keeps its link to node 2. Node 0 cannot decode node 1 passing its message on at SF9, nor node 2
+ * the acknowledgement passed on at SF7: each hears a hop acknowledgement at its own SF instead,
+ * and neither sends again. */
+static void a_hop_on_another_sf_is_acknowledged_at_the_sf_of_the_hop_before(void) {
+    struct rig r;
+    double losses[] = {100, 138};
+    sf_rig(&r, 3, losses);
+    tsim_sched_run_until(r.sched, TSIM_S(1800));
+    CHECK_EQ_I64(tsim_distvec_listen_sf(at(&r, 0)), 7);
+    CHECK_EQ_I64(tsim_distvec_listen_sf(at(&r, 1)), 9);
+    CHECK_EQ_I64(tsim_distvec_listen_sf(at(&r, 2)), 9);
+    CHECK_EQ_I64(tsim_distvec_sf_to(at(&r, 1), 0), 7);
+    CHECK_EQ_I64(tsim_distvec_sf_to(at(&r, 0), 1), 9);
+    bool watched[3] = {true, false, false};
+    deaf_relays = 0;
+    tsim_net_observe_heard(r.net, count_deaf, NULL, watched);
+    uint64_t data0 = frames(&r, 0, TSIM_PURPOSE_DATA), ctl2 = frames(&r, 2, TSIM_PURPOSE_CONTROL);
+    uint64_t m = tsim_net_originate(r.net, 0, 2, 40);
+    tsim_sched_run_until(r.sched, TSIM_S(1860));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    CHECK(tsim_net_message(r.net, m)->finished);
+    CHECK_EQ_U64(deaf_relays, 1);
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA) - data0, 1);
+    CHECK_EQ_U64(frames(&r, 1, TSIM_PURPOSE_RELAY), 1);
+    CHECK_EQ_U64(frames(&r, 2, TSIM_PURPOSE_CONTROL) - ctl2, 1); /* the acknowledgement, once */
+    tsim_net_observe_heard(r.net, NULL, NULL, NULL);
+    rig_close(&r);
+}
+
 /* Frames carry a demand route's life in whole seconds, so a route_ttl under one is refused: it
  * would go out as no life at all. */
 static void a_route_ttl_under_a_second_is_refused(void) {
@@ -2048,6 +2150,8 @@ int main(void) {
     RUN(power_k_reaches_the_k_nearest);
     RUN(a_fractional_tx_dbm_is_kept_at_the_top);
     RUN(power_settings_are_checked);
+    RUN(a_strong_link_goes_at_a_faster_sf);
+    RUN(a_hop_on_another_sf_is_acknowledged_at_the_sf_of_the_hop_before);
     RUN(a_route_ttl_under_a_second_is_refused);
     RUN(picked_relays_are_checked);
     RUN(relays_picked_as_a_connected_dominating_set_join_and_reach_every_node);

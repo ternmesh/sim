@@ -636,6 +636,12 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "power_k") == 0) {
         return distvec_count(value, 0, UINT8_MAX, &c->power_k);
     }
+    if (strcmp(key, "sf_min") == 0) {
+        return distvec_count(value, 0, 12, &c->sf_min);
+    }
+    if (strcmp(key, "sf_k") == 0) {
+        return distvec_count(value, 1, UINT8_MAX, &c->sf_k);
+    }
     if (strcmp(key, "snr_floor") == 0) {
         return parse_double(value, &c->snr_floor_db) ? NULL : "expected an SNR in dB";
     }
@@ -1754,6 +1760,13 @@ static void health(const struct window *w, tsim_time end, struct tsim_route_heal
     }
     h->relay_reach_begin = w->relay_reach;
     h->relay_reach_end = relay_reach(w->net, w->relay);
+    _Static_assert(sizeof h->listen_sf / sizeof *h->listen_sf == TSIM_SF_COUNT, "SFs");
+    for (uint32_t i = 0; i < tsim_net_nodes(w->net); i++) {
+        const void *r = tsim_net_routing(w->net, i);
+        if (r) {
+            h->listen_sf[tsim_distvec_listen_sf(r) - TSIM_SF_MIN]++;
+        }
+    }
 }
 
 /* --- Churn --- */

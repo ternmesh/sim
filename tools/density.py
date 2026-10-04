@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Runs every candidate on the 1000-node region at several densities.
 
-    density.py --tsim PATH [--seeds N] [--power DBM,...] [--jobs N] [-s key=value]...
+    density.py --tsim PATH [--seeds N] [--power DBM,...] [--candidates N,...] [--jobs N]
+               [-s key=value]...
 
 A routing result means little without the density it was measured at: the same protocol ranks
 differently where every node hears a dozen others and where it hears hundreds. This runs each of
@@ -25,7 +26,8 @@ about 470 links per node, and -5 dBm about 12.
 
 Every scenario's settings can be overridden with -s, as with tsim: `-s traffic.peers=3 -s
 traffic.reply=0.5` gives each node three regular correspondents who answer half its messages, which
-is what lets a routed candidate use a route more than once.
+is what lets a routed candidate use a route more than once. A setting only one candidate has, such
+as candidate 3's `routing.sf_min`, wants `--candidates 3`: the others would refuse it.
 
 The sweep is too long for CI, which runs each region scenario once, at 20 dBm. It wants a release
 build: each run takes 5 to 60 s of CPU there, the warmup included, and the runs go in parallel.
@@ -87,6 +89,8 @@ def main():
     parser.add_argument("--seeds", type=int, default=3, help="seeds per candidate and power")
     parser.add_argument("--power", default="-5,0,5,10,20",
                         help="transmit powers in dBm, comma-separated, quietest (sparsest) first")
+    parser.add_argument("--candidates", default="flood,1,2,3",
+                        help="which to run, comma-separated: flood, 1, 2 and 3")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="runs at once")
     parser.add_argument("--json", metavar="PATH", help="also write every run's figures here")
     parser.add_argument("-s", dest="set", action="append", default=[], metavar="KEY=VALUE",
@@ -104,7 +108,12 @@ def main():
         if s.split("=", 1)[0].strip() in ("seed", "radio.tx_dbm"):
             parser.error("-s %s: the sweep sets seed and radio.tx_dbm; use --seeds and --power" % s)
 
-    cases = [(name, scenario, power, seed) for name, scenario in CANDIDATES for power in powers
+    wanted = [c.strip() for c in args.candidates.split(",")]
+    chosen = [(name, scenario) for name, scenario in CANDIDATES if name.split()[0] in wanted]
+    if len(chosen) != len(set(wanted)):
+        parser.error("--candidates takes flood, 1, 2 and 3, comma-separated")
+
+    cases = [(name, scenario, power, seed) for name, scenario in chosen for power in powers
              for seed in range(1, args.seeds + 1)]
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         results = list(pool.map(lambda c: run(args.tsim, c[1], c[2], c[3], args.set), cases))
@@ -115,7 +124,7 @@ def main():
 
     width = 15
     print("%-13s %6s" % ("candidate", "dBm") + "".join("%*s" % (width, m) for m in METRICS))
-    for name, _ in CANDIDATES:
+    for name, _ in chosen:
         for power in powers:
             rows = [r for r in runs if r["candidate"] == name and r["power_dbm"] == power]
             print("%-13s %6g" % (name, power) + "".join("%*s" % (width, cell(rows, m))
