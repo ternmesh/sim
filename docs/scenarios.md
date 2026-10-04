@@ -135,6 +135,7 @@ default.
 | `mac.snr_min`, `mac.snr_max` (`meshtastic`) | -20, 10 | the SNR range, in dB, over which a rebroadcast's window grows from `cw_min` to `cw_max` |
 | `mac.busy_chance` (`meshtastic`) | 0 | chance, each time the MAC looks, that the channel is busy with traffic from outside the mesh: Meshtasticator's interference level |
 | `routing.relays` (`meshcore`) | `all` | which nodes are repeaters and relay, as `all` or numbers and ranges such as `0-45,50`; the rest are companions |
+| `sites.sf`, `sites.bw` | 0, 0 | the SF and bandwidth whose floor the links relays, repeaters and routers are picked over are judged at, with `routing.relay_pick`; 0 for the radio's. Runs on different presets that set the same ones and the same pick get the same sites |
 | `routing.relay_pick`, `routing.relay_count` (`meshcore`) | `list`, 0 | repeaters picked as `distvec`'s infrastructure is (below), over links at `radio.tx_dbm` with 3 dB to spare, `routing.relays` then ignored: so both run over the same sites |
 | `routing.hash_size` (`meshcore`) | 1 | bytes per node on a path, 1 to 3 |
 | `routing.scoped` (`meshcore`) | `yes` | whether floods carry region codes, 4 bytes |

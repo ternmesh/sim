@@ -955,6 +955,20 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
         s->radio.lora.bw_hz = (uint32_t)u;
         return NULL;
     }
+    if (strcmp(key, "sites.sf") == 0) {
+        if (!parse_u64(v, 12, &u) || (u != 0 && u < 7)) {
+            return "expected 0 for the radio's, or a spreading factor from 7 to 12";
+        }
+        s->sites_sf = (uint8_t)u;
+        return NULL;
+    }
+    if (strcmp(key, "sites.bw") == 0) {
+        if (!parse_u64(v, 500000, &u)) {
+            return "expected 0 for the radio's, or a bandwidth in Hz, such as 125000";
+        }
+        s->sites_bw = (uint32_t)u;
+        return NULL;
+    }
     if (strcmp(key, "radio.cr") == 0) {
         if (!parse_u64(v, 4, &u) || u == 0) {
             return "expected a coding rate from 1 (4/5) to 4 (4/8)";
@@ -1903,6 +1917,9 @@ static bool of_kind(const struct tsim_scenario *s, const void *rc, uint8_t kinds
         relay = tsim_distvec_relay(rc, node);
     } else if (s->routing->routing == &tsim_meshcore) {
         relay = tsim_meshcore_relay(rc, node) == 1;
+    } else if (s->routing->routing == &tsim_meshtastic) {
+        const struct tsim_meshtastic_config *mt = rc;
+        relay = !mt->relay_pick || mt->relay_set[node];
     }
     return relay == (kinds == TSIM_CHURN_RELAYS);
 }
@@ -2140,18 +2157,20 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     np.seed = s->seed;
     /* Picked relays are known before any router is made, so they are picked over a medium of
      * their own with the same losses. Meshcore's repeaters and meshtastic's routers are picked as
-     * distvec's infrastructure is, over links at the radio's modulation and power. */
+     * distvec's infrastructure is, over links at the radio's power and sites.sf and sites.bw. */
     struct picked pk = picked_of(s->routing->routing, routing_config);
     if (pk.pick && *pk.pick != TSIM_DISTVEC_PICK_LIST) {
         struct tsim_distvec_config by =
-            tsim_distvec_default(np.channel, &s->radio.lora, s->radio.tx_dbm);
+            dv ? *dv : tsim_distvec_default(np.channel, &s->radio.lora, s->radio.tx_dbm);
         by.relay_pick = *pk.pick;
         by.relay_count = *pk.count;
+        by.lora.sf = s->sites_sf ? s->sites_sf : by.lora.sf;
+        by.lora.bw_hz = s->sites_bw ? s->sites_bw : by.lora.bw_hz;
         struct tsim_phy *medium = tsim_phy_create(sched, &np.phy, s->nodes, np.channel, &np.listen,
                                                   (struct tsim_phy_hooks){0});
         relay_set = malloc(s->nodes);
         bool picked = medium && relay_set && lay_links(medium, s, pos) &&
-                      tsim_distvec_pick_relays(medium, pos, dv ? dv : &by, relay_set);
+                      tsim_distvec_pick_relays(medium, pos, &by, relay_set);
         tsim_phy_destroy(medium);
         if (!picked) {
             goto done;

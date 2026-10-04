@@ -16,6 +16,10 @@ routing             = distvec
 mac                 = meshcore
 routing.relay_pick  = cds
 routing.relay_count = 200
+# The sites are picked over links at MeshCore's narrow preset, whatever this run's preset, so
+# every deployed candidate - and any run of one on another preset - gets the same 200.
+sites.sf            = 8
+sites.bw            = 62500
 
 traffic.interval  = 30 min
 traffic.len       = 16..64
