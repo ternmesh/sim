@@ -427,6 +427,9 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
         return "with power control, tx_dbm and tx_min_dbm are not whole dBm apart within -128 to "
                "127, or a margin is out of range";
     }
+    if (c->bcast_power > TSIM_DISTVEC_BCAST_ROUTES) {
+        return "bcast_power is not k, relays, full or routes";
+    }
     if (c->links > TSIM_DISTVEC_LINKS_STRENGTH) {
         return "links is not sensed, oracle or strength";
     }
@@ -636,6 +639,59 @@ static void node_power(struct router *r) {
         double p = ceil(low[k - 1] + c->margin_db);
         r->node_dbm = p < lo ? lo : p > hi ? hi : p;
     }
+}
+
+/* The power a broadcast goes at: see enum tsim_distvec_bcast_power. */
+static double bcast_dbm(const struct router *r) {
+    const struct tsim_distvec_config *c = &r->config;
+    if (!c->power || c->bcast_power == TSIM_DISTVEC_BCAST_FULL) {
+        return c->tx_dbm;
+    }
+    if (c->bcast_power == TSIM_DISTVEC_BCAST_ROUTES) {
+        /* Every neighbour a selected route to a relay goes through. */
+        double need = -INFINITY;
+        for (uint32_t d = 0; d < r->nodes; d++) {
+            const struct dest *ds = &r->dest[d];
+            if (d == r->self || !ds->sel || ds->leaf) {
+                continue;
+            }
+            const struct neighbour *n = &r->nb[ds->sel - 1];
+            if (isnan(n->floor)) {
+                return c->tx_dbm;
+            }
+            need = n->floor > need ? n->floor : need;
+        }
+        if (need == -INFINITY) {
+            return c->tx_dbm;
+        }
+        double p = ceil(need + c->margin_db);
+        p = p < r->node_dbm ? r->node_dbm : p;
+        return p > c->tx_dbm ? c->tx_dbm : p;
+    }
+    if (c->bcast_power != TSIM_DISTVEC_BCAST_RELAYS) {
+        return r->node_dbm;
+    }
+    /* The bcast_k infrastructure neighbours with the lowest floors, or all of them. */
+    double low[UINT8_MAX];
+    unsigned have = 0, k = c->bcast_k ? c->bcast_k : UINT8_MAX;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        if (!n->used || !n->infra || isnan(n->floor) || (have == k && n->floor >= low[k - 1])) {
+            continue;
+        }
+        unsigned at = have < k ? have++ : k - 1;
+        while (at > 0 && low[at - 1] > n->floor) {
+            low[at] = low[at - 1];
+            at--;
+        }
+        low[at] = n->floor;
+    }
+    if (have == 0) {
+        return c->tx_dbm; /* no relay known: as loud as it may, to find one */
+    }
+    double p = ceil(low[have - 1] + c->margin_db);
+    p = p < r->node_dbm ? r->node_dbm : p;
+    return p > c->tx_dbm ? c->tx_dbm : p;
 }
 
 /* --- Links --- */
@@ -2698,6 +2754,7 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
             return false;
         }
         struct tsim_tx tx = frame(r, TSIM_PURPOSE_DATA, PRIORITY_DATA);
+        tx.tx_dbm = bcast_dbm(r);
         tx.bytes[0] = TYPE_BCAST;
         put32(tx.bytes + 1, r->self);
         put32(tx.bytes + 5, (uint32_t)msg->id);
@@ -2860,6 +2917,7 @@ static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t h
         return;
     }
     struct tsim_tx tx = frame(r, TSIM_PURPOSE_RELAY, PRIORITY_RELAY);
+    tx.tx_dbm = bcast_dbm(r);
     memcpy(tx.bytes, b, len);
     tx.bytes[9] = (uint8_t)(hops - 1);
     tx.len = len;
@@ -3365,6 +3423,8 @@ double tsim_distvec_power(const void *self, uint32_t nb) {
 }
 
 double tsim_distvec_node_power(const void *self) { return ((const struct router *)self)->node_dbm; }
+
+double tsim_distvec_bcast_power(const void *self) { return bcast_dbm(self); }
 
 uint8_t tsim_distvec_listen_sf(const void *self) {
     return ((const struct router *)self)->listen_sf;

@@ -368,6 +368,16 @@ enum tsim_distvec_leaves {
 
 /* How a node judges its links: by announces counted and IHUs, from the oracle's (below), or by
  * how strongly each end hears the other (MSH-58, below). */
+/* How loud a broadcast goes, with power control (MSH-67): as announces do, for the power_k
+ * neighbours with the lowest floors; loud enough for every infrastructure neighbour it has a link
+ * to as well; or at tx_dbm. */
+enum tsim_distvec_bcast_power {
+    TSIM_DISTVEC_BCAST_K,
+    TSIM_DISTVEC_BCAST_RELAYS,
+    TSIM_DISTVEC_BCAST_FULL,
+    TSIM_DISTVEC_BCAST_ROUTES,
+};
+
 enum tsim_distvec_links {
     TSIM_DISTVEC_LINKS_SENSED,
     TSIM_DISTVEC_LINKS_ORACLE,
@@ -460,6 +470,8 @@ struct tsim_distvec_config {
     double step_db;    /* added for each try a hop has lost, 0 to 60 */
     double snr_floor_db; /* the lowest SNR the modulation demodulates at */
     uint8_t power_k;     /* neighbours frames for all of them reach; 0 for tx_dbm */
+    uint8_t bcast_power; /* enum tsim_distvec_bcast_power: what a broadcast goes loud enough for */
+    uint8_t bcast_k;     /* with relays: the infrastructure neighbours it reaches; 0 for all */
     /* Per-link SF (MSH-49, above): the fastest SF a node may listen on, from 7 up to the radio's,
      * or 0 for every node on the radio's; and how many of its links it must keep to go faster -
      * all it would have on the radio's, up to sf_k. */
@@ -744,6 +756,9 @@ uint32_t tsim_distvec_round(const void *self);
  * every neighbour go at, in dBm. */
 double tsim_distvec_power(const void *self, uint32_t nb);
 double tsim_distvec_node_power(const void *self);
+
+/* The power a broadcast from this node goes at now, by bcast_power. */
+double tsim_distvec_bcast_power(const void *self);
 
 /* The SF the node listens on, and the SF a frame from it to neighbour `nb` would go at. */
 uint8_t tsim_distvec_listen_sf(const void *self);
