@@ -87,8 +87,9 @@
  * rebroadcast or acknowledgement is dropped, and a message of its own is dropped too, booked as
  * TSIM_DROP_DUTY, and waited on as though it had gone, so a retry goes once the hour allows. The
  * firmware checks when a packet is handed to the radio's queue, not when it goes on the air, so
- * what is already queued still goes. NodeInfo and telemetry also wait while it is over half the
- * duty cycle, as isTxAllowedAirUtil() has them.
+ * what is already queued still goes. While it is over half the duty cycle, as isTxAllowedAirUtil()
+ * has it, telemetry waits and NodeInfo skips its turn, coming round again an interval later, as
+ * NodeInfoModule::runOnce() does.
  *
  * Meshtasticator starts the acknowledgement wait when the message is queued; this port starts it
  * when the frame has been sent, as a radio that queues behind its own traffic has to. It also

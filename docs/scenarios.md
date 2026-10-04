@@ -140,7 +140,7 @@ default.
 | `routing.telemetry_interval` (`meshtastic`) | `default` | how often device telemetry is: `default` is 1 h for a client, 12 h for a router, before the stretch |
 | `routing.position_share` (`meshtastic`) | 1 | the share of nodes with a position to send, 0 to 1 |
 | `routing.nodedb_max` (`meshtastic`) | 100 | nodes the database holds, which caps the count the stretch is reckoned from: 80 on nRF52 boards, 100 on most ESP32s, up to 250; 2 to 250 |
-| `routing.duty_cycle` (`meshtastic`) | `none` | the region's duty cycle as the firmware holds to it, such as `10%` for EU_868: over it in the last hour, a node sends nothing it is handed - its messages, rebroadcasts and acknowledgements are dropped - and NodeInfo and telemetry wait while it is over half |
+| `routing.duty_cycle` (`meshtastic`) | `none` | the region's duty cycle as the firmware holds to it, such as `10%` for EU_868: over it in the last hour, a node sends nothing it is handed - its messages, rebroadcasts and acknowledgements are dropped - and while it is over half, telemetry waits and NodeInfo skips its turn |
 | `routing.throttle` (`meshtastic`) | from the radio | how much each node heard over 40 stretches a client's intervals: 0.075, or 0.04 for MediumSlow, 0.02 for MediumFast and 0.01 for the Short presets; 0 to 1 |
 | `mac.busy_chance` (`meshtastic`) | 0 | chance, each time the MAC looks, that the channel is busy with traffic from outside the mesh: Meshtasticator's interference level |
 | `routing.relays` (`meshcore`) | `all` | which nodes are repeaters and relay, as `all` or numbers and ranges such as `0-45,50`; the rest are companions |

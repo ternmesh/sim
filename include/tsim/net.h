@@ -25,8 +25,8 @@ struct tsim_net_params {
      * A radio does not start a frame that would take its airtime in the hour ending as the frame
      * ends over that share: the frame stays at the head of the queue, and the MAC is kicked when
      * it would fit, as a regulator's limit enforced in the radio would hold it. A frame longer
-     * than the whole share is dropped as a full queue's would be. Its frames are remembered
-     * across a power cycle, as the airtime is spent all the same. */
+     * than the whole share is refused when queued, as a full queue refuses one. Its frames are
+     * remembered across a power cycle, as the airtime is spent all the same. */
     double duty_cycle;
 };
 

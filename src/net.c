@@ -558,7 +558,12 @@ uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
         tsim_lora_airtime(&tx->lora, tx->len) < 0 || !carries_what_it_claims(nd, tx)) {
         return 0;
     }
-    if (net->params.queue_limit && nd->queue_len >= net->params.queue_limit) {
+    /* A frame longer than the duty cycle's whole share could never go: refused as a full queue
+     * refuses one. */
+    bool too_long =
+        net->params.duty_cycle > 0 && tsim_lora_airtime(&tx->lora, tx->len) >
+                                          (tsim_time)(net->params.duty_cycle * (double)DUTY_WINDOW);
+    if (too_long || (net->params.queue_limit && nd->queue_len >= net->params.queue_limit)) {
         nd->stats.dropped++;
         if (tx->carries) {
             tsim_node_drop(nd, tx->carries, TSIM_DROP_QUEUE,
@@ -702,16 +707,19 @@ static bool duty_allows(struct tsim_node *nd, tsim_time airtime) {
     struct tsim_net *net = nd->net;
     tsim_time now = tsim_sched_now(net->sched);
     tsim_time budget = (tsim_time)(net->params.duty_cycle * (double)DUTY_WINDOW);
-    /* The hour ending as this frame would end. */
-    tsim_time from = now + airtime - DUTY_WINDOW;
-    while (nd->sent_len > 0 && nd->sent[nd->sent_at].end <= from) {
+    /* Frames that ended an hour ago count for no frame from now on, whichever goes next. */
+    while (nd->sent_len > 0 && nd->sent[nd->sent_at].end <= now - DUTY_WINDOW) {
         nd->sent_at++;
         nd->sent_len--;
     }
+    /* The hour ending as this frame would end, and what of the node's frames falls in it. */
+    tsim_time from = now + airtime - DUTY_WINDOW;
     tsim_time used = 0;
     for (size_t i = 0; i < nd->sent_len; i++) {
         const struct burst *b = &nd->sent[nd->sent_at + i];
-        used += b->end - (b->start > from ? b->start : from);
+        if (b->end > from) {
+            used += b->end - (b->start > from ? b->start : from);
+        }
     }
     if (used + airtime <= budget) {
         return true;
@@ -721,6 +729,9 @@ static bool duty_allows(struct tsim_node *nd, tsim_time airtime) {
     tsim_time cum = 0;
     for (size_t i = 0; i < nd->sent_len; i++) {
         const struct burst *b = &nd->sent[nd->sent_at + i];
+        if (b->end <= from) {
+            continue;
+        }
         tsim_time a = b->start > from ? b->start : from;
         if (cum + (b->end - a) >= over) {
             tsim_time when = a + (over - cum) + DUTY_WINDOW - airtime;
@@ -759,13 +770,6 @@ bool tsim_node_transmit(struct tsim_node *nd) {
     if (nd->net->params.duty_cycle > 0) {
         const struct tsim_tx *head = &nd->queue[0].tx;
         tsim_time airtime = tsim_lora_airtime(&head->lora, head->len);
-        tsim_time budget = (tsim_time)(nd->net->params.duty_cycle * (double)DUTY_WINDOW);
-        if (airtime > budget) {
-            remove_at(nd, 0); /* it could never go */
-            nd->stats.dropped++;
-            nd->net->mac->kick(nd->mac);
-            return false;
-        }
         if (!duty_allows(nd, airtime)) {
             nd->stats.held++;
             return false;

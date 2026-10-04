@@ -936,12 +936,13 @@ static void the_radio_holds_to_the_duty_cycle(void) {
     CHECK_EQ_U64(tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_DATA], 2 * fit);
     rig_close(&r);
 
-    /* A frame longer than the whole share can never go: it is dropped, and the next goes. */
+    /* A frame longer than the whole share can never go: it is refused, as a full queue refuses
+     * one, and the next goes. */
     p.duty_cycle = (double)airtime(200) / (double)TSIM_S(3600) * 0.99;
     rig_open(&r, p, 2);
     r.log.eager = true;
     n0 = tsim_net_node(r.net, 0);
-    tsim_node_send(n0, &tx);
+    CHECK_EQ_U64(tsim_node_send(n0, &tx), 0);
     struct tsim_tx small = frame(TSIM_PURPOSE_DATA, 0, 10);
     tsim_node_send(n0, &small);
     run_for(&r, TSIM_S(1));
