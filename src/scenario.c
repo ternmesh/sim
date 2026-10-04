@@ -1481,6 +1481,14 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
         ok = fail(err, 0,
                   "move.share: the oracle's routes are built once, from where the nodes start");
     }
+    /* Elected relays are not known when churn and movement pick their nodes, at the start. */
+    if (ok && dv && dv->relay_pick == TSIM_DISTVEC_PICK_ELECT &&
+        ((s->churn_share > 0 && s->churn_nodes != TSIM_CHURN_ALL) ||
+         (s->move_share > 0 && s->move_nodes != TSIM_CHURN_ALL))) {
+        ok = fail(err, 0,
+                  "churn.nodes and move.nodes must be all with routing.relay_pick = elect: which "
+                  "nodes are relays is not known until they elect themselves");
+    }
     if (ok && pk.pick && *pk.pick != TSIM_DISTVEC_PICK_LIST && *pk.count > s->nodes) {
         ok = fail(err, 0, "routing.relay_count is %" PRIu32 ", more than the %" PRIu32 " nodes",
                   *pk.count, s->nodes);
@@ -1746,7 +1754,10 @@ static bool announces_start(struct announces *a, struct tsim_net *net,
         return false;
     }
     for (uint32_t i = 0; i < n; i++) {
-        a->watch[i] = tsim_distvec_relay(dv, i);
+        /* Elected relays are known only now, from the routers themselves. */
+        const void *r = tsim_net_routing(net, i);
+        a->watch[i] = dv->relay_pick == TSIM_DISTVEC_PICK_ELECT ? r && tsim_distvec_infra(r)
+                                                                : tsim_distvec_relay(dv, i);
         a->index[i] = a->watch[i] ? a->relays++ : UINT32_MAX;
     }
     size_t rr = (size_t)a->relays * a->relays;

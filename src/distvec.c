@@ -1690,8 +1690,17 @@ static void push_bind(struct router *r, uint32_t leaf) {
 /* A leaf's binding, heard from the leaf or from a relay: kept if newer than the one known, and
  * then, by a relay, announced as a change. */
 static void learn_binding(struct router *r, uint32_t leaf, uint32_t parent, uint16_t seq) {
-    if (leaf >= r->nodes || leaf == r->self ||
-        (parent >= r->nodes && parent != TSIM_DISTVEC_NO_PARENT)) {
+    if (leaf == r->self) {
+        /* Its own binding, still going round from before it restarted, newer than its own or as
+         * new with another parent: it goes past it, so the binding it names now is taken. */
+        uint32_t mine = r->infra ? r->self : r->parent;
+        if (newer(seq, r->bind_seq) || (seq == r->bind_seq && parent != mine)) {
+            r->bind_seq = (uint16_t)(seq + 1);
+            r->changed = true;
+        }
+        return;
+    }
+    if (leaf >= r->nodes || (parent >= r->nodes && parent != TSIM_DISTVEC_NO_PARENT)) {
         return;
     }
     struct binding *bd = &r->bind[leaf];
@@ -3875,6 +3884,9 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->ann_head = ANNOUNCE_HEAD + (c->power ? 1 : 0) + (electing(r) ? ELECT_LEN : 0) +
                   (learned(r) ? BIND_HEAD : 0);
     if (learned(r)) {
+        /* From the minute it starts, so a leaf restarted mostly names a binding newer than those
+         * it left going round; one that is not is gone past when it hears it (learn_binding). */
+        r->bind_seq = (uint16_t)(tsim_node_now(node) / TSIM_S(60));
         r->bind = calloc(r->nodes, sizeof *r->bind);
         if (!r->bind) {
             free(r);
