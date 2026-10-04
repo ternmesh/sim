@@ -284,6 +284,7 @@ struct router {
     /* Background traffic. */
     struct tsim_rng rng;
     struct tsim_timer *tick;       /* every CU_PERIOD, from the node's own offset */
+    struct tsim_timer *recheck;    /* a held-back kind's next look, between ticks */
     tsim_time busy_at[CU_PERIODS]; /* the busy time at the start of each of the last periods */
     uint64_t periods;              /* periods begun */
     tsim_time due[BG_KINDS];       /* when to look at each next */
@@ -641,12 +642,9 @@ static void send_nodeinfo(struct router *r, uint32_t to, bool want_response) {
     r->nodeinfo_handle = send_bg(r, BG_NODEINFO, to, want_response ? BG_WANT_RESPONSE : 0);
 }
 
-static void bg_tick(void *ctx) {
-    struct router *r = ctx;
+/* Sends whatever kind is due and allowed. */
+static void bg_check(struct router *r) {
     tsim_time now = tsim_node_now(r->node);
-    r->busy_at[r->periods % CU_PERIODS] = busy(r);
-    r->periods++;
-    tsim_timer_start(r->tick, CU_PERIOD);
     for (int k = 0; k < BG_KINDS; k++) {
         if (now < r->due[k] || now < r->retry[k]) {
             continue;
@@ -672,6 +670,26 @@ static void bg_tick(void *ctx) {
         r->due[k] = now + (every < ONLINE_REFRESH ? every : ONLINE_REFRESH);
         send_bg(r, k, TSIM_BROADCAST, 0);
     }
+    /* Position held back is looked at again in 5 s, sooner than the next tick. */
+    tsim_time soonest = NEVER;
+    for (int k = 0; k < BG_KINDS; k++) {
+        if (r->retry[k] > now && r->retry[k] >= r->due[k] && r->retry[k] < soonest) {
+            soonest = r->retry[k];
+        }
+    }
+    if (soonest != NEVER && soonest - now < CU_PERIOD) {
+        tsim_timer_start(r->recheck, soonest - now);
+    }
+}
+
+static void bg_recheck(void *ctx) { bg_check(ctx); }
+
+static void bg_tick(void *ctx) {
+    struct router *r = ctx;
+    r->busy_at[r->periods % CU_PERIODS] = busy(r);
+    r->periods++;
+    tsim_timer_start(r->tick, CU_PERIOD);
+    bg_check(r);
 }
 
 /* What the firmware's database learns from a packet first heard from `from`, for everyone or for
@@ -837,8 +855,10 @@ static void *router_create(struct tsim_node *node, const void *config) {
         r->seen = malloc(nodes * sizeof *r->seen);
         r->has_user = calloc(nodes, 1);
         r->tick = tsim_timer_create(node, bg_tick, r);
-        if (!r->seen || !r->has_user || !r->tick) {
+        r->recheck = tsim_timer_create(node, bg_recheck, r);
+        if (!r->seen || !r->has_user || !r->tick || !r->recheck) {
             tsim_timer_destroy(r->tick);
+            tsim_timer_destroy(r->recheck);
             free(r->seen);
             free(r->has_user);
             free(r);
@@ -881,6 +901,7 @@ static void router_destroy(void *self) {
     free(r->heard);
     free(r->withdrawn);
     tsim_timer_destroy(r->tick);
+    tsim_timer_destroy(r->recheck);
     free(r->seen);
     free(r->has_user);
     free(r);
