@@ -21,6 +21,8 @@ routing.relay_count = 200
 # The firmware's own traffic as well: each repeater floods its advert every 47 h (MSH-64), which
 # changes nothing measurable. Companions send adverts only when their users ask, so none here.
 routing.background  = yes
+# MeshCore holds to its own budget, mac.airtime_factor 1 - half the hour - as it ships, not the
+# sub-band's 10%; no node here comes near either (MSH-65).
 # The sites are picked over links at MeshCore's narrow preset, whatever this run's preset, so
 # every deployed candidate - and any run of one on another preset - gets the same 200.
 sites.sf            = 8

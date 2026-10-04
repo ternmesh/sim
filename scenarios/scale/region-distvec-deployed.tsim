@@ -26,6 +26,14 @@
 #   candidate 3                     76-88% / 27-48%
 # Without their own traffic Meshtastic made 35-41% on LongFast and 23-74% on MediumFast: its own
 # traffic costs it more than the workload's once the channel has room for it.
+#
+# The duty cycle (MSH-65): at the sub-band's 10% nothing changes for any candidate - the busiest
+# node sends under 4% of the hour, and no radio holds a frame back. At 1%, the rest of 868 MHz,
+# every candidate collapses, unicast on time at 0 and 20 dBm: flooding 0.4% and 1.9%, candidate 3
+# 1.0% and 2.2%, meshcore with every radio held to it 1.9% and 10.0%, and meshtastic under its own
+# firmware's rule 13.7% and 0.9%, its drops shedding load the radios would otherwise hold. 36 s an
+# hour is far less than 200 relays carrying a thousand nodes' traffic need: candidate 3, which puts
+# all its relaying on them, would have to spread it, or stay on the 10% sub-band.
 nodes     = 1000
 placement = uniform
 area      = 18000 x 18000
@@ -44,6 +52,10 @@ routing.relay_count = 200
 # every deployed candidate - and any run of one on another preset - gets the same 200.
 sites.sf            = 8
 sites.bw            = 62500
+
+# The 869.4-869.65 MHz sub-band's 10%, held by every radio (MSH-65): no node comes near it at this
+# traffic, the busiest sending under 4% of the hour.
+duty_cycle = 10%
 
 traffic.interval  = 30 min
 traffic.len       = 16..64
