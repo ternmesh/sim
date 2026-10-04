@@ -590,6 +590,190 @@ static void a_seed_repeats_a_run(void) {
     }
 }
 
+/* --- Background traffic --- */
+
+/* Every kind of background packet off, but for those a test turns back on: an interval of a
+ * million hours first goes at a random point of it, as good as never. */
+#define NEVER_H TSIM_S(1000000LL * 3600)
+
+static void background_rig(struct rig *r) {
+    rig_init(r);
+    r->rc.background = true;
+    r->rc.nodeinfo_interval = NEVER_H;
+    r->rc.position_interval = NEVER_H;
+    r->rc.telemetry_interval = NEVER_H;
+    r->rc.hop_limit = 0; /* nothing passed on: a node's announces are its own */
+    r->rc.want_ack = false;
+}
+
+static void clique_of(struct rig *r, uint32_t nodes, uint64_t seed) {
+    build(r, nodes, seed);
+    for (uint32_t a = 0; a < nodes; a++) {
+        for (uint32_t b = a + 1; b < nodes; b++) {
+            link(r, a, b, LOSS_LOUD);
+        }
+    }
+    tsim_net_start(r->net);
+}
+
+static void the_throttle_follows_the_preset(void) {
+    struct tsim_lora l = tsim_lora_default(11, 250000); /* LongFast */
+    CHECK(tsim_meshtastic_throttle(&l) == 0.075);
+    l = tsim_lora_default(9, 250000); /* MediumFast */
+    CHECK(tsim_meshtastic_throttle(&l) == 0.02);
+    l = tsim_lora_default(10, 250000); /* MediumSlow */
+    CHECK(tsim_meshtastic_throttle(&l) == 0.04);
+    l = tsim_lora_default(8, 250000); /* ShortSlow */
+    CHECK(tsim_meshtastic_throttle(&l) == 0.01);
+    l = tsim_lora_default(7, 500000); /* ShortTurbo */
+    CHECK(tsim_meshtastic_throttle(&l) == 0.01);
+    l = tsim_lora_default(9, 125000); /* no preset */
+    CHECK(tsim_meshtastic_throttle(&l) == 0.075);
+}
+
+/* A client alone hears no one: it counts itself, 1 node, and sends 0.6 times as often - position
+ * every 9 min, telemetry every 36 - and NodeInfo every 3 h whatever it hears. */
+static void a_lone_client_sends_each_kind_at_its_interval(void) {
+    tsim_time run = TSIM_S(9 * 3600);
+    struct {
+        int kind;
+        uint64_t lo, hi;
+        uint32_t len;
+    } cases[] = {
+        {0, 3, 3, 100},  /* NodeInfo: every 3 h, the first somewhere in the first 3 h */
+        {1, 59, 61, 52}, /* position: every 9 min, the first somewhere in the first 15 */
+        {2, 14, 16, 50}, /* telemetry: every 36 min, the first somewhere in the first hour */
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        for (uint64_t seed = 1; seed <= 3; seed++) {
+            struct rig r;
+            background_rig(&r);
+            if (cases[i].kind == 0) {
+                r.rc.nodeinfo_interval = 0;
+            } else if (cases[i].kind == 1) {
+                r.rc.position_interval = 0;
+            } else {
+                r.rc.telemetry_interval = 0;
+            }
+            build(&r, 1, seed);
+            tsim_net_start(r.net);
+            tsim_sched_run_until(r.sched, run);
+            uint64_t n = frames(&r, 0, TSIM_PURPOSE_ANNOUNCE);
+            CHECK(n >= cases[i].lo && n <= cases[i].hi);
+            CHECK_EQ_I64(tsim_net_ledger(r.net, 0)->airtime[TSIM_PURPOSE_ANNOUNCE],
+                         (tsim_time)n * airtime(cases[i].len));
+            rig_close(&r);
+        }
+    }
+}
+
+/* 50 clients that all hear each other count 50 nodes, so a client sends position every
+ * 15 min x (1 + 10 x 0.075) = 26.25 min - unless its database holds only 30, when it counts 30
+ * and sends every 12 min. Positions are the only kind on, and none asks for NodeInfo once the
+ * database is full; the full one fills at once. */
+static void a_client_stretches_its_intervals_by_the_nodes_it_hears(void) {
+    uint16_t dbs[] = {100, 30};
+    uint64_t lo[] = {13, 29}, hi[] = {14, 30};
+    for (int i = 0; i < 2; i++) {
+        struct rig r;
+        background_rig(&r);
+        r.rc.position_interval = 0;
+        r.rc.nodedb_max = dbs[i];
+        clique_of(&r, 50, 1);
+        tsim_sched_run_until(r.sched, TSIM_S(2 * 3600));
+        struct tsim_ledger before = *tsim_net_ledger(r.net, 7);
+        tsim_sched_run_until(r.sched, TSIM_S(8 * 3600));
+        const struct tsim_ledger *after = tsim_net_ledger(r.net, 7);
+        tsim_time position = airtime(52), nodeinfo = airtime(100);
+        uint64_t n = after->frames[TSIM_PURPOSE_ANNOUNCE] - before.frames[TSIM_PURPOSE_ANNOUNCE];
+        tsim_time a = after->airtime[TSIM_PURPOSE_ANNOUNCE] - before.airtime[TSIM_PURPOSE_ANNOUNCE];
+        /* n positions and NodeInfos, told apart by their airtime. */
+        uint64_t infos = (uint64_t)((a - (tsim_time)n * position) / (nodeinfo - position));
+        CHECK_EQ_I64((tsim_time)(n - infos) * position + (tsim_time)infos * nodeinfo, a);
+        CHECK(n - infos >= lo[i] && n - infos <= hi[i]);
+        rig_close(&r);
+    }
+}
+
+/* Node 1 broadcasts nearly all the time, so node 0's channel is over 25% busy: it holds its
+ * positions back until the channel clears, and then sends them again. */
+static void a_busy_channel_holds_position_back(void) {
+    struct rig r;
+    background_rig(&r);
+    r.rc.position_interval = TSIM_S(60);
+    clique_of(&r, 2, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(600));
+    uint64_t quiet = frames(&r, 0, TSIM_PURPOSE_ANNOUNCE);
+    CHECK(quiet >= 15); /* every 36 s, from somewhere in the first minute; and one NodeInfo */
+    for (tsim_time t = TSIM_S(600); t < TSIM_S(1800); t += TSIM_MS(500)) {
+        tsim_sched_run_until(r.sched, t);
+        tsim_net_originate(r.net, 1, TSIM_BROADCAST, 200);
+    }
+    tsim_sched_run_until(r.sched, TSIM_S(1800));
+    /* What was due as the noise began may still go: at most the minute's worth of the window. */
+    CHECK(frames(&r, 0, TSIM_PURPOSE_ANNOUNCE) <= quiet + 2);
+    uint64_t busy = frames(&r, 0, TSIM_PURPOSE_ANNOUNCE);
+    tsim_sched_run_until(r.sched, TSIM_S(2400));
+    CHECK(frames(&r, 0, TSIM_PURPOSE_ANNOUNCE) >= busy + 10);
+    rig_close(&r);
+}
+
+/* Node 0 hears a message from node 1, whose NodeInfo it has not had: it sends its own, asking for
+ * one back, and node 1 answers. After that neither asks again. A router never asks, and nor does
+ * a client whose database is full - 2 holds only itself and the first node it hears. */
+static void a_client_asks_a_node_it_does_not_know_for_its_nodeinfo(void) {
+    struct rig r;
+    background_rig(&r);
+    clique_of(&r, 2, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(1));
+    tsim_net_originate(r.net, 1, TSIM_BROADCAST, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(60));
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_ANNOUNCE), 1);
+    CHECK_EQ_U64(frames(&r, 1, TSIM_PURPOSE_ANNOUNCE), 1);
+    CHECK_EQ_I64(tsim_net_ledger(r.net, 1)->airtime[TSIM_PURPOSE_ANNOUNCE], airtime(100));
+    tsim_sched_run_until(r.sched, TSIM_S(900));
+    tsim_net_originate(r.net, 1, TSIM_BROADCAST, 20);
+    tsim_net_originate(r.net, 0, TSIM_BROADCAST, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(1000));
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_ANNOUNCE), 1);
+    CHECK_EQ_U64(frames(&r, 1, TSIM_PURPOSE_ANNOUNCE), 1);
+    rig_close(&r);
+
+    for (int i = 0; i < 2; i++) {
+        background_rig(&r);
+        if (i == 0) {
+            r.rc.role = TSIM_MESHTASTIC_ROUTER;
+        } else {
+            r.rc.nodedb_max = 2;
+        }
+        clique_of(&r, 2, 1);
+        tsim_sched_run_until(r.sched, TSIM_S(1));
+        tsim_net_originate(r.net, 1, TSIM_BROADCAST, 20);
+        tsim_sched_run_until(r.sched, TSIM_S(60));
+        CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_ANNOUNCE), 0);
+        rig_close(&r);
+    }
+}
+
+/* Background packets are flooded like any broadcast, and charged as announces. */
+static void background_packets_are_passed_on_as_announces(void) {
+    struct rig r;
+    background_rig(&r);
+    r.rc.hop_limit = 3;
+    r.rc.nodedb_max = 2; /* no NodeInfo asked for */
+    r.rc.telemetry_interval = TSIM_S(3600);
+    line(&r, 5, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(3600));
+    /* Each node's one telemetry, and its neighbours passing it on. */
+    uint64_t all = 0;
+    for (uint32_t i = 0; i < 5; i++) {
+        all += frames(&r, i, TSIM_PURPOSE_ANNOUNCE);
+        CHECK_EQ_U64(frames(&r, i, TSIM_PURPOSE_RELAY), 0);
+    }
+    CHECK(all > 5);
+    rig_close(&r);
+}
+
 static void bad_configs_are_refused(void) {
     struct rig r;
     struct tsim_net_params p = tsim_net_defaults(1);
@@ -626,6 +810,18 @@ static void bad_configs_are_refused(void) {
     CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
     rig_init(&r);
     r.rc.relay_pick = 3; /* picked, but no set to say by whom */
+    CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
+    rig_init(&r);
+    r.rc.background = true;
+    r.rc.cancel_late = true; /* its frames would no longer share one priority */
+    CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
+    rig_init(&r);
+    r.rc.background = true;
+    r.rc.nodedb_max = 1;
+    CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
+    rig_init(&r);
+    r.rc.background = true;
+    r.rc.position_share = 1.5;
     CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
     tsim_sched_destroy(sched);
 }
@@ -689,6 +885,12 @@ int main(void) {
     RUN(cancelling_late_waits_for_the_frames_turn);
     RUN(an_acknowledgement_takes_back_every_queued_copy_now_or_late);
     RUN(a_seed_repeats_a_run);
+    RUN(the_throttle_follows_the_preset);
+    RUN(a_lone_client_sends_each_kind_at_its_interval);
+    RUN(a_client_stretches_its_intervals_by_the_nodes_it_hears);
+    RUN(a_busy_channel_holds_position_back);
+    RUN(a_client_asks_a_node_it_does_not_know_for_its_nodeinfo);
+    RUN(background_packets_are_passed_on_as_announces);
     RUN(bad_configs_are_refused);
     RUN(the_longest_window_fits_the_clock);
     RUN(destroy_mid_flood_leaves_the_scheduler_runnable);

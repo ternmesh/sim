@@ -63,8 +63,22 @@
  *
  * Repeaters also send a zero-hop advert, an announce of 123 bytes, every advert_interval. The first
  * goes at a random point of the first interval rather than at boot, so the nodes of a run do not
- * all announce at once. The 47-hour flood advert, and adverts from companions, which the app sends
- * on demand, are not sent; every node knows every other's key from the start.
+ * all announce at once. Every node knows every other's key from the start, so adverts only cost
+ * airtime: nothing waits for one.
+ *
+ * Background traffic, if `background` is set:
+ *
+ *  - each repeater floods an advert every flood_advert_interval, 47 hours as the firmware ships
+ *    (examples/simple_repeater/MyMesh.cpp), first at a random point of the interval, as though it
+ *    booted at a random time before the run; it goes at the firmware's priority for a flooded
+ *    advert, behind everything else, and restarts the zero-hop advert's interval, as the firmware
+ *    does so the two do not overlap;
+ *  - each companion sends an advert every companion_advert_interval, flooded if
+ *    companion_advert_flood, zero-hop otherwise. The companion firmware has no timer for it: the
+ *    app sends one when its user asks, so there is no firmware default, and it is off unless set.
+ *
+ * Repeaters do not relay a flooded advert that has come flood_max_advert hops: 8, as the firmware
+ * ships. It is checked with flood_max, and matters only once background floods adverts.
  *
  * A flood stops at 63 hops, the most its six-bit count holds, whatever flood_max says. MeshCore
  * lets a flood_max of 64 write a 64th hop into the hash size's bits, which garbles the frame.
@@ -140,11 +154,18 @@ struct tsim_meshcore_config {
      * is reckoned from: 0 for the radio's, as on real hardware; 1 to 4 to reproduce MeshBench,
      * whose firmware estimates at 4/5 whatever the air runs at. */
     uint8_t estimate_cr;
+    uint8_t flood_max_advert; /* 1..64 */
+    /* Background traffic, as described above; off by default. */
+    bool background;
+    tsim_time flood_advert_interval;     /* or 0 for none */
+    tsim_time companion_advert_interval; /* or 0 for none */
+    bool companion_advert_flood;
 };
 
 /* MeshCore 1.17's defaults: every node a relay, 1-byte hashes, scoped floods, no receive delay,
- * tx_delay_factor 0.5, direct_tx_delay_factor 0.3, a flood limit of 64, three retries and a
- * two-minute advert. */
+ * tx_delay_factor 0.5, direct_tx_delay_factor 0.3, a flood limit of 64 and of 8 for adverts,
+ * three retries and a two-minute advert. Background traffic is off; on, repeaters flood an advert
+ * every 47 hours and companions send none. */
 struct tsim_meshcore_config tsim_meshcore_default(uint16_t channel, const struct tsim_lora *lora,
                                                   double tx_dbm);
 

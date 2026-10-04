@@ -198,15 +198,41 @@ const struct tsim_mac tsim_meshtastic_mac = {
 #define FLAG_WANT_ACK 0x08u
 #define FLAG_HOP_START_SHIFT 5
 
-/* What the payload is. The numbers are the firmware's port numbers for text and for routing. */
+/* What the payload is. The numbers are the firmware's port numbers. */
 #define PORT_TEXT 1
+#define PORT_POSITION 3
+#define PORT_NODEINFO 4
 #define PORT_ROUTING 5
+#define PORT_TELEMETRY 67
 
 #define ACK_LEN (TSIM_MESHTASTIC_OVERHEAD + 4)
 
 /* Message ids are the network's, from 1. A node numbers its acknowledgements with the top bit set,
- * so its two kinds of packet never share an id. */
+ * and its background packets with the next, so its kinds of packet never share an id. */
 #define ACK_ID_BIT (1u << 31)
+#define BG_ID_BIT (1u << 30)
+
+/* Background traffic: see the header. */
+enum { BG_NODEINFO, BG_POSITION, BG_TELEMETRY, BG_KINDS };
+
+static const uint8_t bg_port[BG_KINDS] = {PORT_NODEINFO, PORT_POSITION, PORT_TELEMETRY};
+
+/* The whole frame. NodeInfo's user record: an id of 9 characters, a long name of 15 and a short
+ * one of 4, the 6-byte MAC address, the hardware model and the 32-byte public key, 78 bytes.
+ * Position with the default flags from a GPS, about 30: latitude, longitude, altitude, time,
+ * source, dilution, speed, heading, satellites and precision. Device telemetry, 28: time,
+ * battery, voltage, both utilisations and uptime. Each in a Data of 6 bytes more - the port, the
+ * payload's length and the bitfield - behind the 16-byte header. */
+static const uint32_t bg_frame_len[BG_KINDS] = {100, 52, 50};
+
+#define BG_WANT_RESPONSE 0x01 /* in NodeInfo's first byte: the Data's want_response */
+
+#define CU_PERIOD TSIM_S(10)
+#define CU_PERIODS 6
+#define ONLINE_WINDOW TSIM_S(2 * 60 * 60)
+#define ONLINE_REFRESH TSIM_S(5 * 60)
+#define NODEINFO_HOLD TSIM_S(5 * 60)
+#define NEVER INT64_MAX
 
 static void put32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)v;
@@ -255,6 +281,22 @@ struct router {
     size_t withdrawn_count;
     size_t withdrawn_cap;
     uint64_t last_sent; /* the handle of its last frame to go on the air */
+    /* Background traffic. */
+    struct tsim_rng rng;
+    struct tsim_timer *tick;       /* every CU_PERIOD, from the node's own offset */
+    tsim_time busy_at[CU_PERIODS]; /* the busy time at the start of each of the last periods */
+    uint64_t periods;              /* periods begun */
+    tsim_time due[BG_KINDS];       /* when to look at each next */
+    tsim_time last[BG_KINDS];      /* when each last went, as the firmware reckons it */
+    tsim_time retry[BG_KINDS];     /* held back: not to look again before */
+    tsim_time nodeinfo_sent;       /* when it last sent a NodeInfo, or -1 */
+    uint64_t nodeinfo_handle;      /* that NodeInfo, while it may still be queued */
+    tsim_time *seen;               /* by node, when it last heard from it, or -1 */
+    uint8_t *has_user;             /* by node, whether it has had its NodeInfo */
+    uint32_t known;                /* the nodes it has ever heard from */
+    uint32_t online;               /* as last counted, itself included */
+    tsim_time online_at;           /* when, or -1 */
+    uint32_t next_bg;
 };
 
 struct tsim_meshtastic_config tsim_meshtastic_default(uint16_t channel,
@@ -271,7 +313,30 @@ struct tsim_meshtastic_config tsim_meshtastic_default(uint16_t channel,
         .retries = 3,
         .processing = TSIM_MS(4500),
         .window = tsim_meshtastic_window_default(lora),
+        .position_share = 1,
+        .nodedb_max = 100,
+        .throttle = tsim_meshtastic_throttle(lora),
     };
+}
+
+double tsim_meshtastic_throttle(const struct tsim_lora *lora) {
+    if (lora->bw_hz == 250000) {
+        switch (lora->sf) {
+        case 7:
+        case 8:
+            return 0.01;
+        case 9:
+            return 0.02;
+        case 10:
+            return 0.04;
+        default:
+            break;
+        }
+    }
+    if (lora->bw_hz == 500000 && lora->sf == 7) {
+        return 0.01;
+    }
+    return 0.075;
 }
 
 static size_t slot_of(uint64_t key, size_t cap) {
@@ -319,6 +384,7 @@ static struct tsim_tx frame_for(const struct router *r, enum tsim_purpose purpos
         .lora = r->config.lora,
         .tx_dbm = r->config.tx_dbm,
         .purpose = purpose,
+        .priority = 1, /* ahead of the node's own background traffic, at 0 */
     };
 }
 
@@ -349,8 +415,9 @@ static tsim_time ack_wait(const struct router *r, const struct tsim_tx *tx) {
 }
 
 /* Takes back a frame the routing no longer wants: now, or, cancelling late, when the MAC comes to
- * send it. Its frames share one priority, so they leave the queue in the order they were queued,
- * and a handle no later than the last sent is no longer queued. */
+ * send it. Its frames share one priority - background traffic, the one exception, is refused with
+ * cancel_late - so they leave the queue in the order they were queued, and a handle no later than
+ * the last sent is no longer queued. */
 static void withdraw(struct router *r, uint64_t handle) {
     if (!r->config.cancel_late) {
         tsim_node_cancel(r->node, handle);
@@ -431,7 +498,7 @@ static void acknowledged(struct router *r, uint32_t id) {
 
 static bool router_originate(void *self, const struct tsim_message *msg) {
     struct router *r = self;
-    if (msg->len > TSIM_FRAME_MAX - TSIM_MESHTASTIC_OVERHEAD || msg->id >= ACK_ID_BIT) {
+    if (msg->len > TSIM_FRAME_MAX - TSIM_MESHTASTIC_OVERHEAD || msg->id >= BG_ID_BIT) {
         return false; /* one frame or nothing, and an id the header can carry */
     }
     uint32_t id = (uint32_t)msg->id;
@@ -474,6 +541,160 @@ static void send_ack(struct router *r, uint32_t to, uint32_t id) {
     tsim_node_send(r->node, &tx);
 }
 
+/* --- Background traffic --- */
+
+static tsim_time busy(const struct router *r) {
+    return tsim_node_tx_airtime(r->node) + tsim_node_rx_airtime(r->node);
+}
+
+/* The firmware's channel utilisation, as a percentage: the busy time in the current period and the
+ * five before it, over a minute. */
+static double recent_utilisation(const struct router *r) {
+    uint64_t current = r->periods - 1;
+    tsim_time from =
+        current >= CU_PERIODS - 1 ? r->busy_at[(current - (CU_PERIODS - 1)) % CU_PERIODS] : 0;
+    return (double)(busy(r) - from) / (double)(CU_PERIODS * CU_PERIOD) * 100.0;
+}
+
+/* The nodes heard from in the last two hours, as many as the database holds, and itself. */
+static uint32_t online(struct router *r) {
+    tsim_time now = tsim_node_now(r->node);
+    if (r->online_at >= 0 && now - r->online_at < ONLINE_REFRESH) {
+        return r->online;
+    }
+    uint32_t n = 0;
+    uint32_t nodes = tsim_node_count(r->node);
+    for (uint32_t i = 0; i < nodes; i++) {
+        n += r->seen[i] >= 0 && now - r->seen[i] < ONLINE_WINDOW;
+    }
+    uint32_t others = r->config.nodedb_max - 1u;
+    r->online = (n < others ? n : others) + 1;
+    r->online_at = now;
+    return r->online;
+}
+
+static double stretch(const struct router *r, uint32_t n) {
+    return n <= 10   ? 0.6
+           : n <= 20 ? 0.7
+           : n <= 30 ? 0.8
+           : n <= 40 ? 1.0
+                     : 1.0 + (double)(n - 40) * r->config.throttle;
+}
+
+static bool is_router(const struct router *r) { return r->config.role == TSIM_MESHTASTIC_ROUTER; }
+
+/* Intervals are held to a quarter of the clock, so a time plus one never overflows. */
+static tsim_time capped(double t) {
+    return t < (double)TSIM_MESHTASTIC_WAIT_MAX ? (tsim_time)t : TSIM_MESHTASTIC_WAIT_MAX;
+}
+
+static tsim_time base_interval(const struct router *r, int kind) {
+    const struct tsim_meshtastic_config *c = &r->config;
+    tsim_time half_day = TSIM_S(12 * 60 * 60);
+    tsim_time t;
+    switch (kind) {
+    case BG_NODEINFO:
+        t = c->nodeinfo_interval ? c->nodeinfo_interval : TSIM_S(3 * 60 * 60);
+        break;
+    case BG_POSITION:
+        t = c->position_interval ? c->position_interval : is_router(r) ? half_day : TSIM_S(15 * 60);
+        break;
+    default:
+        t = c->telemetry_interval ? c->telemetry_interval
+            : is_router(r)        ? half_day
+                                  : TSIM_S(60 * 60);
+        break;
+    }
+    return capped((double)t);
+}
+
+/* The interval as the firmware has it now: stretched, for a client's position and telemetry. */
+static tsim_time interval(struct router *r, int kind) {
+    tsim_time base = base_interval(r, kind);
+    if (kind == BG_NODEINFO || is_router(r)) {
+        return base;
+    }
+    return capped((double)base * stretch(r, online(r)));
+}
+
+static uint64_t send_bg(struct router *r, int kind, uint32_t to, uint8_t flags) {
+    struct tsim_tx tx = frame_for(r, TSIM_PURPOSE_ANNOUNCE);
+    tx.priority = 0;
+    header(&tx, r, to, BG_ID_BIT | (r->next_bg++ & (BG_ID_BIT - 1)), false, bg_port[kind]);
+    tx.bytes[TSIM_MESHTASTIC_OVERHEAD] = flags;
+    tx.len = bg_frame_len[kind];
+    return tsim_node_send(r->node, &tx);
+}
+
+/* NodeInfo, as allocReply() lets it go: under 40% utilisation, and not within 5 min of the last.
+ * One still queued is taken back first, as stale. */
+static void send_nodeinfo(struct router *r, uint32_t to, bool want_response) {
+    tsim_time now = tsim_node_now(r->node);
+    if (recent_utilisation(r) >= 40 ||
+        (r->nodeinfo_sent >= 0 && now - r->nodeinfo_sent < NODEINFO_HOLD)) {
+        return;
+    }
+    if (r->nodeinfo_handle) {
+        tsim_node_cancel(r->node, r->nodeinfo_handle);
+    }
+    r->nodeinfo_sent = now;
+    r->nodeinfo_handle = send_bg(r, BG_NODEINFO, to, want_response ? BG_WANT_RESPONSE : 0);
+}
+
+static void bg_tick(void *ctx) {
+    struct router *r = ctx;
+    tsim_time now = tsim_node_now(r->node);
+    r->busy_at[r->periods % CU_PERIODS] = busy(r);
+    r->periods++;
+    tsim_timer_start(r->tick, CU_PERIOD);
+    for (int k = 0; k < BG_KINDS; k++) {
+        if (now < r->due[k] || now < r->retry[k]) {
+            continue;
+        }
+        if (k == BG_NODEINFO) {
+            r->due[k] = now + base_interval(r, k);
+            send_nodeinfo(r, TSIM_BROADCAST, false);
+            continue;
+        }
+        /* Looked at again within ONLINE_REFRESH, so a count that falls brings it forward. */
+        tsim_time every = interval(r, k);
+        tsim_time next = r->last[k] + every;
+        if (now < next) {
+            r->due[k] = next < now + ONLINE_REFRESH ? next : now + ONLINE_REFRESH;
+            continue;
+        }
+        double limit = k == BG_TELEMETRY && is_router(r) ? 40 : 25;
+        if (recent_utilisation(r) >= limit) {
+            r->retry[k] = now + (k == BG_POSITION ? TSIM_S(5) : TSIM_S(60));
+            continue;
+        }
+        r->last[k] = now;
+        r->due[k] = now + (every < ONLINE_REFRESH ? every : ONLINE_REFRESH);
+        send_bg(r, k, TSIM_BROADCAST, 0);
+    }
+}
+
+/* What the firmware's database learns from a packet first heard from `from`, for everyone or for
+ * this node - it learns nothing from those it only passes on; and, for a client that has not had
+ * that node's NodeInfo, its own sent to it. */
+static void heard_from(struct router *r, uint32_t from, uint8_t port) {
+    if (from >= tsim_node_count(r->node)) {
+        return;
+    }
+    if (r->seen[from] < 0) {
+        r->known++;
+    }
+    r->seen[from] = tsim_node_now(r->node);
+    if (port == PORT_NODEINFO) {
+        r->has_user[from] = 1;
+        return;
+    }
+    bool full = r->known + 1 >= r->config.nodedb_max;
+    if (!r->has_user[from] && !is_router(r) && !full && recent_utilisation(r) < 25) {
+        send_nodeinfo(r, from, true);
+    }
+}
+
 static void router_rx(void *self, const struct tsim_rx *rx) {
     struct router *r = self;
     if (rx->len < TSIM_MESHTASTIC_OVERHEAD) {
@@ -484,8 +705,10 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
     uint32_t from = get32(b + AT_FROM);
     uint32_t id = get32(b + AT_ID);
     uint8_t hops = b[AT_FLAGS] & FLAG_HOPS;
-    bool data = b[AT_PORT] == PORT_TEXT;
-    bool ack = b[AT_PORT] == PORT_ROUTING && rx->len >= ACK_LEN;
+    uint8_t port = b[AT_PORT];
+    bool data = port == PORT_TEXT;
+    bool ack = port == PORT_ROUTING && rx->len >= ACK_LEN;
+    bool bg = port == PORT_NODEINFO || port == PORT_POSITION || port == PORT_TELEMETRY;
 
     if (from == r->self) {
         if (data) {
@@ -510,6 +733,9 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
         }
         return;
     }
+    if (r->config.background && (to == r->self || to == TSIM_BROADCAST)) {
+        heard_from(r, from, port);
+    }
 
     if (to == r->self) {
         if (data) {
@@ -519,16 +745,22 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
             }
         } else if (ack) {
             acknowledged(r, get32(b + TSIM_MESHTASTIC_OVERHEAD));
+        } else if (port == PORT_NODEINFO && r->config.background &&
+                   rx->len > TSIM_MESHTASTIC_OVERHEAD &&
+                   (b[TSIM_MESHTASTIC_OVERHEAD] & BG_WANT_RESPONSE)) {
+            send_nodeinfo(r, from, false); /* the answer */
         }
         return;
     }
     if (data && to == TSIM_BROADCAST) {
         tsim_node_deliver(r->node, id);
     }
-    if (hops == 0 || r->config.role == TSIM_MESHTASTIC_CLIENT_MUTE || !(data || ack)) {
+    if (hops == 0 || r->config.role == TSIM_MESHTASTIC_CLIENT_MUTE || !(data || ack || bg)) {
         return;
     }
-    struct tsim_tx tx = frame_for(r, data ? TSIM_PURPOSE_RELAY : TSIM_PURPOSE_CONTROL);
+    struct tsim_tx tx = frame_for(r, data ? TSIM_PURPOSE_RELAY
+                                     : bg ? TSIM_PURPOSE_ANNOUNCE
+                                          : TSIM_PURPOSE_CONTROL);
     memcpy(tx.bytes, b, rx->len);
     tx.len = rx->len;
     tx.bytes[AT_FLAGS] = (uint8_t)((b[AT_FLAGS] & ~FLAG_HOPS) | (hops - 1));
@@ -583,7 +815,11 @@ static void *router_create(struct tsim_node *node, const void *config) {
     if (c->hop_limit > TSIM_MESHTASTIC_HOPS_MAX || c->processing < 0 ||
         c->processing > TSIM_MESHTASTIC_WAIT_MAX || !tsim_meshtastic_window_valid(&c->window) ||
         (unsigned)c->role > TSIM_MESHTASTIC_ROUTER || (c->relay_pick && !c->relay_set) ||
-        (!isnan(c->noise_dbm) && !(fabs(c->noise_dbm) <= 1e3))) {
+        (!isnan(c->noise_dbm) && !(fabs(c->noise_dbm) <= 1e3)) ||
+        (c->background &&
+         (c->cancel_late || c->nodeinfo_interval < 0 || c->position_interval < 0 ||
+          c->telemetry_interval < 0 || !(c->position_share >= 0 && c->position_share <= 1) ||
+          c->nodedb_max < 2 || c->nodedb_max > 250 || !(c->throttle >= 0 && c->throttle <= 1)))) {
         return NULL;
     }
     struct router *r = calloc(1, sizeof *r);
@@ -596,7 +832,45 @@ static void *router_create(struct tsim_node *node, const void *config) {
     if (c->relay_pick && c->relay_set[r->self]) {
         r->config.role = TSIM_MESHTASTIC_ROUTER;
     }
+    if (c->background) {
+        uint32_t nodes = tsim_node_count(node);
+        r->seen = malloc(nodes * sizeof *r->seen);
+        r->has_user = calloc(nodes, 1);
+        r->tick = tsim_timer_create(node, bg_tick, r);
+        if (!r->seen || !r->has_user || !r->tick) {
+            tsim_timer_destroy(r->tick);
+            free(r->seen);
+            free(r->has_user);
+            free(r);
+            return NULL;
+        }
+        for (uint32_t i = 0; i < nodes; i++) {
+            r->seen[i] = -1;
+        }
+        r->nodeinfo_sent = -1;
+        r->online_at = -1;
+        tsim_node_rng(node, TSIM_STREAM_ROUTING, &r->rng);
+    }
     return r;
+}
+
+/* Background traffic: booted at a random time before the run, so each kind first goes at a random
+ * point of its interval, and the utilisation's periods start at a random offset. */
+static void router_start(void *self) {
+    struct router *r = self;
+    if (!r->config.background) {
+        return;
+    }
+    tsim_timer_start(r->tick, (tsim_time)tsim_rng_below(&r->rng, (uint64_t)CU_PERIOD));
+    r->periods = 1; /* the one under way at the start, from no busy time */
+    bool position = tsim_rng_unit(&r->rng) < r->config.position_share;
+    for (int k = 0; k < BG_KINDS; k++) {
+        r->due[k] = (tsim_time)tsim_rng_below(&r->rng, (uint64_t)base_interval(r, k));
+        r->last[k] = INT64_MIN / 2; /* long enough ago that the first goes when due */
+    }
+    if (!position) {
+        r->due[BG_POSITION] = NEVER;
+    }
 }
 
 static void router_destroy(void *self) {
@@ -606,6 +880,9 @@ static void router_destroy(void *self) {
     }
     free(r->heard);
     free(r->withdrawn);
+    tsim_timer_destroy(r->tick);
+    free(r->seen);
+    free(r->has_user);
     free(r);
 }
 
@@ -613,6 +890,7 @@ const struct tsim_routing tsim_meshtastic = {
     .name = "meshtastic",
     .create = router_create,
     .destroy = router_destroy,
+    .start = router_start,
     .originate = router_originate,
     .rx = router_rx,
     .tx_done = router_tx_done,

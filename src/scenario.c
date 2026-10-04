@@ -357,12 +357,43 @@ static const char *meshtastic_set(void *config, const char *key, const char *val
         }
         return c->processing <= TSIM_MESHTASTIC_WAIT_MAX ? NULL : "is too long for the clock";
     }
+    if (strcmp(key, "background") == 0) {
+        return parse_yes_no(value, &c->background) ? NULL : "expected yes or no";
+    }
+    tsim_time *every = strcmp(key, "nodeinfo_interval") == 0    ? &c->nodeinfo_interval
+                       : strcmp(key, "position_interval") == 0  ? &c->position_interval
+                       : strcmp(key, "telemetry_interval") == 0 ? &c->telemetry_interval
+                                                                : NULL;
+    if (every) {
+        if (strcmp(value, "default") == 0) {
+            *every = 0;
+            return NULL;
+        }
+        return parse_time(value, every) && *every > 0 ? NULL
+                                                      : "expected a time above 0, or default";
+    }
+    if (strcmp(key, "position_share") == 0) {
+        return parse_fraction(value, &c->position_share) ? NULL : "expected a fraction from 0 to 1";
+    }
+    if (strcmp(key, "nodedb_max") == 0) {
+        if (!parse_u64(value, 250, &v) || v < 2) {
+            return "expected a count from 2 to 250";
+        }
+        c->nodedb_max = (uint16_t)v;
+        return NULL;
+    }
+    if (strcmp(key, "throttle") == 0) {
+        return parse_fraction(value, &c->throttle) ? NULL : "expected a fraction from 0 to 1";
+    }
     return "is not a setting of meshtastic";
 }
 
 static const char *meshtastic_check(const void *config) {
     const struct tsim_meshtastic_config *c = config;
     const char *why = relay_pick_check(c->relay_pick, c->relay_count);
+    if (!why && c->background && c->cancel_late) {
+        why = "background and cancel_late cannot be used together";
+    }
     return why ? why : window_check(&c->window);
 }
 
@@ -470,6 +501,30 @@ static const char *meshcore_set(void *config, const char *key, const char *value
         return parse_time(value, &c->advert_interval) && c->advert_interval > 0
                    ? NULL
                    : "expected a time above 0, or none";
+    }
+    if (strcmp(key, "flood_max_advert") == 0) {
+        if (!parse_u64(value, 64, &v) || v == 0) {
+            return "expected a hop count from 1 to 64";
+        }
+        c->flood_max_advert = (uint8_t)v;
+        return NULL;
+    }
+    if (strcmp(key, "background") == 0) {
+        return parse_yes_no(value, &c->background) ? NULL : "expected yes or no";
+    }
+    tsim_time *every = strcmp(key, "flood_advert_interval") == 0 ? &c->flood_advert_interval
+                       : strcmp(key, "companion_advert_interval") == 0
+                           ? &c->companion_advert_interval
+                           : NULL;
+    if (every) {
+        if (strcmp(value, "none") == 0) {
+            *every = 0;
+            return NULL;
+        }
+        return parse_time(value, every) && *every > 0 ? NULL : "expected a time above 0, or none";
+    }
+    if (strcmp(key, "companion_advert_flood") == 0) {
+        return parse_yes_no(value, &c->companion_advert_flood) ? NULL : "expected yes or no";
     }
     if (strcmp(key, "cancel_heard") == 0) {
         static const char *const names[] = {"no", "waiting", "queued"};

@@ -219,6 +219,19 @@ static void problems_say_where_they_are(void) {
          "relay_count is 0"},
         {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.relay_pick = spaced\n", 0,
          "relay_count is 0"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.background = maybe\n", 4,
+         "yes or no"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.nodedb_max = 1\n", 4,
+         "a count from 2 to 250"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.position_interval = 0 s\n", 4,
+         "or default"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.background = yes\n"
+         "routing.cancel_late = yes\n",
+         0, "background and cancel_late cannot be used together"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.flood_max_advert = 0\n", 4,
+         "a hop count from 1 to 64"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.companion_advert_interval = 0 s\n",
+         4, "or none"},
         {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.relay_pick = cds\n"
          "routing.relay_count = 3\n",
          0, "relay_count is 3, more than the 2 nodes"},
@@ -833,6 +846,42 @@ static void a_run_repeats_with_its_seed(void) {
     CHECK(!same_report(&a, &c));
 }
 
+/* Background traffic's settings, for both incumbents. */
+static void background_settings_read(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 2\nradio.sf = 9\nradio.bw = 250000\nrouting = meshtastic\n"
+                    "mac = meshtastic\n"));
+    const struct tsim_meshtastic_config *t = meshtastic_of(&s);
+    CHECK(!t->background && t->nodeinfo_interval == 0 && t->position_interval == 0);
+    CHECK(t->telemetry_interval == 0 && t->position_share == 1 && t->nodedb_max == 100);
+    CHECK(t->throttle == 0.02); /* MediumFast's */
+    CHECK(parse(&s, "nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.background = yes\n"
+                    "routing.nodeinfo_interval = 1 h\nrouting.position_interval = 2 h\n"
+                    "routing.telemetry_interval = 3 h\nrouting.position_share = 0.5\n"
+                    "routing.nodedb_max = 250\nrouting.throttle = 0.1\n"));
+    t = meshtastic_of(&s);
+    CHECK(t->background && t->nodeinfo_interval == TSIM_S(3600));
+    CHECK(t->position_interval == TSIM_S(7200) && t->telemetry_interval == TSIM_S(10800));
+    CHECK(t->position_share == 0.5 && t->nodedb_max == 250 && t->throttle == 0.1);
+    CHECK(parse(&s, "nodes = 2\nrouting = meshtastic\nmac = meshtastic\n"
+                    "routing.position_interval = 2 h\nrouting.position_interval = default\n"));
+    CHECK(meshtastic_of(&s)->position_interval == 0);
+
+    CHECK(parse(&s, "nodes = 2\nrouting = meshcore\nmac = meshcore\n"));
+    const struct tsim_meshcore_config *c = meshcore_of(&s);
+    CHECK(!c->background && c->flood_advert_interval == TSIM_S(47 * 3600));
+    CHECK(c->companion_advert_interval == 0 && !c->companion_advert_flood);
+    CHECK(c->flood_max_advert == 8);
+    CHECK(parse(&s, "nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.background = yes\n"
+                    "routing.flood_advert_interval = none\n"
+                    "routing.companion_advert_interval = 12 h\n"
+                    "routing.companion_advert_flood = yes\nrouting.flood_max_advert = 3\n"));
+    c = meshcore_of(&s);
+    CHECK(c->background && c->flood_advert_interval == 0);
+    CHECK(c->companion_advert_interval == TSIM_S(12 * 3600) && c->companion_advert_flood);
+    CHECK(c->flood_max_advert == 3);
+}
+
 int main(void) {
     RUN(the_documented_example_parses);
     RUN(every_value_kind_reads);
@@ -856,6 +905,7 @@ int main(void) {
     RUN(compatibility_settings_read);
     RUN(positions_read_from_text);
     RUN(meshcore_settings_read);
+    RUN(background_settings_read);
     RUN(sends_add_up_and_interval_none_stops_the_process);
     RUN(links_read_from_text);
     RUN(a_run_with_links_uses_them);
