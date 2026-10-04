@@ -632,17 +632,32 @@ static const char *distvec_set(void *config, const char *key, const char *value)
         strcpy(c->relays, value);
         return NULL;
     }
+    if (strcmp(key, "relay_pick") == 0 && strcmp(value, "elect") == 0) {
+        c->relay_pick = TSIM_DISTVEC_PICK_ELECT;
+        return NULL;
+    }
     const char *why = relay_pick_set(key, value, &c->relay_pick, &c->relay_count);
     if (why) {
         return *why ? why : NULL;
+    }
+    if (strcmp(key, "elect_cover") == 0) {
+        return distvec_count(value, 1, 8, &c->elect_cover);
+    }
+    if (strcmp(key, "elect_wait") == 0) {
+        return distvec_time(value, false, &c->elect_wait);
+    }
+    if (strcmp(key, "elect_hold") == 0) {
+        return distvec_time(value, true, &c->elect_hold);
     }
     if (strcmp(key, "leaves") == 0) {
         if (strcmp(value, "routed") == 0) {
             c->leaves = TSIM_DISTVEC_LEAVES_ROUTED;
         } else if (strcmp(value, "parent_oracle") == 0) {
             c->leaves = TSIM_DISTVEC_LEAVES_PARENT_ORACLE;
+        } else if (strcmp(value, "parent") == 0) {
+            c->leaves = TSIM_DISTVEC_LEAVES_PARENT;
         } else {
-            return "expected routed or parent_oracle";
+            return "expected routed, parent_oracle or parent";
         }
         return NULL;
     }
@@ -1466,6 +1481,14 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
         ok = fail(err, 0,
                   "move.share: the oracle's routes are built once, from where the nodes start");
     }
+    /* Elected relays are not known when churn and movement pick their nodes, at the start. */
+    if (ok && dv && dv->relay_pick == TSIM_DISTVEC_PICK_ELECT &&
+        ((s->churn_share > 0 && s->churn_nodes != TSIM_CHURN_ALL) ||
+         (s->move_share > 0 && s->move_nodes != TSIM_CHURN_ALL))) {
+        ok = fail(err, 0,
+                  "churn.nodes and move.nodes must be all with routing.relay_pick = elect: which "
+                  "nodes are relays is not known until they elect themselves");
+    }
     if (ok && pk.pick && *pk.pick != TSIM_DISTVEC_PICK_LIST && *pk.count > s->nodes) {
         ok = fail(err, 0, "routing.relay_count is %" PRIu32 ", more than the %" PRIu32 " nodes",
                   *pk.count, s->nodes);
@@ -1731,7 +1754,10 @@ static bool announces_start(struct announces *a, struct tsim_net *net,
         return false;
     }
     for (uint32_t i = 0; i < n; i++) {
-        a->watch[i] = tsim_distvec_relay(dv, i);
+        /* Elected relays are known only now, from the routers themselves. */
+        const void *r = tsim_net_routing(net, i);
+        a->watch[i] = dv->relay_pick == TSIM_DISTVEC_PICK_ELECT ? r && tsim_distvec_infra(r)
+                                                                : tsim_distvec_relay(dv, i);
         a->index[i] = a->watch[i] ? a->relays++ : UINT32_MAX;
     }
     size_t rr = (size_t)a->relays * a->relays;
@@ -1873,11 +1899,23 @@ static double relay_reach(struct tsim_net *net, const bool *relay) {
     return pairs ? (double)reach / (double)pairs : 0;
 }
 
+/* With relay_pick elect, which nodes are relays now: as they elected themselves. */
+static void elected(struct window *w) {
+    if (!w->dv || w->dv->relay_pick != TSIM_DISTVEC_PICK_ELECT) {
+        return;
+    }
+    for (uint32_t i = 0; i < tsim_net_nodes(w->net); i++) {
+        const void *r = tsim_net_routing(w->net, i);
+        w->relay[i] = r && tsim_distvec_infra(r);
+    }
+}
+
 static void begin_window(struct tsim_sched *sched, void *ctx) {
     (void)sched;
     struct window *w = ctx;
     tsim_metrics_begin(w->metrics);
     w->begun = tsim_sched_now(sched);
+    elected(w);
     if (w->dv) {
         distvec_sum(w->net, w->retired, &w->stats);
         w->relay_reach = relay_reach(w->net, w->relay);
@@ -1890,7 +1928,8 @@ static void begin_window(struct tsim_sched *sched, void *ctx) {
 }
 
 /* Candidate 3's health over the window, from its books now against the window's start. */
-static void health(const struct window *w, tsim_time end, struct tsim_route_health *h) {
+static void health(struct window *w, tsim_time end, struct tsim_route_health *h) {
+    elected(w);
     struct tsim_distvec_stats now;
     distvec_sum(w->net, w->retired, &now);
     double hours = (double)(end - w->begun) / (double)TSIM_S(3600);
@@ -2255,7 +2294,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
      * their own with the same losses. Meshcore's repeaters and meshtastic's routers are picked as
      * distvec's infrastructure is, over links at the radio's power and sites.sf and sites.bw. */
     struct picked pk = picked_of(s->routing->routing, routing_config);
-    if (pk.pick && *pk.pick != TSIM_DISTVEC_PICK_LIST) {
+    if (pk.pick && *pk.pick != TSIM_DISTVEC_PICK_LIST && *pk.pick != TSIM_DISTVEC_PICK_ELECT) {
         struct tsim_distvec_config by =
             dv ? *dv : tsim_distvec_default(np.channel, &s->radio.lora, s->radio.tx_dbm);
         by.relay_pick = *pk.pick;
@@ -2354,7 +2393,17 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     ok = !churn.failed && !moving.failed && !window.failed &&
          tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);
     if (ok && dv && (dv->relay_pick != TSIM_DISTVEC_PICK_LIST || strcmp(dv->relays, "all") != 0)) {
-        ok = tsim_distvec_tier(tsim_net_phy(net), dv, &report->relays);
+        uint8_t *now = NULL;
+        if (dv->relay_pick == TSIM_DISTVEC_PICK_ELECT) {
+            now = malloc(s->nodes);
+            for (uint32_t i = 0; now && i < s->nodes; i++) {
+                const void *r = tsim_net_routing(net, i);
+                now[i] = r && tsim_distvec_infra(r);
+            }
+        }
+        ok = (now || dv->relay_pick != TSIM_DISTVEC_PICK_ELECT) &&
+             tsim_distvec_tier(tsim_net_phy(net), dv, now, &report->relays);
+        free(now);
     }
 
 done:

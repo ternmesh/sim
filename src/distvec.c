@@ -57,6 +57,16 @@
 #define IHU_AGE_MAX 0x7FFFu
 
 #define FLAG_INFRA 0x01
+/* With relay_pick elect, an announce's head carries the relays its sender hears, its tier and the
+ * tier's hops, its score and its choice: see the header. */
+#define ELECT_LEN 11
+/* With leaves = parent, an announce's head carries its sender's parent and binding seq and how many
+ * bindings it lists, and each binding is a leaf, its parent and its seq: see the header. */
+#define BIND_HEAD 7
+#define BIND_LEN 10
+#define BIND_SLICE 2  /* bindings an announce repeats in turn, beside those changed */
+#define BIND_URGENT 8 /* changed bindings an announce carries, at most */
+#define TIER_NONE 0xFFFFFFFFu
 #define FLAG_SF_SHIFT 4 /* with per-link SF, bits 4-6 are the listening SF less 7 */
 /* Semtech's demodulation floors: each SF faster needs this much more SNR. */
 #define SF_STEP_DB 2.5
@@ -167,6 +177,24 @@ struct neighbour {
     tsim_time probe_due;   /* when the next probe goes, or the last is given up on; -1 queued */
     bool mute;             /* left the probe unanswered: unused until something is heard from it */
     uint8_t sf; /* with per-link SF, the SF it listens on, from its announces; 0 unknown */
+    /* With relay_pick elect, from its last announce: whether it said, when, the relays it hears
+     * and the tier it is in or next to. */
+    bool told;
+    tsim_time told_at;
+    uint8_t relays;
+    uint32_t tier;
+    uint8_t tier_hops;
+    uint8_t score;
+    uint32_t choice;
+};
+
+/* With leaves = parent, a leaf's parent as this node last heard of it. */
+struct binding {
+    uint32_t parent;
+    uint16_t seq;
+    bool known;
+    bool urgent; /* on the list of bindings to announce first */
+    bool listed; /* in the frame being built */
 };
 
 /* A frame sent to a next hop, waiting to hear the next hop pass it on. */
@@ -257,6 +285,32 @@ struct router {
     double ref_ms;                   /* the reference frame's airtime */
     double ref_ms_sf[TSIM_SF_COUNT]; /* ... at each SF, from SF7 */
     uint8_t listen_sf;               /* the SF it listens on */
+    /* With relay_pick elect: when it last changed role, and last heard a neighbour change its;
+     * the tier it announces and the relays it last said it hears; what it waits to do - stand for
+     * the leaves around it, to join tiers, or stand down - and since when it has seen two tiers. */
+    tsim_time role_at;
+    tsim_time relay_news;
+    tsim_time link_news; /* when a link last came up */
+    /* With leaves = parent: its own binding's seq, every leaf's binding as last heard, and the
+     * bindings changed and still to announce, which a relay announces first, then the rest in turn
+     * from `bind_cursor`. */
+    uint16_t bind_seq;
+    struct binding *bind;
+    uint32_t *bind_urgent;
+    size_t bind_urgent_count;
+    size_t bind_urgent_cap;
+    uint32_t bind_cursor;
+    uint32_t bind_known;
+    tsim_time started;
+    uint32_t tier;
+    uint8_t tier_hops;
+    uint8_t said_relays;
+    uint32_t said_tier;
+    uint8_t said_score;
+    uint32_t said_choice;
+    uint8_t elect_why;
+    tsim_time gap_since;
+    struct tsim_timer *elect_timer;
 
     uint16_t seq;     /* this node's own route */
     uint16_t ann_seq; /* its announces */
@@ -330,6 +384,8 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .lora = *lora,
         .tx_dbm = tx_dbm,
         .relays = "all",
+        .elect_cover = 1,
+        .elect_wait = TSIM_S(600),
         .leaves = TSIM_DISTVEC_LEAVES_ROUTED,
         .routes = TSIM_DISTVEC_ROUTES_PROACTIVE,
         .route_ttl = TSIM_S(10 * 60),
@@ -386,13 +442,20 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     if (memchr(c->relays, 0, sizeof c->relays) == NULL || tsim_nodeset_contains(c->relays, 0) < 0) {
         return "relays is not all, or node numbers and ranges";
     }
-    if (c->relay_pick > TSIM_DISTVEC_PICK_CDS ||
-        (c->relay_pick != TSIM_DISTVEC_PICK_LIST && c->relay_pick != TSIM_DISTVEC_PICK_CDS &&
+    if (c->relay_pick > TSIM_DISTVEC_PICK_ELECT ||
+        (c->relay_pick != TSIM_DISTVEC_PICK_LIST && c->relay_pick < TSIM_DISTVEC_PICK_CDS &&
          c->relay_count == 0)) {
-        return "relay_pick is not list, degree, spaced or cds, or relay_count is 0 for one but cds";
+        return "relay_pick is not list, degree, spaced, cds or elect, or relay_count is 0 for "
+               "degree or spaced";
     }
-    if (c->leaves > TSIM_DISTVEC_LEAVES_PARENT_ORACLE) {
-        return "leaves is not routed or parent_oracle";
+    if (c->relay_pick == TSIM_DISTVEC_PICK_ELECT &&
+        (c->oracle || c->elect_cover < 1 || c->elect_cover > 8 || c->elect_wait <= 0 ||
+         c->elect_hold < 0)) {
+        return "relay_pick elect is not for the oracle, or elect_cover is not 1 to 8, elect_wait "
+               "not above 0 or elect_hold below 0";
+    }
+    if (c->leaves > TSIM_DISTVEC_LEAVES_PARENT) {
+        return "leaves is not routed, parent_oracle or parent";
     }
     /* Frames carry a route's life in whole seconds: under one, it would go as none. */
     if (c->routes > TSIM_DISTVEC_ROUTES_DEMAND || c->route_ttl < TSIM_S(1) || c->req_hops < 1) {
@@ -473,7 +536,17 @@ static tsim_time imax(const struct router *r) { return r->config.imin << r->conf
 
 /* Whether leaves are reached through their parents rather than by routes to them. */
 static bool by_parent(const struct router *r) {
-    return r->config.leaves == TSIM_DISTVEC_LEAVES_PARENT_ORACLE;
+    return r->config.leaves != TSIM_DISTVEC_LEAVES_ROUTED;
+}
+
+/* Whether leaves' parents are learned from announces, not looked up in the oracle's table. */
+static bool learned(const struct router *r) {
+    return r->config.leaves == TSIM_DISTVEC_LEAVES_PARENT;
+}
+
+/* Whether nodes elect their own relays. */
+static bool electing(const struct router *r) {
+    return r->config.relay_pick == TSIM_DISTVEC_PICK_ELECT && !r->oracle;
 }
 
 /* Whether routes come on demand. The oracle's never do: it is handed them. */
@@ -843,8 +916,14 @@ static void choose_parent(struct router *r) {
     if (cur_q > 0 && !(cur_q < best_q * (1.0 - r->config.hysteresis))) {
         best = r->parent; /* not enough better to move */
     }
+    if (best != r->parent && learned(r)) {
+        r->bind_seq++; /* a new binding, newer than any of the old one still going round */
+        r->changed = true;
+    }
     r->parent = best;
-    r->config.parents[r->self] = best;
+    if (!learned(r)) {
+        r->config.parents[r->self] = best;
+    }
 }
 
 /* A usable link that `cause` has just taken out of use, if `was` was its cost before: counted. */
@@ -903,6 +982,9 @@ static const struct entry *live_sel(struct router *r, uint32_t d) {
 static uint32_t target_of(struct router *r, uint32_t dst) {
     if (!by_parent(r) || live_sel(r, dst)) {
         return dst;
+    }
+    if (learned(r)) {
+        return dst < r->nodes && r->bind[dst].known ? r->bind[dst].parent : TSIM_DISTVEC_NO_PARENT;
     }
     return r->config.parents[dst];
 }
@@ -1366,6 +1448,9 @@ static void forget(struct router *r, uint16_t s, enum tsim_distvec_down cause) {
         return;
     }
     probe_stop(r, n, false);
+    if (n->infra) {
+        r->relay_news = now(r);
+    }
     uint16_t was = n->cost;
     n->used = false;
     n->cost = INF;
@@ -1426,13 +1511,15 @@ static void trickle_begin(struct router *r) {
     tsim_timer_start(r->trickle, t);
 }
 
+static bool elect_news(const struct router *r);
+
 static void trickle_fire(void *ctx) {
     struct router *r = ctx;
     if (!r->fired) {
         r->fired = true;
         /* Changed routes waiting are an inconsistency of this node's own: never suppressed. */
         if (r->config.redundancy == 0 || r->heard < r->config.redundancy ||
-            r->quiet >= r->config.quiet_max || r->urgent_count > 0 || r->asked) {
+            r->quiet >= r->config.quiet_max || r->urgent_count > 0 || r->asked || elect_news(r)) {
             r->quiet = 0;
             announce(r);
         } else {
@@ -1575,6 +1662,67 @@ static uint8_t ihu_room(const struct router *r) {
     return (uint8_t)(r->config.ihu_max < room ? r->config.ihu_max : room);
 }
 
+/* --- Bindings (leaves = parent) --- */
+
+/* Where an announce's binding head starts. */
+static uint32_t bind_at(const struct router *r) {
+    return ANNOUNCE_HEAD + (r->config.power ? 1u : 0u) + (electing(r) ? ELECT_LEN : 0u);
+}
+
+static void push_bind(struct router *r, uint32_t leaf) {
+    struct binding *bd = &r->bind[leaf];
+    if (bd->urgent || !r->infra) {
+        return;
+    }
+    if (r->bind_urgent_count == r->bind_urgent_cap) {
+        size_t cap = r->bind_urgent_cap ? 2 * r->bind_urgent_cap : 16;
+        uint32_t *grown = realloc(r->bind_urgent, cap * sizeof *grown);
+        if (!grown) {
+            return; /* out of memory: it goes out with the rest in turn */
+        }
+        r->bind_urgent = grown;
+        r->bind_urgent_cap = cap;
+    }
+    bd->urgent = true;
+    r->bind_urgent[r->bind_urgent_count++] = leaf;
+}
+
+/* A leaf's binding, heard from the leaf or from a relay: kept if newer than the one known, and
+ * then, by a relay, announced as a change. */
+static void learn_binding(struct router *r, uint32_t leaf, uint32_t parent, uint16_t seq) {
+    if (leaf == r->self) {
+        /* Its own binding, still going round from before it restarted, newer than its own or as
+         * new with another parent: it goes past it, so the binding it names now is taken. */
+        uint32_t mine = r->infra ? r->self : r->parent;
+        if (newer(seq, r->bind_seq) || (seq == r->bind_seq && parent != mine)) {
+            r->bind_seq = (uint16_t)(seq + 1);
+            r->changed = true;
+        }
+        return;
+    }
+    if (leaf >= r->nodes || (parent >= r->nodes && parent != TSIM_DISTVEC_NO_PARENT)) {
+        return;
+    }
+    struct binding *bd = &r->bind[leaf];
+    if (bd->known && !newer(seq, bd->seq)) {
+        return;
+    }
+    r->bind_known += !bd->known;
+    *bd = (struct binding){.parent = parent, .seq = seq, .known = true, .urgent = bd->urgent};
+    push_bind(r, leaf);
+}
+
+/* Writes the binding of `leaf` into an announce. */
+static void put_binding(const struct router *r, uint32_t leaf, uint8_t *out) {
+    put32(out, leaf);
+    put32(out + 4, r->bind[leaf].parent);
+    put16(out + 8, r->bind[leaf].seq);
+}
+
+static uint8_t relays_heard(const struct router *r);
+static uint8_t score(const struct router *r);
+static uint32_t choice(const struct router *r);
+
 /* Builds one announce frame. Returns its length. */
 static uint32_t build(struct router *r, uint8_t *b) {
     uint32_t i = r->ann_head;
@@ -1590,6 +1738,21 @@ static uint32_t build(struct router *r, uint8_t *b) {
     uint16_t promise = promise_code(promise_s(r));
     r->promised = promise_time(promise);
     put16(b + 10, promise);
+    if (electing(r)) {
+        uint8_t *e = b + ANNOUNCE_HEAD + (r->config.power ? 1 : 0);
+        e[0] = r->said_relays = relays_heard(r);
+        put32(e + 1, r->tier);
+        r->said_tier = r->tier;
+        e[5] = r->tier_hops;
+        e[6] = r->said_score = score(r);
+        r->said_choice = choice(r);
+        put32(e + 7, r->said_choice);
+    }
+    if (learned(r)) {
+        put32(b + bind_at(r), r->infra ? r->self : r->parent);
+        put16(b + bind_at(r) + 4, r->bind_seq);
+        b[bind_at(r) + 6] = 0;
+    }
 
     /* IHUs: neighbours owed one first, then the rest in turn from where the last frame stopped,
      * none twice. */
@@ -1641,9 +1804,33 @@ static uint32_t build(struct router *r, uint8_t *b) {
                 routes++;
             }
         }
+        /* Changed bindings next, up to BIND_URGENT, kept aside to go after the routes, and
+         * BIND_SLICE of the rest in turn: listing more would fill every frame - at the start, every
+         * leaf's binding is a change - so that the cap let a relay announce far less often and its
+         * links and routes starved. */
+        uint8_t bb[FRAME_MAX];
+        uint32_t binds = 0, ib = 0, route_end = FRAME_MAX;
+        size_t btaken = 0;
+        if (learned(r)) {
+            while (btaken < r->bind_urgent_count && btaken < BIND_URGENT &&
+                   i + ib + BIND_LEN <= FRAME_MAX) {
+                uint32_t leaf = r->bind_urgent[btaken++];
+                r->bind[leaf].urgent = false;
+                r->bind[leaf].listed = true;
+                put_binding(r, leaf, bb + ib);
+                ib += BIND_LEN;
+                binds++;
+            }
+            r->bind_urgent_count -= btaken;
+            if (r->bind_urgent_count) {
+                memmove(r->bind_urgent, r->bind_urgent + btaken,
+                        r->bind_urgent_count * sizeof *r->bind_urgent);
+            }
+            route_end = FRAME_MAX - ib;
+        }
         /* Then the rest in turn, none twice: a retraction repeated in the frame it first went in
          * would count as two of its RETRACTS and be lost with the one frame. */
-        for (uint32_t k = 0; k < r->nodes && i + ROUTE_LEN <= FRAME_MAX; k++) {
+        for (uint32_t k = 0; k < r->nodes && i + ROUTE_LEN <= route_end; k++) {
             uint32_t d = r->cursor;
             r->cursor = (r->cursor + 1) % r->nodes;
             struct dest *ds = &r->dest[d];
@@ -1661,6 +1848,27 @@ static uint32_t build(struct router *r, uint8_t *b) {
         if (r->urgent_count) {
             memmove(r->urgent, r->urgent + taken, r->urgent_count * sizeof *r->urgent);
         }
+        uint32_t slice = 0;
+        for (uint32_t k = 0;
+             learned(r) && k < r->nodes && slice < BIND_SLICE && i + ib + BIND_LEN <= FRAME_MAX;
+             k++) {
+            uint32_t leaf = r->bind_cursor;
+            r->bind_cursor = (r->bind_cursor + 1) % r->nodes;
+            if (r->bind[leaf].known && !r->bind[leaf].listed) {
+                put_binding(r, leaf, bb + ib);
+                ib += BIND_LEN;
+                binds++;
+                slice++;
+            }
+        }
+        if (learned(r)) {
+            b[bind_at(r) + 6] = (uint8_t)binds;
+            for (uint32_t k = 0; k < ib; k += BIND_LEN) {
+                r->bind[get32(bb + k)].listed = false;
+            }
+            memcpy(b + i, bb, ib);
+            i += ib;
+        }
     }
     b[15] = routes;
     return i;
@@ -1676,7 +1884,15 @@ static uint32_t planned(const struct router *r) {
     if (r->infra) {
         uint64_t routes = (uint64_t)r->urgent_count + r->selected + r->retracting;
         uint64_t room = (FRAME_MAX - len) / ROUTE_LEN;
-        len += (uint32_t)(routes < room ? routes : room) * ROUTE_LEN;
+        uint32_t more = (uint32_t)(routes < room ? routes : room) * ROUTE_LEN;
+        if (learned(r)) {
+            uint64_t binds =
+                         (r->bind_urgent_count < BIND_URGENT ? r->bind_urgent_count : BIND_URGENT) +
+                         BIND_SLICE,
+                     broom = (FRAME_MAX - len - more) / BIND_LEN;
+            more += (uint32_t)(binds < broom ? binds : broom) * BIND_LEN;
+        }
+        len += more;
     }
     return len;
 }
@@ -1698,6 +1914,9 @@ static void unsent(struct router *r, const uint8_t *b) {
             r->dest[d].advertised = true;
         }
         push_urgent(r, d);
+    }
+    for (uint8_t k = 0; learned(r) && k < b[bind_at(r) + 6]; k++, p += BIND_LEN) {
+        push_bind(r, get32(p));
     }
 }
 
@@ -1819,6 +2038,346 @@ static void announce(struct router *r) {
     }
 }
 
+/* --- Electing relays (MSH-68) --- */
+
+/* What a node's election timer waits to do. */
+enum { ELECT_NONE, ELECT_COVER, ELECT_JOIN, ELECT_DOWN };
+
+/* Whether a neighbour's link is up, both ways. */
+static bool linked(const struct neighbour *n) { return n->used && n->cost != INF; }
+
+/* The relays a node can use, up to 255. */
+static uint8_t relays_heard(const struct router *r) {
+    unsigned k = 0;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        k += linked(&r->nb[i]) && r->nb[i].infra;
+    }
+    return (uint8_t)(k > UINT8_MAX ? UINT8_MAX : k);
+}
+
+/* The tier a node announces. A relay's is the lowest-numbered root of itself and those its relay
+ * neighbours name, at one hop more than the neighbour it has it from, the fewest of those, and
+ * never at hop_max hops or more: a part of the tier cut off from its root counts up to that and
+ * takes its own. A leaf's is the lowest its relay neighbours name, or none. A change is news. */
+static void find_tier(struct router *r) {
+    uint32_t t = r->infra ? r->self : TIER_NONE;
+    unsigned hops = 0;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        if (!linked(n) || !n->infra || !n->told || n->tier >= r->nodes) {
+            continue;
+        }
+        unsigned h = n->tier_hops + 1u;
+        if (r->infra && (h >= r->config.hop_max || n->tier == r->self)) {
+            continue;
+        }
+        if (n->tier < t || (n->tier == t && h < hops)) {
+            t = n->tier;
+            hops = h;
+        }
+    }
+    if (!r->infra) {
+        hops = 0;
+    }
+    if (t != r->tier || hops != r->tier_hops) {
+        r->changed |= t != r->tier;
+        r->tier = t;
+        r->tier_hops = (uint8_t)hops;
+    }
+}
+
+/* The gap a leaf stands in, if any: two of its relay neighbours in different tiers, which a relay
+ * here would join (GAP_TWO); or a relay neighbour and a leaf neighbour that names another tier, the
+ * lowest it is next to, which a relay here would bring a hop nearer (GAP_THREE). A leaf next to no
+ * relay is too far from a tier to join it. */
+enum { GAP_NONE, GAP_THREE, GAP_TWO };
+
+/* Whether a neighbour's word on the election is recent: from an announce no older than its last
+ * promise and imax more. Links by strength stay up long unheard, and the tier a relay named an
+ * hour ago is no evidence of a gap now. */
+static bool recent(const struct router *r, const struct neighbour *n) {
+    return n->told && now(r) - n->told_at <= n->promise + imax(r);
+}
+
+static uint8_t two_tiers(const struct router *r) {
+    uint32_t relay_tier = TIER_NONE;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        if (!linked(n) || !recent(r, n) || !n->infra || n->tier == TIER_NONE) {
+            continue;
+        }
+        if (relay_tier == TIER_NONE) {
+            relay_tier = n->tier;
+        } else if (n->tier != relay_tier) {
+            return GAP_TWO;
+        }
+    }
+    if (relay_tier == TIER_NONE) {
+        return GAP_NONE;
+    }
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        if (linked(n) && recent(r, n) && !n->infra && n->tier != TIER_NONE &&
+            n->tier != relay_tier) {
+            return GAP_THREE;
+        }
+    }
+    return GAP_NONE;
+}
+
+/* Whether the node hears fewer relays than elect_cover, and has a neighbour to ask for one. */
+static bool orphan(const struct router *r) {
+    if (r->infra || relays_heard(r) >= r->config.elect_cover) {
+        return false;
+    }
+    for (size_t i = 0; i < r->nb_count; i++) {
+        if (linked(&r->nb[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* A leaf's score: how many of the nodes it can use, itself among them, are orphans, as they last
+ * said; 0 for a relay. */
+static uint8_t score(const struct router *r) {
+    if (r->infra) {
+        return 0;
+    }
+    unsigned k = orphan(r);
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        k += linked(n) && !n->infra && n->told && n->relays < r->config.elect_cover;
+    }
+    return (uint8_t)(k > UINT8_MAX ? UINT8_MAX : k);
+}
+
+/* An orphan's choice of relay: of itself and the leaves it can use, the one with the highest score,
+ * the lowest-numbered of those; none for a node that is not an orphan. */
+static uint32_t choice(const struct router *r) {
+    if (!orphan(r)) {
+        return TIER_NONE;
+    }
+    uint32_t best = r->self;
+    unsigned top = score(r);
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        if (linked(n) && !n->infra && n->told &&
+            (n->score > top || (n->score == top && n->id < best))) {
+            best = n->id;
+            top = n->score;
+        }
+    }
+    return best;
+}
+
+/* Whether some orphan names this leaf as its choice: itself, or a neighbour that said so after
+ * `since`. */
+static bool chosen(const struct router *r, tsim_time since) {
+    if (r->infra) {
+        return false;
+    }
+    if (choice(r) == r->self) {
+        return true;
+    }
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        if (linked(n) && n->told && n->choice == r->self && n->told_at > since) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Whether a relay could stand down and leave no gap it can see: it hears elect_cover relays
+ * itself; every leaf it can use hears one more than elect_cover, as its last announce said, so one
+ * fewer still leaves it covered; every relay it can use is one hop from another of them, as that
+ * one's routes say, so the tier keeps its links round it; and every neighbour names its tier.
+ * `fresh` says whether every neighbour has announced since the last relay news. */
+static bool redundant(struct router *r, bool *fresh) {
+    *fresh = true;
+    if (relays_heard(r) < r->config.elect_cover) {
+        return false;
+    }
+    double one = 1.5 * ceil(r->ref_ms);
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        if (!linked(n)) {
+            continue;
+        }
+        if (!n->told || n->tier != r->tier) {
+            return false;
+        }
+        *fresh &= n->told_at > r->relay_news;
+        if (!n->infra) {
+            if (n->relays <= r->config.elect_cover) {
+                return false;
+            }
+            continue;
+        }
+        const struct dest *ds = &r->dest[n->id];
+        bool joined = false;
+        for (int k = 0; k < ROUTES && !joined; k++) {
+            const struct entry *e = &ds->e[k];
+            joined = e->slot && e->slot != r->slot_of[n->id] && e->metric != INF &&
+                     (double)e->metric <= one && linked(slot(r, e->slot)) &&
+                     slot(r, e->slot)->infra;
+        }
+        if (!joined) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Starts the election timer for `why`, or stops it for none: standing for orphans waits from a
+ * quarter to three quarters of elect_wait; standing to join tiers, from 2 to 4 times it, so news
+ * of the tiers has gone round first, and twice that to bring one a hop nearer; standing down, from
+ * half to one and a half times it. */
+static void elect_arm(struct router *r, uint8_t why) {
+    r->elect_why = why;
+    if (why == ELECT_NONE) {
+        tsim_timer_stop(r->elect_timer);
+        return;
+    }
+    double u = tsim_rng_unit(&r->rng), w = (double)r->config.elect_wait;
+    w *= why == ELECT_COVER  ? 0.25 + 0.5 * u
+         : why == ELECT_JOIN ? (2 + 2 * u) * (two_tiers(r) == GAP_TWO ? 1 : 2)
+                             : 0.5 + u;
+    tsim_timer_start(r->elect_timer, (tsim_time)w + 1);
+}
+
+/* Takes up or gives up the relay's role: a new relay announces the routes it holds, as changes; a
+ * relay standing down stops announcing any, and its neighbours stop routing through it as they
+ * hear it has. */
+static void set_role(struct router *r, bool infra) {
+    account(r);
+    r->infra = infra;
+    r->role_at = now(r);
+    elect_arm(r, ELECT_NONE);
+    if (infra) {
+        r->stats.elected++;
+        for (uint32_t d = 0; d < r->nodes; d++) {
+            struct dest *ds = &r->dest[d];
+            if (d != r->self && ds->sel && announces(r, d)) {
+                ds->had = true;
+                r->selected++;
+                push_urgent(r, d);
+            }
+        }
+    } else {
+        r->stats.stood_down++;
+        for (size_t k = 0; k < r->urgent_count; k++) {
+            r->dest[r->urgent[k]].urgent = false;
+        }
+        for (uint32_t d = 0; d < r->nodes; d++) {
+            r->dest[d].retracts = 0;
+            r->dest[d].had = false;
+            r->dest[d].advertised = false;
+        }
+        r->urgent_count = 0;
+        for (size_t k = 0; k < r->bind_urgent_count; k++) {
+            r->bind[r->bind_urgent[k]].urgent = false;
+        }
+        r->bind_urgent_count = 0;
+        r->selected = 0;
+        r->retracting = 0;
+        r->unrouted = 0;
+    }
+    if (by_parent(r)) {
+        r->parent = TSIM_DISTVEC_NO_PARENT;
+        if (learned(r)) {
+            r->bind_seq++;
+        } else {
+            r->config.parents[r->self] = infra ? r->self : TSIM_DISTVEC_NO_PARENT;
+        }
+        choose_parent(r);
+    }
+    find_tier(r);
+    node_power(r);
+    r->changed = true;
+    trickle_reset(r);
+    r->changed = false;
+}
+
+/* What a node would wait to do now. */
+static uint8_t elect_want(struct router *r) {
+    tsim_time t = now(r);
+    if (r->infra) {
+        bool fresh;
+        return r->config.elect_hold > 0 && t - r->role_at >= r->config.elect_hold &&
+                       redundant(r, &fresh)
+                   ? ELECT_DOWN
+                   : ELECT_NONE;
+    }
+    bool gap = two_tiers(r);
+    if (!gap) {
+        r->gap_since = -1;
+    } else if (r->gap_since < 0) {
+        r->gap_since = t;
+    }
+    return chosen(r, INT64_MIN) ? ELECT_COVER : gap ? ELECT_JOIN : ELECT_NONE;
+}
+
+/* Whether what it would announce for the election has changed since it last did - the relays it
+ * hears, its tier or its choice - which Trickle never suppresses: it is how the tier joins up and
+ * how orphans are covered. */
+static bool elect_news(const struct router *r) {
+    return electing(r) && (relays_heard(r) != r->said_relays || r->tier != r->said_tier ||
+                           choice(r) != r->said_choice);
+}
+
+/* Looks again at whether to stand, or stand down, after anything heard. What it would announce
+ * changing - the relays it hears, its tier, its score or its choice - is news to announce. */
+static void elect_check(struct router *r) {
+    if (!electing(r)) {
+        return;
+    }
+    find_tier(r);
+    if (relays_heard(r) != r->said_relays || score(r) != r->said_score ||
+        choice(r) != r->said_choice) {
+        r->changed = true;
+    }
+    uint8_t why = elect_want(r);
+    if (why != r->elect_why) {
+        elect_arm(r, why);
+    }
+}
+
+/* The election timer: stands if what it waited on still holds, on news newer than the last change
+ * of role it heard, and once its links have stopped coming up; and waits again if it holds only
+ * on older news. */
+static void elect_fire(void *ctx) {
+    struct router *r = ctx;
+    uint8_t why = r->elect_why;
+    r->elect_why = ELECT_NONE;
+    tsim_time t = now(r);
+    if (why == ELECT_DOWN) {
+        bool fresh;
+        if (r->infra && redundant(r, &fresh)) {
+            if (fresh) {
+                set_role(r, false);
+                return;
+            }
+            elect_arm(r, ELECT_DOWN);
+        }
+        return;
+    }
+    if (r->infra) {
+        return;
+    }
+    /* Not before its links have had time to come up, nor while they still are. */
+    bool settled =
+        t - r->started >= 4 * r->config.elect_wait && t - r->link_news >= r->config.elect_wait / 2;
+    bool gap = two_tiers(r) && r->gap_since >= 0 && t - r->relay_news >= r->config.elect_wait;
+    if (settled && (chosen(r, r->relay_news) || (why == ELECT_JOIN && gap))) {
+        r->elect_why = why;
+        set_role(r, true);
+        return;
+    }
+    elect_arm(r, elect_want(r));
+}
+
 static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double snr) {
     if (len < r->ann_head) {
         return;
@@ -1826,8 +2385,11 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     uint32_t from = get32(b + 1);
     uint16_t rotation = get16(b + 12);
     uint8_t ihus = b[14], routes = b[15];
+    uint8_t binds = learned(r) ? b[bind_at(r) + 6] : 0;
     if (from >= r->nodes || from == r->self ||
-        r->ann_head + (uint32_t)ihus * IHU_LEN + (uint32_t)routes * ROUTE_LEN > len) {
+        r->ann_head + (uint32_t)ihus * IHU_LEN + (uint32_t)routes * ROUTE_LEN +
+                (uint32_t)binds * BIND_LEN >
+            len) {
         return;
     }
     bool fresh = r->slot_of[from] == 0;
@@ -1853,7 +2415,23 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     n->lost = 0;
     n->mute = false;
     probe_stop(r, n, true);
+    bool was_infra = n->infra;
     n->infra = b[9] & FLAG_INFRA;
+    /* A neighbour that has taken up or given up the relay's role, or a relay new to this node. */
+    bool news = fresh ? n->infra : n->infra != was_infra;
+    if (news) {
+        r->relay_news = now(r);
+    }
+    if (electing(r)) {
+        const uint8_t *e = b + ANNOUNCE_HEAD + (r->config.power ? 1 : 0);
+        n->told = true;
+        n->told_at = now(r);
+        n->relays = e[0];
+        n->tier = get32(e + 1);
+        n->tier_hops = e[5];
+        n->score = e[6];
+        n->choice = get32(e + 7);
+    }
     if (per_sf(r)) {
         unsigned sf = TSIM_SF_MIN + (b[9] >> FLAG_SF_SHIFT & 7u);
         n->sf = (uint8_t)(sf >= r->config.sf_min && sf <= r->config.lora.sf ? sf : 0);
@@ -1897,11 +2475,18 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     n->cost = link_cost(r, n);
     link_down(r, n, was, n->dr == 0 ? TSIM_DISTVEC_DOWN_IHU : TSIM_DISTVEC_DOWN_RATE);
     bool flipped = (was == INF) != (n->cost == INF);
+    if (flipped && was == INF) {
+        r->link_news = now(r);
+    }
     if (flipped ||
         fabs((double)n->cost - (double)n->cost_used) > r->config.change * (double)n->cost_used) {
         n->cost_used = n->cost;
         r->changed |= flipped;
         reselect_through(r, s);
+    }
+    if (news && !fresh) {
+        r->changed = true;
+        reselect_through(r, s); /* routes through it now usable, or not */
     }
     r->dest[from].leaf = !n->infra;
     update(r, from, get16(b + 7), 0, s);
@@ -1911,6 +2496,16 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
             update(r, get32(p), get16(p + 4), get16(p + 6), s);
         }
     }
+    if (learned(r)) {
+        /* The sender's own binding - a relay is its own parent - and those it lists. */
+        if (!n->infra) {
+            learn_binding(r, from, get32(b + bind_at(r)), get16(b + bind_at(r) + 4));
+        }
+        for (uint8_t k = 0; n->infra && k < binds; k++, p += BIND_LEN) {
+            learn_binding(r, get32(p), get32(p + 4), get16(p + 8));
+        }
+    }
+    elect_check(r);
     if (r->changed) {
         trickle_reset(r);
     } else if (r->heard < UINT8_MAX) {
@@ -3179,6 +3774,9 @@ static void house_fire(void *ctx) {
         n->cost = link_cost(r, n);
         link_down(r, n, was, TSIM_DISTVEC_DOWN_SILENT);
         bool flipped = (was == INF) != (n->cost == INF);
+        if (flipped && was == INF) {
+            r->link_news = t;
+        }
         if (flipped || fabs((double)n->cost - (double)n->cost_used) >
                            r->config.change * (double)n->cost_used) {
             n->cost_used = n->cost;
@@ -3186,6 +3784,7 @@ static void house_fire(void *ctx) {
             reselect_through(r, s);
         }
     }
+    elect_check(r);
     if (r->changed) {
         trickle_reset(r);
         r->changed = false;
@@ -3206,6 +3805,7 @@ static void router_start(void *self) {
     if (per_sf(r)) {
         tsim_node_tune(r->node, r->config.channel, &r->config.lora); /* as it may have been left */
     }
+    r->started = now(r);
     trickle_begin(r);
     tsim_timer_start(r->house, house_period(r));
     if (r->config.seq_period > 0) {
@@ -3232,6 +3832,7 @@ static void router_destroy(void *self) {
     tsim_timer_destroy(r->seq_timer);
     tsim_timer_destroy(r->park_timer);
     tsim_timer_destroy(r->probe_timer);
+    tsim_timer_destroy(r->elect_timer);
     free(r->starving);
     free(r->asks);
     free(r->dest);
@@ -3241,6 +3842,8 @@ static void router_destroy(void *self) {
     free(r->hops);
     free(r->held);
     free(r->parked);
+    free(r->bind);
+    free(r->bind_urgent);
     free(r);
 }
 
@@ -3259,7 +3862,8 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->infra = tsim_distvec_relay(c, r->self);
     r->config = *c;
     r->oracle = c->oracle ? c->oracle_routes : NULL;
-    if (c->relay_pick != TSIM_DISTVEC_PICK_LIST && !c->relay_set) {
+    if (c->relay_pick != TSIM_DISTVEC_PICK_LIST && c->relay_pick != TSIM_DISTVEC_PICK_ELECT &&
+        !c->relay_set) {
         free(r); /* picked relays come from the driver, once it has laid the links */
         return NULL;
     }
@@ -3277,7 +3881,24 @@ static void *router_create(struct tsim_node *node, const void *config) {
         }
         c->parents[r->self] = r->infra ? r->self : TSIM_DISTVEC_NO_PARENT;
     }
-    r->ann_head = ANNOUNCE_HEAD + (c->power ? 1 : 0);
+    r->ann_head = ANNOUNCE_HEAD + (c->power ? 1 : 0) + (electing(r) ? ELECT_LEN : 0) +
+                  (learned(r) ? BIND_HEAD : 0);
+    if (learned(r)) {
+        /* From the minute it starts, so a leaf restarted mostly names a binding newer than those
+         * it left going round; one that is not is gone past when it hears it (learn_binding). */
+        r->bind_seq = (uint16_t)(tsim_node_now(node) / TSIM_S(60));
+        r->bind = calloc(r->nodes, sizeof *r->bind);
+        if (!r->bind) {
+            free(r);
+            return NULL;
+        }
+    }
+    r->relay_news = -imax(r);
+    r->link_news = 0;
+    r->gap_since = -1;
+    r->tier = r->infra ? r->self : TIER_NONE;
+    r->said_choice = TIER_NONE;
+    r->said_tier = r->tier;
     r->trail_at = DATA_HEAD + (c->power ? 1 : 0) + (c->sf_min ? 1 : 0);
     r->data_head = r->trail_at + (demand(r) ? TRAIL_LEN : 0);
     node_power(r);
@@ -3313,9 +3934,10 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->seq_timer = tsim_timer_create(node, seq_fire, r);
     r->park_timer = tsim_timer_create(node, park_fire, r);
     r->probe_timer = tsim_timer_create(node, probe_fire, r);
-    if (!r->probe_timer || !r->seq_timer || !r->park_timer || !r->dest || !r->slot_of ||
-        !r->trickle || !r->cap_timer || !r->hop_timer || !r->out_timer || !r->house ||
-        !r->request_timer || !r->ask_timer) {
+    r->elect_timer = tsim_timer_create(node, elect_fire, r);
+    if (!r->elect_timer || !r->probe_timer || !r->seq_timer || !r->park_timer || !r->dest ||
+        !r->slot_of || !r->trickle || !r->cap_timer || !r->hop_timer || !r->out_timer ||
+        !r->house || !r->request_timer || !r->ask_timer) {
         router_destroy(r);
         return NULL;
     }
@@ -3409,6 +4031,8 @@ void tsim_distvec_stats(const void *self, struct tsim_distvec_stats *stats) {
         stats->unrouted_empty += !held;
     }
 }
+
+bool tsim_distvec_infra(const void *self) { return ((const struct router *)self)->infra; }
 
 uint32_t tsim_distvec_neighbours(const void *self) {
     const struct router *r = self;
@@ -3740,7 +4364,8 @@ bool tsim_distvec_pick_relays(const struct tsim_phy *phy, const struct tsim_pos 
                               const struct tsim_distvec_config *c, uint8_t *set) {
     uint32_t *start, *adj;
     uint32_t n = tsim_phy_nodes(phy);
-    if (c->relay_pick == TSIM_DISTVEC_PICK_LIST || !oracle_links(phy, c, &start, &adj)) {
+    if (c->relay_pick == TSIM_DISTVEC_PICK_LIST || c->relay_pick == TSIM_DISTVEC_PICK_ELECT ||
+        !oracle_links(phy, c, &start, &adj)) {
         return false;
     }
     memset(set, 0, n);
@@ -3770,7 +4395,7 @@ bool tsim_distvec_pick_relays(const struct tsim_phy *phy, const struct tsim_pos 
 }
 
 bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_config *c,
-                       struct tsim_relay_tier *out) {
+                       const uint8_t *given, struct tsim_relay_tier *out) {
     *out = (struct tsim_relay_tier){0};
     uint32_t *start, *adj;
     uint32_t n = tsim_phy_nodes(phy);
@@ -3781,7 +4406,7 @@ bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_con
     uint32_t *part = malloc(n * sizeof *part), *queue = malloc(n * sizeof *queue);
     bool ok = relay && part && queue;
     for (uint32_t a = 0; ok && a < n; a++) {
-        relay[a] = tsim_distvec_relay(c, a);
+        relay[a] = given ? given[a] != 0 : tsim_distvec_relay(c, a);
         part[a] = UINT32_MAX;
     }
     uint64_t joined = 0;
