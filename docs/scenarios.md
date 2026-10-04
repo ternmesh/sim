@@ -119,6 +119,7 @@ default.
 |---|---|---|
 | `routing.hops` (`flood`) | 3 | how many times a message can be rebroadcast along any path |
 | `mac.max_delay` (`aloha`) | `1 s` | longest random wait before sending |
+| `routing.relay_pick`, `routing.relay_count` (`meshtastic`) | `list`, 0 | routers picked as `distvec`'s infrastructure is (below), over links at `radio.tx_dbm` with 3 dB to spare; the picked nodes are `router`s and the rest take `routing.role`. `list` picks none |
 | `routing.role` (`meshtastic`) | `client` | `client`, `client_mute` (never rebroadcasts) or `router` (waits less to rebroadcast, and cancels on the third copy heard, not the second) |
 | `routing.hop_limit` (`meshtastic`) | 3 | rebroadcasts a packet may have, 0 to 7 |
 | `routing.want_ack` (`meshtastic`) | `yes` | whether a message wants an acknowledgement (`yes` or `no`); broadcasts take an implicit one |
@@ -134,6 +135,7 @@ default.
 | `mac.snr_min`, `mac.snr_max` (`meshtastic`) | -20, 10 | the SNR range, in dB, over which a rebroadcast's window grows from `cw_min` to `cw_max` |
 | `mac.busy_chance` (`meshtastic`) | 0 | chance, each time the MAC looks, that the channel is busy with traffic from outside the mesh: Meshtasticator's interference level |
 | `routing.relays` (`meshcore`) | `all` | which nodes are repeaters and relay, as `all` or numbers and ranges such as `0-45,50`; the rest are companions |
+| `routing.relay_pick`, `routing.relay_count` (`meshcore`) | `list`, 0 | repeaters picked as `distvec`'s infrastructure is (below), over links at `radio.tx_dbm` with 3 dB to spare, `routing.relays` then ignored: so both run over the same sites |
 | `routing.hash_size` (`meshcore`) | 1 | bytes per node on a path, 1 to 3 |
 | `routing.scoped` (`meshcore`) | `yes` | whether floods carry region codes, 4 bytes |
 | `routing.flood_max` (`meshcore`) | 64 | a flood that has made this many hops is not relayed, 1 to 64 |
@@ -253,4 +255,10 @@ The latency percentiles are rounded down by at most 1.6%. The maximum latency is
   links per node; `tools/density.py --tsim build/tsim` runs all four at several powers and seeds,
   from about 12 links per node to that, and prints each candidate's delivery at each density. Power
   stands in for spacing: under the log-distance channel, 5 dB quieter loses what standing 1.64
-  times further apart does. The script says more.
+  times further apart does. The script says more. Those four run every candidate at SF9 and
+  125 kHz with every node relaying, which is how neither existing protocol is deployed;
+  `region*-deployed.tsim`, which CI runs too, put each on its own preset - Meshtastic on LongFast,
+  MeshCore on the UK/EU narrow preset, candidate 3 and flooding on MeshCore's - and candidates 1 to
+  3 over the same 200 sites, picked as a connected dominating set: Meshtastic's routers,
+  MeshCore's repeaters and candidate 3's relays, the rest clients, companions and leaves.
+  `tools/density.py --deployed` sweeps them.

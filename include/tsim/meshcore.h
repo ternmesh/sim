@@ -120,6 +120,13 @@ struct tsim_meshcore_config {
     /* Which nodes relay, as a list of numbers and ranges - "0-45,50" - or "all". Every other node
      * is a companion. */
     char relays[96];
+    /* Or picked: with relay_pick other than list - an enum tsim_distvec_pick, as distvec's
+     * routing.relay_pick - the driver picks relay_count repeaters the way it picks distvec's
+     * infrastructure and points relay_set at them, [node] 1 for a repeater, and `relays` is
+     * ignored. So both candidates can be run over the same sites. */
+    uint8_t relay_pick;
+    uint32_t relay_count;
+    const uint8_t *relay_set;
     uint8_t hash_size;      /* bytes per path entry, 1 to 3 */
     bool scoped;            /* floods carry region codes, as a companion with a scope sends */
     uint8_t flood_max;      /* a relay does not relay a flood that has this many hops, 1..64 */
@@ -143,6 +150,10 @@ struct tsim_meshcore_config tsim_meshcore_default(uint16_t channel, const struct
 
 /* Whether `spec` is a list tsim_meshcore_config.relays can hold. */
 bool tsim_meshcore_relays_valid(const char *spec);
+
+/* Whether `node` is a repeater under `config`: 1 if so, 0 if a companion, -1 if `relays` is not a
+ * valid list or the repeaters are picked and relay_set is not set. */
+int tsim_meshcore_relay(const struct tsim_meshcore_config *config, uint32_t node);
 
 extern const struct tsim_routing tsim_meshcore;
 

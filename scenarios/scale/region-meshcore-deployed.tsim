@@ -1,0 +1,29 @@
+# Candidate 2 as it is deployed: region-meshcore.tsim on MeshCore's UK/EU narrow preset - SF8 at
+# 62.5 kHz, coding rate 4/8, the 32-symbol preamble MeshCore 1.17 programs at SF8 and below - with
+# 200 repeaters, the rest companions, which never relay, rather than every node a repeater. The
+# repeaters are sited by a greedy connected dominating set over the links the radio has, as
+# region-meshtastic-deployed.tsim's routers and region-distvec-deployed.tsim's relays are.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf       = 8
+radio.bw       = 62500
+radio.cr       = 4
+radio.preamble = 32
+radio.tx_dbm   = 20
+
+routing             = meshcore
+mac                 = meshcore
+routing.relay_pick  = cds
+routing.relay_count = 200
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+# As region.tsim: six hours to settle, the last three carrying traffic, and one measured.
+warmup       = 6 h
+traffic.lead = 3 h
+duration     = 1 h
+deadline     = 60 s

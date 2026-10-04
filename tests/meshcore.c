@@ -127,6 +127,24 @@ static void a_companion_relays_nothing(void) {
     rig_close(&r);
 }
 
+/* Picked repeaters stand in for the list: node 1 is left out of the set, whatever `relays` says. */
+static void a_companion_left_out_of_a_picked_set_relays_nothing(void) {
+    static const uint8_t set[4] = {1, 0, 1, 1};
+    struct rig r;
+    rig_init(&r);
+    r.rc.relay_pick = 3; /* cds, as the driver would have picked */
+    r.rc.relay_count = 3;
+    r.rc.relay_set = set;
+    line(&r, 4, 1);
+    uint64_t b = tsim_net_originate(r.net, 0, TSIM_BROADCAST, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(60));
+    CHECK_EQ_U64(tsim_net_message(r.net, b)->delivered, 1);
+    CHECK_EQ_U64(frames(&r, 1, TSIM_PURPOSE_RELAY), 0);
+    CHECK_EQ_U64(tsim_meshcore_relay(&r.rc, 1), 0);
+    CHECK_EQ_U64(tsim_meshcore_relay(&r.rc, 2), 1);
+    rig_close(&r);
+}
+
 /* A relay at hop count flood_max is not relayed. */
 static void a_flood_goes_no_further_than_flood_max(void) {
     struct rig r;
@@ -549,7 +567,7 @@ static void a_seed_repeats_a_run(void) {
 static void bad_configs_are_refused(void) {
     struct tsim_lora l = lora();
     struct tsim_meshcore_config ok = tsim_meshcore_default(0, &l, 14.0);
-    struct tsim_meshcore_config c[12];
+    struct tsim_meshcore_config c[13];
     for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
         c[i] = ok;
     }
@@ -565,6 +583,7 @@ static void bad_configs_are_refused(void) {
     c[9].estimate_cr = 5;
     strcpy(c[10].relays, "1,");
     c[11].cancel_heard = (enum tsim_meshcore_cancel)3;
+    c[12].relay_pick = 3; /* picked, but no set to say by whom */
     struct tsim_meshcore_mac_config mc = tsim_meshcore_mac_default();
     struct tsim_sched *sched = tsim_sched_create();
     struct tsim_net_params p = tsim_net_defaults(1);
@@ -605,6 +624,7 @@ int main(void) {
     RUN(the_first_nodes_have_hashes_of_their_own);
     RUN(a_broadcast_is_relayed_once_by_every_relay_it_reaches);
     RUN(a_companion_relays_nothing);
+    RUN(a_companion_left_out_of_a_picked_set_relays_nothing);
     RUN(a_flood_goes_no_further_than_flood_max);
     RUN(a_flood_stops_at_the_most_hops_its_count_holds);
     RUN(a_flood_relay_waits_up_to_five_halves_of_its_airtime);

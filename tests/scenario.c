@@ -213,6 +213,16 @@ static void problems_say_where_they_are(void) {
          "expected a time"},
         {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.relay_pick = degree\n", 0,
          "relay_count is 0"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.relay_pick = best\n", 4,
+         "list, degree, spaced or cds"},
+        {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.relay_pick = degree\n", 0,
+         "relay_count is 0"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.relay_pick = spaced\n", 0,
+         "relay_count is 0"},
+        {"nodes = 2\nrouting = meshtastic\nmac = meshtastic\nrouting.relay_pick = cds\n"
+         "routing.relay_count = 3\n",
+         0, "relay_count is 3, more than the 2 nodes"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nrouting.relay_pick = cds\n", 4, "not a setting"},
         {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.relay_pick = cds\n"
          "routing.relay_count = 3\n",
          0, "relay_count is 3, more than the 2 nodes"},
@@ -369,6 +379,27 @@ static void a_meshtastic_run_floods_a_line(void) {
     CHECK(rep.broadcast.messages > 100);
     CHECK(rep.broadcast.on_time > rep.broadcast.wanted / 2);
     CHECK(rep.frames[TSIM_PURPOSE_RELAY] > 0);
+}
+
+/* MeshCore's repeaters picked as candidate 3's relays are: a connected dominating set of a line is
+ * its four inner nodes, which carry a broadcast end to end; one repeater cannot. */
+static void a_meshcore_run_relays_through_its_picked_repeaters(void) {
+    const char *text = "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
+                       "routing = meshcore\nmac = meshcore\nrouting.relay_pick = cds\n"
+                       "routing.relay_count = %d\ntraffic.interval = 2 min\n"
+                       "traffic.broadcast = 1\nduration = 30 min\n";
+    char buf[512];
+    struct tsim_scenario s;
+    struct tsim_report all, one;
+    snprintf(buf, sizeof buf, text, 0);
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &all));
+    snprintf(buf, sizeof buf, text, 1);
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &one));
+    CHECK(all.broadcast.messages > 50);
+    CHECK(all.broadcast.on_time > all.broadcast.wanted * 3 / 4);
+    CHECK(one.broadcast.on_time < one.broadcast.wanted / 2);
 }
 
 static void a_run_relays_across_its_map(void) {
@@ -778,6 +809,7 @@ int main(void) {
     RUN(a_moved_node_s_links_change);
     RUN(a_run_talks_to_its_peers_and_answers);
     RUN(a_meshtastic_run_floods_a_line);
+    RUN(a_meshcore_run_relays_through_its_picked_repeaters);
     RUN(a_run_repeats_with_its_seed);
     RUN(compatibility_settings_read);
     RUN(positions_read_from_text);

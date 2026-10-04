@@ -582,7 +582,7 @@ static void *router_create(struct tsim_node *node, const void *config) {
     const struct tsim_meshtastic_config *c = config;
     if (c->hop_limit > TSIM_MESHTASTIC_HOPS_MAX || c->processing < 0 ||
         c->processing > TSIM_MESHTASTIC_WAIT_MAX || !tsim_meshtastic_window_valid(&c->window) ||
-        (unsigned)c->role > TSIM_MESHTASTIC_ROUTER ||
+        (unsigned)c->role > TSIM_MESHTASTIC_ROUTER || (c->relay_pick && !c->relay_set) ||
         (!isnan(c->noise_dbm) && !(fabs(c->noise_dbm) <= 1e3))) {
         return NULL;
     }
@@ -593,6 +593,9 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->node = node;
     r->self = tsim_node_index(node);
     r->config = *c;
+    if (c->relay_pick && c->relay_set[r->self]) {
+        r->config.role = TSIM_MESHTASTIC_ROUTER;
+    }
     return r;
 }
 

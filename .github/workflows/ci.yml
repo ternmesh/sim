@@ -59,6 +59,14 @@ jobs:
         run: timeout 120 ./build/tsim scenarios/scale/region-meshcore.tsim
       - name: Run scenarios/scale/region-distvec.tsim within 120 s
         run: timeout 120 ./build/tsim scenarios/scale/region-distvec.tsim
+      - name: Run scenarios/scale/region-deployed.tsim within 120 s
+        run: timeout 120 ./build/tsim scenarios/scale/region-deployed.tsim
+      - name: Run scenarios/scale/region-meshtastic-deployed.tsim within 120 s
+        run: timeout 120 ./build/tsim scenarios/scale/region-meshtastic-deployed.tsim
+      - name: Run scenarios/scale/region-meshcore-deployed.tsim within 120 s
+        run: timeout 120 ./build/tsim scenarios/scale/region-meshcore-deployed.tsim
+      - name: Run scenarios/scale/region-distvec-deployed.tsim within 120 s
+        run: timeout 120 ./build/tsim scenarios/scale/region-distvec-deployed.tsim
 
   format:
     runs-on: ubuntu-24.04

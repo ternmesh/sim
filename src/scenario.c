@@ -241,10 +241,67 @@ static void meshtastic_defaults(void *config, const struct tsim_radio *radio) {
         tsim_meshtastic_default(radio->channel, &radio->lora, radio->tx_dbm);
 }
 
+/* Where a routing's config keeps its relay pick - distvec's infrastructure, meshcore's repeaters,
+ * meshtastic's routers - or all NULL for a routing without one. */
+struct picked {
+    uint8_t *pick; /* enum tsim_distvec_pick */
+    uint32_t *count;
+    const uint8_t **set;
+};
+
+static struct picked picked_of(const struct tsim_routing *routing, void *config) {
+    if (routing == &tsim_distvec) {
+        struct tsim_distvec_config *c = config;
+        return (struct picked){&c->relay_pick, &c->relay_count, &c->relay_set};
+    }
+    if (routing == &tsim_meshcore) {
+        struct tsim_meshcore_config *c = config;
+        return (struct picked){&c->relay_pick, &c->relay_count, &c->relay_set};
+    }
+    if (routing == &tsim_meshtastic) {
+        struct tsim_meshtastic_config *c = config;
+        return (struct picked){&c->relay_pick, &c->relay_count, &c->relay_set};
+    }
+    return (struct picked){0};
+}
+
+/* routing.relay_pick and routing.relay_count, which distvec, meshcore and meshtastic share: NULL if
+ * `key` is neither, "" if it took, or what was wrong with it. */
+static const char *relay_pick_set(const char *key, const char *value, uint8_t *pick,
+                                  uint32_t *count) {
+    uint64_t v;
+    if (strcmp(key, "relay_pick") == 0) {
+        static const char *picks[] = {"list", "degree", "spaced", "cds"};
+        for (uint8_t i = 0; i < sizeof picks / sizeof *picks; i++) {
+            if (strcmp(value, picks[i]) == 0) {
+                *pick = i;
+                return "";
+            }
+        }
+        return "expected list, degree, spaced or cds";
+    }
+    if (strcmp(key, "relay_count") == 0) {
+        return parse_u64(value, UINT32_MAX, &v) ? (*count = (uint32_t)v, "") : "expected a count";
+    }
+    return NULL;
+}
+
+/* Why a relay pick would be refused, or NULL. */
+static const char *relay_pick_check(uint8_t pick, uint32_t count) {
+    if (pick > TSIM_DISTVEC_PICK_CDS ||
+        (pick != TSIM_DISTVEC_PICK_LIST && pick != TSIM_DISTVEC_PICK_CDS && count == 0)) {
+        return "relay_pick is not list, degree, spaced or cds, or relay_count is 0 for one but cds";
+    }
+    return NULL;
+}
+
 static const char *meshtastic_set(void *config, const char *key, const char *value) {
     struct tsim_meshtastic_config *c = config;
     uint64_t v;
     const char *why = window_set(&c->window, key, value);
+    if (!why) {
+        why = relay_pick_set(key, value, &c->relay_pick, &c->relay_count);
+    }
     if (why) {
         return *why ? why : NULL;
     }
@@ -304,7 +361,9 @@ static const char *meshtastic_set(void *config, const char *key, const char *val
 }
 
 static const char *meshtastic_check(const void *config) {
-    return window_check(&((const struct tsim_meshtastic_config *)config)->window);
+    const struct tsim_meshtastic_config *c = config;
+    const char *why = relay_pick_check(c->relay_pick, c->relay_count);
+    return why ? why : window_check(&c->window);
 }
 
 static void meshtastic_mac_defaults(void *config, const struct tsim_radio *radio) {
@@ -337,6 +396,11 @@ static const char *meshtastic_mac_check(const void *config) {
     return window_check(&c->window);
 }
 
+static const char *meshcore_check(const void *config) {
+    const struct tsim_meshcore_config *c = config;
+    return relay_pick_check(c->relay_pick, c->relay_count);
+}
+
 static void meshcore_defaults(void *config, const struct tsim_radio *radio) {
     *(struct tsim_meshcore_config *)config =
         tsim_meshcore_default(radio->channel, &radio->lora, radio->tx_dbm);
@@ -351,6 +415,10 @@ static const char *delay_factor(const char *value, double *out) {
 static const char *meshcore_set(void *config, const char *key, const char *value) {
     struct tsim_meshcore_config *c = config;
     uint64_t v;
+    const char *why = relay_pick_set(key, value, &c->relay_pick, &c->relay_count);
+    if (why) {
+        return *why ? why : NULL;
+    }
     if (strcmp(key, "relays") == 0) {
         if (!tsim_meshcore_relays_valid(value)) {
             return "expected all, or node numbers and ranges such as 0-45,50";
@@ -485,19 +553,9 @@ static const char *distvec_set(void *config, const char *key, const char *value)
         strcpy(c->relays, value);
         return NULL;
     }
-    if (strcmp(key, "relay_pick") == 0) {
-        static const char *picks[] = {"list", "degree", "spaced", "cds"};
-        for (uint8_t i = 0; i < sizeof picks / sizeof *picks; i++) {
-            if (strcmp(value, picks[i]) == 0) {
-                c->relay_pick = i;
-                return NULL;
-            }
-        }
-        return "expected list, degree, spaced or cds";
-    }
-    if (strcmp(key, "relay_count") == 0) {
-        return parse_u64(value, UINT32_MAX, &v) ? (c->relay_count = (uint32_t)v, NULL)
-                                                : "expected a count";
+    const char *why = relay_pick_set(key, value, &c->relay_pick, &c->relay_count);
+    if (why) {
+        return *why ? why : NULL;
     }
     if (strcmp(key, "leaves") == 0) {
         if (strcmp(value, "routed") == 0) {
@@ -708,7 +766,7 @@ static const struct tsim_plugin plugins[] = {
     {"meshtastic", NULL, &tsim_meshtastic_mac, sizeof(struct tsim_meshtastic_mac_config),
      meshtastic_mac_defaults, meshtastic_mac_set, meshtastic_mac_check},
     {"meshcore", &tsim_meshcore, NULL, sizeof(struct tsim_meshcore_config), meshcore_defaults,
-     meshcore_set, NULL},
+     meshcore_set, meshcore_check},
     {"meshcore", NULL, &tsim_meshcore_mac, sizeof(struct tsim_meshcore_mac_config),
      meshcore_mac_defaults, meshcore_mac_set, NULL},
     {"distvec", &tsim_distvec, NULL, sizeof(struct tsim_distvec_config), distvec_defaults,
@@ -1283,7 +1341,9 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     }
     const struct tsim_distvec_config *dv =
         ok && s->routing->routing == &tsim_distvec ? (const void *)s->routing_config : NULL;
-    if (ok && dv && s->links_file[0] && dv->relay_pick == TSIM_DISTVEC_PICK_SPACED) {
+    struct picked pk =
+        ok ? picked_of(s->routing->routing, (void *)s->routing_config) : (struct picked){0};
+    if (ok && pk.pick && *pk.pick == TSIM_DISTVEC_PICK_SPACED && s->links_file[0]) {
         ok = fail(err, 0, "routing.relay_pick = spaced needs positions, which links replaces");
     }
     if (ok && s->move_share > 0 && s->move_speed_min > s->move_speed_max) {
@@ -1296,9 +1356,9 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
         ok = fail(err, 0,
                   "move.share: the oracle's routes are built once, from where the nodes start");
     }
-    if (ok && dv && dv->relay_pick != TSIM_DISTVEC_PICK_LIST && dv->relay_count > s->nodes) {
+    if (ok && pk.pick && *pk.pick != TSIM_DISTVEC_PICK_LIST && *pk.count > s->nodes) {
         ok = fail(err, 0, "routing.relay_count is %" PRIu32 ", more than the %" PRIu32 " nodes",
-                  dv->relay_count, s->nodes);
+                  *pk.count, s->nodes);
     }
     free(entries);
     free(copy);
@@ -1834,32 +1894,30 @@ static void churn_flip(struct tsim_sched *sched, void *ctx) {
 }
 
 /* Whether `node` is of the kind `kinds` names (enum tsim_churn_nodes). */
-static bool of_kind(const struct tsim_scenario *s, const struct tsim_distvec_config *dv,
-                    uint8_t kinds, uint32_t node) {
+static bool of_kind(const struct tsim_scenario *s, const void *rc, uint8_t kinds, uint32_t node) {
     if (kinds == TSIM_CHURN_ALL) {
         return true;
     }
     bool relay = true;
-    if (dv) {
-        relay = tsim_distvec_relay(dv, node);
+    if (s->routing->routing == &tsim_distvec) {
+        relay = tsim_distvec_relay(rc, node);
     } else if (s->routing->routing == &tsim_meshcore) {
-        const struct tsim_meshcore_config *mc = (const void *)s->routing_config;
-        relay = tsim_nodeset_contains(mc->relays, node) == 1;
+        relay = tsim_meshcore_relay(rc, node) == 1;
     }
     return relay == (kinds == TSIM_CHURN_RELAYS);
 }
 
 /* round(share x eligible) of the nodes of the kind `kinds` names, drawn from `stream`: returned
  * first in a list of the node count, NULL when memory runs out, with how many in *k. */
-static uint32_t *pick(const struct tsim_scenario *s, const struct tsim_distvec_config *dv,
-                      uint8_t kinds, double share, uint64_t stream, uint32_t *k) {
+static uint32_t *pick(const struct tsim_scenario *s, const void *rc, uint8_t kinds, double share,
+                      uint64_t stream, uint32_t *k) {
     uint32_t n = s->nodes, eligible = 0;
     uint32_t *pool = malloc(n * sizeof *pool);
     if (!pool) {
         return NULL;
     }
     for (uint32_t i = 0; i < n; i++) {
-        if (of_kind(s, dv, kinds, i)) {
+        if (of_kind(s, rc, kinds, i)) {
             pool[eligible++] = i;
         }
     }
@@ -1876,10 +1934,10 @@ static uint32_t *pick(const struct tsim_scenario *s, const struct tsim_distvec_c
 }
 
 /* Picks round(share x eligible) nodes to churn, and schedules each one's first time down. */
-static bool churn_start(struct churn *c, const struct tsim_scenario *s,
-                        const struct tsim_distvec_config *dv, struct tsim_sched *sched) {
+static bool churn_start(struct churn *c, const struct tsim_scenario *s, const void *rc,
+                        struct tsim_sched *sched) {
     uint32_t k;
-    uint32_t *pool = pick(s, dv, s->churn_nodes, s->churn_share, UINT64_C(0xC4) << 56, &k);
+    uint32_t *pool = pick(s, rc, s->churn_nodes, s->churn_share, UINT64_C(0xC4) << 56, &k);
     if (!pool) {
         return false;
     }
@@ -1947,9 +2005,8 @@ static void move_step(struct tsim_sched *sched, void *ctx) {
 }
 
 /* Picks the movers, starts each where it stands, and schedules the first step. */
-static bool move_start(struct moving *mv, const struct tsim_scenario *s,
-                       const struct tsim_distvec_config *dv, struct tsim_sched *sched,
-                       struct tsim_phy *phy, const struct tsim_pos *pos) {
+static bool move_start(struct moving *mv, const struct tsim_scenario *s, const void *rc,
+                       struct tsim_sched *sched, struct tsim_phy *phy, const struct tsim_pos *pos) {
     uint32_t n = s->nodes;
     *mv = (struct moving){
         .phy = phy,
@@ -1974,7 +2031,7 @@ static bool move_start(struct moving *mv, const struct tsim_scenario *s,
             mv->params.y_max = fmax(mv->params.y_max, pos[i].y);
         }
     }
-    mv->who = pick(s, dv, s->move_nodes, s->move_share, UINT64_C(0xC6) << 56, &mv->count);
+    mv->who = pick(s, rc, s->move_nodes, s->move_share, UINT64_C(0xC6) << 56, &mv->count);
     uint32_t k = mv->count ? mv->count : 1;
     mv->spot = malloc(n * sizeof *mv->spot);
     mv->movers = malloc(k * sizeof *mv->movers);
@@ -2082,18 +2139,24 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     np.listen = s->radio.lora;
     np.seed = s->seed;
     /* Picked relays are known before any router is made, so they are picked over a medium of
-     * their own with the same losses. */
-    if (dv && dv->relay_pick != TSIM_DISTVEC_PICK_LIST) {
+     * their own with the same losses. Meshcore's repeaters and meshtastic's routers are picked as
+     * distvec's infrastructure is, over links at the radio's modulation and power. */
+    struct picked pk = picked_of(s->routing->routing, routing_config);
+    if (pk.pick && *pk.pick != TSIM_DISTVEC_PICK_LIST) {
+        struct tsim_distvec_config by =
+            tsim_distvec_default(np.channel, &s->radio.lora, s->radio.tx_dbm);
+        by.relay_pick = *pk.pick;
+        by.relay_count = *pk.count;
         struct tsim_phy *medium = tsim_phy_create(sched, &np.phy, s->nodes, np.channel, &np.listen,
                                                   (struct tsim_phy_hooks){0});
         relay_set = malloc(s->nodes);
         bool picked = medium && relay_set && lay_links(medium, s, pos) &&
-                      tsim_distvec_pick_relays(medium, pos, dv, relay_set);
+                      tsim_distvec_pick_relays(medium, pos, dv ? dv : &by, relay_set);
         tsim_phy_destroy(medium);
         if (!picked) {
             goto done;
         }
-        dv->relay_set = relay_set;
+        *pk.set = relay_set;
     }
     net = tsim_net_create(sched, &np, s->nodes, s->routing->routing, routing_config, s->mac->mac,
                           s->mac_config);
@@ -2155,11 +2218,12 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
                                .down = s->churn_down,
                                .dv = dv != NULL};
         window.retired = &churn.retired;
-        if (!tsim_metrics_churn(metrics) || !churn_start(&churn, s, dv, sched)) {
+        if (!tsim_metrics_churn(metrics) || !churn_start(&churn, s, routing_config, sched)) {
             goto done;
         }
     }
-    if (s->move_share > 0 && !move_start(&moving, s, dv, sched, tsim_net_phy(net), pos)) {
+    if (s->move_share > 0 &&
+        !move_start(&moving, s, routing_config, sched, tsim_net_phy(net), pos)) {
         goto done;
     }
     tsim_net_start(net);

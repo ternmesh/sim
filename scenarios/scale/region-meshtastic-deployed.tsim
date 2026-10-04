@@ -1,0 +1,31 @@
+# Candidate 1 as it is deployed: region-meshtastic.tsim on Meshtastic's default preset, LongFast -
+# SF11 at 250 kHz, coding rate 4/5, the 16-symbol preamble Meshtastic programs - with 200 routers
+# sited as region-meshcore-deployed.tsim's repeaters and region-distvec-deployed.tsim's relays are,
+# so the candidates share their sites. The rest are clients, Meshtastic's default role, which still
+# rebroadcast. Sited by a greedy connected dominating set over the links the radio has: careful
+# siting, which a real deployment can only approach. MediumFast, the preset Meshtastic suggests for
+# busy meshes, is -s radio.sf=9.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf       = 11
+radio.bw       = 250000
+radio.cr       = 1
+radio.preamble = 16
+radio.tx_dbm   = 20
+
+routing             = meshtastic
+mac                 = meshtastic
+routing.relay_pick  = cds
+routing.relay_count = 200
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+# As region.tsim: six hours to settle, the last three carrying traffic, and one measured.
+warmup       = 6 h
+traffic.lead = 3 h
+duration     = 1 h
+deadline     = 60 s

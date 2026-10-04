@@ -112,10 +112,16 @@ static void a_message_one_frame_cannot_carry_is_refused(void) {
 }
 
 /* Every node hears every other: the first rebroadcast is the second copy each other node hears. */
-static uint64_t relays_in_a_clique(enum tsim_meshtastic_role role, uint64_t seed) {
+static uint64_t relays_in_a_clique(enum tsim_meshtastic_role role, const uint8_t *routers,
+                                   uint64_t seed) {
     struct rig r;
     rig_init(&r);
     r.rc.role = role;
+    if (routers) {
+        r.rc.relay_pick = 3; /* cds, as the driver would have picked */
+        r.rc.relay_count = 5;
+        r.rc.relay_set = routers;
+    }
     build(&r, 5, seed);
     for (uint32_t a = 0; a < 5; a++) {
         for (uint32_t b = a + 1; b < 5; b++) {
@@ -137,9 +143,20 @@ static uint64_t relays_in_a_clique(enum tsim_meshtastic_role role, uint64_t seed
 
 static void a_second_copy_cancels_a_clients_rebroadcast_and_a_third_a_routers(void) {
     for (uint64_t seed = 1; seed <= 10; seed++) {
-        CHECK_EQ_U64(relays_in_a_clique(TSIM_MESHTASTIC_CLIENT, seed), 1);
-        CHECK_EQ_U64(relays_in_a_clique(TSIM_MESHTASTIC_ROUTER, seed), 2);
-        CHECK_EQ_U64(relays_in_a_clique(TSIM_MESHTASTIC_CLIENT_MUTE, seed), 0);
+        CHECK_EQ_U64(relays_in_a_clique(TSIM_MESHTASTIC_CLIENT, NULL, seed), 1);
+        CHECK_EQ_U64(relays_in_a_clique(TSIM_MESHTASTIC_ROUTER, NULL, seed), 2);
+        CHECK_EQ_U64(relays_in_a_clique(TSIM_MESHTASTIC_CLIENT_MUTE, NULL, seed), 0);
+    }
+}
+
+/* Picked nodes are routers and the rest keep the role: every node picked acts as routers do, and
+ * none picked as the role does. */
+static void picked_nodes_are_routers_and_the_rest_keep_the_role(void) {
+    static const uint8_t all[5] = {1, 1, 1, 1, 1}, none[5] = {0};
+    for (uint64_t seed = 1; seed <= 10; seed++) {
+        CHECK_EQ_U64(relays_in_a_clique(TSIM_MESHTASTIC_CLIENT, all, seed), 2);
+        CHECK_EQ_U64(relays_in_a_clique(TSIM_MESHTASTIC_CLIENT_MUTE, none, seed), 0);
+        CHECK_EQ_U64(relays_in_a_clique(TSIM_MESHTASTIC_CLIENT, none, seed), 1);
     }
 }
 
@@ -607,6 +624,9 @@ static void bad_configs_are_refused(void) {
     rig_init(&r);
     r.mc.busy_chance = 1.5;
     CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
+    rig_init(&r);
+    r.rc.relay_pick = 3; /* picked, but no set to say by whom */
+    CHECK(!tsim_net_create(sched, &p, 2, &tsim_meshtastic, &r.rc, &tsim_meshtastic_mac, &r.mc));
     tsim_sched_destroy(sched);
 }
 
@@ -654,6 +674,7 @@ int main(void) {
     RUN(a_broadcast_crosses_the_hop_limit_and_no_further);
     RUN(a_message_one_frame_cannot_carry_is_refused);
     RUN(a_second_copy_cancels_a_clients_rebroadcast_and_a_third_a_routers);
+    RUN(picked_nodes_are_routers_and_the_rest_keep_the_role);
     RUN(a_direct_message_is_acknowledged_back_along_the_flood);
     RUN(an_unacknowledged_message_is_retried_and_an_acknowledged_one_is_not);
     RUN(a_retry_that_reaches_the_destination_is_acknowledged_again);
