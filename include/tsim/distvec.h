@@ -607,6 +607,9 @@ struct tsim_distvec_config {
     uint8_t hop_retries;
     uint8_t salvage; /* other next hops a frame given up on may be sent to, 0 none (below) */
     uint8_t retries;
+    uint8_t rescue; /* the attempt, 1..retries, a source floods rather than routes; 0 none */
+    bool hop_rescue;
+    uint8_t rescue_hops;
     tsim_time hop_wait;
     tsim_time ack_wait;
     double ack_factor;
@@ -970,6 +973,8 @@ struct tsim_distvec_stats {
     uint64_t reattached;
     /* With salvage: frames given up on that went to another next hop instead. */
     uint64_t salvaged;
+    /* With rescue: messages it flooded as a source. */
+    uint64_t rescues;
     /* With relay_pick elect: the times the node stood as a relay, and stood down. */
     uint64_t elected;
     uint64_t stood_down;
