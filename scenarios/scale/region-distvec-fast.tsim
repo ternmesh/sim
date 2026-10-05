@@ -56,10 +56,10 @@
 # seed. SF8 is worse for it than SF7 from 0 dBm up, more airtime per frame for the same load, as
 # MSH-49 found; at -5 dBm, where SF7 leaves 5 links per node, SF8's reach helps, 65% against 47%.
 #
-# Re-attachment (MSH-62, -s routing.reattach=yes; 3 seeds), unicast on time off and on: a quarter
-# of the leaves walking 59.8% and 68.7% at 0 dBm, 84.8% and 87.0% at 20 dBm; driving 59.2% and
-# 66.7%, 75.7% and 82.8%; nothing moving 88.8% and 86.9%, 95.8% and 96.8%. It costs 9-37% of the
-# deliveries per second of airtime, in repair: see include/tsim/distvec.h.
+# Re-attachment (MSH-62 and MSH-72, -s routing.reattach=yes; 3 seeds), unicast on time off and
+# on: a quarter of the leaves walking 59.8% and 67.5% at 0 dBm, 84.8% and 89.7% at 20 dBm; driving
+# 59.2% and 65.4%, 75.7% and 86.3%; nothing moving 88.8% and 88.7%, 95.8% and 97.5%. Deliveries per
+# second of airtime fall 5% with nothing moving and 28-36% driving: see include/tsim/distvec.h.
 nodes     = 1000
 placement = uniform
 area      = 18000 x 18000

@@ -36,6 +36,7 @@
 #define ANNOUNCE_HEAD 16
 #define IHU_LEN 5
 #define ROUTE_LEN 8
+#define LEAF_BIT 0x80000000u /* in a route's destination, with reattach: it is a leaf */
 #define REQUEST_HEAD 6
 #define ASK_LEN 7
 #define ASKS_MAX ((FRAME_MAX - REQUEST_HEAD) / ASK_LEN)
@@ -145,6 +146,7 @@ struct dest {
     bool urgent;      /* on the list of changed routes */
     bool listed;      /* in the frame being built */
     bool leaf;        /* heard announcing itself as a leaf */
+    bool held;        /* starved, its route not yet retracted: a leaf's new seq may be coming */
     bool had;         /* has had a selected route, so losing one is an outage */
     uint8_t retracts; /* times its retraction is still to go */
     uint8_t tries;    /* seqno requests sent while starved: 0 when not starved */
@@ -455,6 +457,8 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .solicit_wait = TSIM_S(10),
         .solicit_gap = TSIM_S(60),
         .solicit_tries = 3,
+        .solicit_hops = 3,
+        .leaf_tries = 1,
         .here_window = 16,
         .here_cancel = 3,
     };
@@ -537,9 +541,11 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     }
     if (c->reattach &&
         (!strength || c->sf_min || c->solicit_wait <= 0 || c->solicit_gap < c->solicit_wait ||
-         c->solicit_tries < 1 || !(c->here_window >= 0))) {
+         c->solicit_tries < 1 || c->solicit_hops < 1 || c->leaf_tries == UINT8_MAX ||
+         !(c->here_window >= 0))) {
         return "reattach wants links by strength and no per-link SF, solicit_wait above 0, "
-               "solicit_gap no shorter, solicit_tries 1 or more and here_window 0 or more";
+               "solicit_gap no shorter, solicit_tries and solicit_hops 1 or more, leaf_tries under "
+               "255 and here_window 0 or more";
     }
     bool oracle = c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE;
     if (c->sf_min && (c->sf_min < TSIM_SF_MIN || c->sf_min > c->lora.sf || !strength || !c->power ||
@@ -1277,6 +1283,9 @@ static void starved(struct router *r, uint32_t d) {
     if (ds->asked >= 0 && t - ds->asked < r->config.request_interval) {
         return;
     }
+    if (r->config.reattach && ds->leaf) {
+        return; /* a leaf's first, a request_interval on, from request_fire */
+    }
     ask(r, d);
 }
 
@@ -1295,14 +1304,24 @@ static void seq_fire(void *ctx) {
     tsim_timer_start(r->seq_timer, (tsim_time)period);
 }
 
+static void trickle_reset(struct router *r);
+
 static void request_fire(void *ctx) {
     struct router *r = ctx;
     for (size_t i = 0; i < r->starving_count;) {
         uint32_t d = r->starving[i];
         struct dest *ds = &r->dest[d];
-        if (ds->sel || ds->tries >= REQUEST_TRIES) {
+        unsigned tries = r->config.reattach && ds->leaf ? r->config.leaf_tries + 1u : REQUEST_TRIES;
+        if (ds->sel || ds->tries >= tries) {
             r->stats.gave_up += !ds->sel;
             ds->tries = 0;
+            if (ds->held) {
+                ds->held = false;
+                push_urgent(r, d); /* no new seq came: retracted now */
+                r->changed = true;
+                trickle_reset(r);
+                r->changed = false;
+            }
             r->starving[i] = r->starving[--r->starving_count];
             continue;
         }
@@ -1352,9 +1371,14 @@ static void reselect(struct router *r, uint32_t d) {
     }
     bool was = ds->sel != 0;
     ds->sel = chosen ? chosen->slot : 0;
-    if (!chosen && infeasible && !demand(r)) {
-        starved(r, d); /* on demand, a route is asked for only when a message needs it */
+    /* On demand, a route is asked for only when a message needs it. A route to a leaf this node
+     * announced is waited for even with nothing infeasible left: the leaf's newer seq may come. */
+    bool leaf_lost = r->config.reattach && ds->leaf && ds->advertised;
+    if (!chosen && (infeasible || leaf_lost) && !demand(r)) {
+        starved(r, d);
     }
+    bool hold = !chosen && r->config.reattach && ds->leaf && ds->tries;
+    ds->held = hold && (ds->held || ds->advertised);
     if (!announces(r, d)) {
         return; /* a leaf announces no routes, and with parents nobody announces one to a leaf */
     }
@@ -1370,6 +1394,9 @@ static void reselect(struct router *r, uint32_t d) {
     }
     r->selected = r->selected - was + (chosen != NULL);
     if (!chosen) {
+        if (ds->held) {
+            return; /* retracted only if no new seq comes while it asks */
+        }
         if (ds->advertised || was) {
             push_urgent(r, d); /* to retract it */
             r->changed = true;
@@ -1491,8 +1518,6 @@ static void reselect_through(struct router *r, uint16_t s) {
         }
     }
 }
-
-static void trickle_reset(struct router *r);
 
 static void probe_stop(struct router *r, struct neighbour *n, bool answered);
 
@@ -1639,6 +1664,8 @@ static bool advertise(struct router *r, uint32_t d, uint8_t *out) {
         ds->adv_metric = metric;
         r->retracting -= ds->retracts > 0;
         ds->retracts = 0;
+    } else if (ds->held) {
+        return false; /* not retracted yet, if a change of before was still waiting to go */
     } else if (ds->advertised || ds->retracts) {
         /* A retraction lost on the air would leave a neighbour with the route for ever - routes
          * do not expire - so it goes RETRACTS times, the repeats in turn with the routes. */
@@ -1655,7 +1682,7 @@ static bool advertise(struct router *r, uint32_t d, uint8_t *out) {
     } else {
         return false;
     }
-    put32(out, d);
+    put32(out, d | (r->config.reattach && ds->leaf ? LEAF_BIT : 0));
     put16(out + 4, seq);
     put16(out + 6, metric);
     return true;
@@ -1965,7 +1992,7 @@ static void unsent(struct router *r, const uint8_t *b) {
     }
     const uint8_t *p = b + r->ann_head + (uint32_t)b[14] * IHU_LEN;
     for (uint8_t k = 0; k < b[15]; k++, p += ROUTE_LEN) {
-        uint32_t d = get32(p);
+        uint32_t d = get32(p) & ~LEAF_BIT;
         if (get16(p + 6) == INF) {
             r->dest[d].advertised = true;
         }
@@ -2559,7 +2586,12 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     choose_parent(r);
     if (n->infra) {
         for (uint8_t k = 0; k < routes; k++, p += ROUTE_LEN) {
-            update(r, get32(p), get16(p + 4), get16(p + 6), s);
+            uint32_t d = get32(p) & ~LEAF_BIT;
+            uint16_t metric = get16(p + 6);
+            if (r->config.reattach && d < r->nodes && d != r->self && metric != INF) {
+                r->dest[d].leaf = (get32(p) & LEAF_BIT) != 0;
+            }
+            update(r, d, get16(p + 4), metric, s);
         }
     }
     if (learned(r)) {
@@ -3071,15 +3103,10 @@ static void missed(struct router *r, uint16_t s) {
     n->boost = n->boost + r->config.step_db > room ? room : n->boost + r->config.step_db;
     /* A leaf that solicits sends no more through a relay that lost its frame, and asks after it:
      * if it is there, its answer brings it back. */
-    if (reattaching(r) && n->infra && n->cost != INF) {
+    if (reattaching(r) && n->infra && n->cost != INF && n->lost + 1u >= r->config.solicit_hops) {
         bool anchored = anchor(r) == n;
         mute(r, s, TSIM_DISTVEC_DOWN_HOP);
         want_solicit(r, n->id, anchored);
-    }
-    /* A relay that cannot reach a leaf no longer routes to it there, and asks for a newer seq,
-     * which reaches the leaf through any relay that still hears it (starved()). */
-    if (r->config.reattach && by_strength(r) && r->infra && !n->infra && n->cost != INF) {
-        mute(r, s, TSIM_DISTVEC_DOWN_HOP);
     }
     /* By strength, a lost hop is a lost frame - until dead_hops of them, with nothing heard from
      * it between: then the neighbour is gone. */

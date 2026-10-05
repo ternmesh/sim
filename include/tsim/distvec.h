@@ -109,7 +109,8 @@
  * is refused. Each IHU
  * ("I heard you") is the share of a neighbour's announces the sender received, in 255ths. The
  * routes are the sender's selected routes: what it would forward through, with the sequence number
- * of the source and the metric from the sender. A metric of 0xFFFF retracts a route. A table too
+ * of the source and the metric from the sender; with reattach, the destination's top bit set says
+ * it is a leaf. A metric of 0xFFFF retracts a route. A table too
  * big for one frame goes out in slices: changed routes first, then the rest in turn, so every route
  * is repeated every so many announces. An announce the node's queue refuses is undone: it is
  * neither numbered nor charged to the cap, its round of IHUs goes back to where it was, and its
@@ -624,6 +625,8 @@ struct tsim_distvec_config {
     tsim_time solicit_wait;
     tsim_time solicit_gap;
     uint8_t solicit_tries;
+    uint8_t solicit_hops; /* frames lost in a row to a relay before a leaf asks after it */
+    uint8_t leaf_tries;   /* seqno requests a relay makes for a leaf it has lost, 0 or more */
     double here_window;
     uint8_t here_cancel;
     const struct tsim_distvec_oracle
@@ -746,8 +749,9 @@ struct tsim_distvec_config {
  * the relay it was next to, whose link by strength stays up until dead_hops frames are lost - a
  * leaf sends too few for that - and the routes to it keep leading there. It learns of the relays
  * now around it only from their announces, which Trickle stretches and power control keeps quiet.
- * So a leaf that solicits asks instead. When a frame to a relay is lost, that relay goes out of
- * use at once and is asked after; and every solicit_gap the leaf looks whether its anchor - the
+ * So a leaf that solicits asks instead. When solicit_hops frames in a row to a relay are lost,
+ * with nothing heard from it between, that relay goes out of use and is asked after; and every
+ * solicit_gap the leaf looks whether its anchor - the
  * relay it has the most margin with - has gone unheard for solicit_quiet, or with 0 two of its
  * promises, or whether it has none. A solicit goes at tx_dbm, out of the requests' share of the
  * cap, at most one a solicit_gap but for the second of a pair:
@@ -771,28 +775,45 @@ struct tsim_distvec_config {
  * Asking after the relay twice, and only it answering first and uncancelled, is what keeps a lost
  * answer from moving a leaf that has not moved: each move raises a seq every relay then announces.
  *
- * The routes to a leaf that has moved lead to its old relay, so `reattach` changes three things
- * for every node. A relay that loses a frame to a leaf takes the link to it out of use at once, as
- * a leaf does a relay's, so its route there goes and it asks for a newer one. A node that hears a
- * leaf's newer seq from elsewhere than from the leaf takes its link to the leaf out of use: the
- * leaf has re-attached, unheard here. And of routes as good, the newer seq is selected, however
- * little better the current one would need to be beaten by: a relay between the old relay and the
- * new one holds two routes as short, and would keep the one to where the leaf was. Selecting the
- * newest seq whatever its metric, as DSDV does, set off storms of seqno requests on the region -
- * fifty thousand an hour where there were none - each newer route leaving the older ones
- * infeasible when it broke.
+ * The routes to a leaf that has moved lead to its old relay, so `reattach` changes more for every
+ * node. A node that hears a leaf's newer seq from elsewhere than from the leaf takes its link to
+ * the leaf out of use: the leaf has re-attached, unheard here. Of routes as good, the newer seq is
+ * selected, however little better the current one would need to be beaten by: a relay between the
+ * old relay and the new one holds two routes as short, and would keep the one to where the leaf
+ * was. And routes to leaves are repaired patiently (MSH-72). A relay's announced route says whether
+ * its destination is a leaf, in the top bit of the destination, which node numbers never reach.
+ * A relay starved of its route to a leaf neither retracts it nor asks at once: it waits a
+ * request_interval, asks leaf_tries times, request_interval apart, and retracts the route only if
+ * no feasible one has come by then. Only the leaf can make a route to it feasible again, with a
+ * newer seq, and it raises one itself when it re-attaches; meanwhile every relay behind the starved
+ * one keeps its route, rather than starving in turn and asking five times as a relay's routes do.
+ *
+ * What re-attachment first cost (MSH-62) was repair, and it came from three places, each measured
+ * on the region at 0 dBm with leaves walking. Every relay a leaf left took the routes behind it
+ * down, and each starved relay asked five times: 38,523 seqno requests an hour, against 11,769
+ * without re-attachment, almost all of them about leaves and most of them repeats left unanswered.
+ * Relays took a link to a leaf out of use after a single frame lost, as leaves did a relay's: on
+ * LoRa one frame in a few is lost, so links flapped, and each flap reset the relay's Trickle -
+ * relays sent over half again as many announces with nothing moving. And a leaf asked after its
+ * relay for every frame lost, its solicits and their answers costing airtime and its messages
+ * detours.
+ * Now relays no longer take a leaf's link out of use for a frame lost, leaves wait for
+ * solicit_hops, and leaf routes are repaired as above. Tried and not kept: selecting the newest
+ * seq first for leaves alone, as DSDV does, which made every seq a leaf raised - answering a
+ * request as well as re-attaching - a wave through the whole network (30,308 requests an hour with
+ * nothing moving); and a notice a leaf sends along its new routes to its old relay, so the relays
+ * between learn its new seq first, which changed nothing measurable.
  *
  * Measured with tools/density.py --fast (region-distvec-fast.tsim, 3 seeds), unicast on time off
- * and on: with a quarter of the leaves walking, 59.8% and 68.7% at 0 dBm, 84.8% and 87.0% at 20
- * dBm; driving, 5 to 20 m/s, 59.2% and 66.7%, 75.7% and 82.8%; with nothing moving, 88.8% and
- * 86.9%, 95.8% and 96.8%; under churn, 58.5% and 58.8%, 77.3% and 77.9%. Off by default for what
- * it costs: deliveries per second of airtime fall 9-27% with nothing moving (37.9 to 27.7 at 0 dBm,
- * 54.4 to 49.5 at 20) and 31-37% driving, and broadcast 0-5 points. At 0 dBm (seed 1), with nothing
- * moving, the links taken out of use for a frame lost - 110 an hour - bring 1176 seqno requests an
- * hour where there were none, and 2.7 times the announce airtime; with leaves walking, seqno
- * requests go from 4846 an hour to 37777 and outages from 473 to 4794: each link to a leaf a relay
- * takes out of use leaves the routes behind it infeasible, and every one asks for a newer seq. That
- * repair, not finding the relays, is what is left to make cheap. */
+ * and on, at 0 and 20 dBm: with nothing moving 88.8% and 88.7%, 95.8% and 97.5%; with a quarter
+ * of the leaves walking 59.8% and 67.5%, 84.8% and 89.7%; driving, 5 to 20 m/s, 59.2% and 65.4%,
+ * 75.7% and 86.3%; under churn 58.5% and 58.5%, 77.3% and 77.4%. Broadcast is within 0.2 points
+ * of off with nothing moving, and 2.3-4.1 points under it driving. Deliveries per second of
+ * airtime with nothing moving are 36.1 against 37.9 at 0 dBm and 51.9 against 54.4 at 20, within
+ * 5% (27.7 and 49.5 before MSH-72); driving, 14.2 against 19.7 and 33.4 against 52.0, no better
+ * than before. Nearly all of those deliveries are broadcasts, so a unicast delivered that was not
+ * before costs relay airtime and adds almost nothing to them. Off by default until what driving
+ * costs is found. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */
