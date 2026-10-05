@@ -233,6 +233,13 @@
  * is sent a frame it has already forwarded sends it on again if it no longer has it waiting, so a
  * hop whose implicit acknowledgement was lost hears one.
  *
+ * Salvage. A frame given up on is otherwise dropped, though the node may hold other routes to its
+ * destination: a relay that has gone down keeps its link for dead_hops frames, and every frame sent
+ * it meanwhile is lost. With `salvage`, a frame given up on goes instead, with its retries anew, to
+ * the best other neighbour this node holds a feasible route through - feasible as Babel's
+ * condition has it, so it cannot loop - up to `salvage` times a frame, never to a neighbour it was
+ * given up on at. Only the frame moves: the link is judged as before.
+ *
  * The source waits for the acknowledgement ack_wait plus ack_factor times the route's metric in
  * milliseconds - the metric being airtime, it is a round trip's worth - counted from when its frame
  * goes on the air, however long it queued, or from when the queue refused it; and without one sends
@@ -576,6 +583,7 @@ struct tsim_distvec_config {
 
     uint8_t hop_max;
     uint8_t hop_retries;
+    uint8_t salvage; /* other next hops a frame given up on may be sent to, 0 none (below) */
     uint8_t retries;
     tsim_time hop_wait;
     tsim_time ack_wait;
@@ -938,6 +946,8 @@ struct tsim_distvec_stats {
     uint64_t solicits;
     uint64_t heres;
     uint64_t reattached;
+    /* With salvage: frames given up on that went to another next hop instead. */
+    uint64_t salvaged;
     /* With relay_pick elect: the times the node stood as a relay, and stood down. */
     uint64_t elected;
     uint64_t stood_down;

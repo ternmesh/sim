@@ -13,7 +13,8 @@
 #define INF TSIM_DISTVEC_METRIC_INF
 #define BROADCAST_HOP 0xFFFFFFFFu
 #define FRAME_MAX 255
-#define ROUTES 4 /* kept per destination */
+#define ROUTES 4      /* kept per destination */
+#define SALVAGE_MAX 4 /* the most a frame is salvaged */
 #define HISTORY 16
 #define RETRACTS 3 /* announces a retraction goes in, in turn with the routes: one may be lost */
 #define HOP_MISS 4 /* announces a frame lost on its way to a next hop counts as missed */
@@ -209,12 +210,14 @@ struct hop {
     uint64_t handle;
     tsim_time due; /* -1 until the frame has gone */
     uint8_t tries;
+    uint8_t salvages; /* next hops it was given up on at before this one */
     uint8_t type;
     uint8_t hops; /* as sent */
     uint32_t src;
     uint32_t dst;
     uint32_t id;
     uint32_t next;
+    uint32_t gone[SALVAGE_MAX]; /* those next hops */
     struct tsim_tx tx;
 };
 
@@ -430,6 +433,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .request_interval = TSIM_S(10),
         .hop_max = 32,
         .hop_retries = 2,
+        .salvage = 0,
         .hop_wait = TSIM_S(4),
         .retries = 3,
         .ack_wait = TSIM_S(5),
@@ -531,6 +535,9 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     if (strength && !(c->link_margin_db >= 0 && c->link_margin_db <= 60 && c->link_band_db >= 0 &&
                       c->link_band_db <= 60)) {
         return "link_margin or link_band is out of range";
+    }
+    if (c->salvage > SALVAGE_MAX) {
+        return "salvage is over 4";
     }
     if (strength && (c->dead_hops < 1 || c->silent_max <= 0)) {
         return "dead_hops is 0, or silent_max is not above 0";
@@ -3182,6 +3189,76 @@ static uint64_t send_hop(struct router *r, const struct tsim_tx *tx, bool listen
     return handle;
 }
 
+/* With salvage (above), sends a frame given up on at `h->next` to the best other neighbour this
+ * node holds a feasible route through to where the frame is going, with its retries anew. False if
+ * there is none, or the frame has been salvaged as often as it may. */
+static bool salvage(struct router *r, const struct hop *h) {
+    if (h->salvages >= r->config.salvage || r->oracle || h->type != TYPE_DATA) {
+        return false;
+    }
+    uint32_t t = target_of(r, h->dst);
+    if (t >= r->nodes || t == r->self) {
+        return false;
+    }
+    struct dest *ds = &r->dest[t];
+    const struct neighbour *best = NULL;
+    uint16_t best_m = INF;
+    for (int k = 0; k < ROUTES; k++) {
+        const struct entry *e = &ds->e[k];
+        if (!e->slot || !alive(r, e) || !usable(r, e->slot, t) || !feasible(ds, e)) {
+            continue;
+        }
+        const struct neighbour *n = slot(r, e->slot);
+        bool tried = n->id == h->next;
+        for (uint8_t g = 0; g < h->salvages; g++) {
+            tried = tried || n->id == h->gone[g];
+        }
+        uint16_t m = total(e->metric, n->cost);
+        if (!tried && m < best_m) {
+            best = n;
+            best_m = m;
+        }
+    }
+    /* The selected route is feasible by construction, but its metric may equal the feasibility
+     * distance: it is taken too, if it leads elsewhere. */
+    const struct entry *sel = live_sel(r, t);
+    if (!best && sel) {
+        const struct neighbour *n = slot(r, sel->slot);
+        bool tried = n->id == h->next;
+        for (uint8_t g = 0; g < h->salvages; g++) {
+            tried = tried || n->id == h->gone[g];
+        }
+        if (!tried && usable(r, sel->slot, t)) {
+            best = n;
+        }
+    }
+    if (!best) {
+        return false;
+    }
+    struct tsim_tx tx = h->tx;
+    tx.to = best->id;
+    put32(tx.bytes + 1, best->id);
+    if (per_sf(r)) {
+        tx.lora.sf = sf_of(r, best);
+    }
+    if (r->config.power) {
+        tx.tx_dbm = power_for(r, best, NAN);
+        tx.bytes[18] = power_byte(tx.tx_dbm);
+    }
+    uint64_t handle = send_hop(r, &tx, true);
+    if (!handle) {
+        return false;
+    }
+    struct hop *now_hop = &r->hops[r->hop_count - 1];
+    if (now_hop->handle == handle) {
+        now_hop->salvages = (uint8_t)(h->salvages + 1);
+        memcpy(now_hop->gone, h->gone, sizeof h->gone);
+        now_hop->gone[h->salvages] = h->next;
+    }
+    r->stats.salvaged++;
+    return true;
+}
+
 static void hop_fire(void *ctx) {
     struct router *r = ctx;
     tsim_time t = now(r);
@@ -3210,13 +3287,16 @@ static void hop_fire(void *ctx) {
             drop_hop(r, i);
             continue;
         }
-        uint32_t next = h->next;
-        if (h->tx.carries) {
-            tsim_node_drop(r->node, h->tx.carries, TSIM_DROP_RETRIES, next);
-        }
+        struct hop dead = *h;
         drop_hop(r, i);
-        if (r->slot_of[next]) {
-            missed(r, r->slot_of[next]);
+        if (r->slot_of[dead.next]) {
+            missed(r, r->slot_of[dead.next]);
+        }
+        if (salvage(r, &dead)) {
+            continue;
+        }
+        if (dead.tx.carries) {
+            tsim_node_drop(r->node, dead.tx.carries, TSIM_DROP_RETRIES, dead.next);
         }
     }
     arm_hops(r);

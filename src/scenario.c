@@ -749,6 +749,9 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "hop_retries") == 0) {
         return distvec_count(value, 0, UINT8_MAX, &c->hop_retries);
     }
+    if (strcmp(key, "salvage") == 0) {
+        return distvec_count(value, 0, 4, &c->salvage);
+    }
     if (strcmp(key, "hop_wait") == 0) {
         return distvec_time(value, true, &c->hop_wait);
     }
@@ -1902,6 +1905,7 @@ static void distvec_sum(struct tsim_net *net, const struct tsim_distvec_stats *r
         sum->solicits += s.solicits;
         sum->heres += s.heres;
         sum->reattached += s.reattached;
+        sum->salvaged += s.salvaged;
         sum->unrouted_infeasible += s.unrouted_infeasible;
         sum->unrouted_empty += s.unrouted_empty;
     }
@@ -1995,6 +1999,7 @@ static void health(struct window *w, tsim_time end, struct tsim_route_health *h)
         h->solicits_per_h = (double)(now.solicits - w->stats.solicits) / hours;
         h->heres_per_h = (double)(now.heres - w->stats.heres) / hours;
         h->reattached_per_h = (double)(now.reattached - w->stats.reattached) / hours;
+        h->salvaged_per_h = (double)(now.salvaged - w->stats.salvaged) / hours;
     }
     if (relays) {
         h->unrouted_infeasible = (double)now.unrouted_infeasible / relays;
@@ -2066,6 +2071,7 @@ static void churn_flip(struct tsim_sched *sched, void *ctx) {
         c->retired.solicits += st.solicits;
         c->retired.heres += st.heres;
         c->retired.reattached += st.reattached;
+        c->retired.salvaged += st.salvaged;
     }
     if (!tsim_net_power(c->net, ch->node, on) || !tsim_metrics_power(c->metrics, ch->node, on)) {
         c->failed = true;
