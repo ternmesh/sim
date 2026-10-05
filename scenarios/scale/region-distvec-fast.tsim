@@ -62,6 +62,12 @@
 # 44, 81, 94, 97 and 93; with a fifth of all nodes moving 20, 60, 73, 77 and 85 - 1, 8, 17, 24 and
 # 40 when movers stood. Beats every incumbent's movement figure above from 0 dBm up.
 #
+# Sparse networks (routing.link_margin 0 and routing.bcast_sparse 8, the defaults since, with
+# rescue floods; 3 seeds), from -5 to 20 dBm: unicast / broadcast on time 61/40, 90/65, 98/77,
+# 98/88 and 96/88%; per_s 26.9, 29.9, 43.3, 51.8 and 52.0; under churn 46, 74, 90, 87 and 85; with
+# a quarter of the leaves walking 43, 65, 80, 89 and 93; reach 60% at -5 dBm. At -5 dBm that beats
+# MeshCore's 37/16, churn 35 and move 37 above, where it was behind under churn and movement.
+#
 # Rescue floods (routing.rescue_hops 2, on by default since; 3 seeds): a frame given up on at its
 # destination, or at its source's first hop, at a neighbour unheard past two promises is flooded
 # for two relay hops. Unicast on time with a quarter of the leaves walking 35, 65, 82, 89 and 93%

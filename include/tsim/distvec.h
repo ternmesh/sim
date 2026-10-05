@@ -295,9 +295,10 @@
  *
  *     type 0x05 | source 4 | id 4 | hops 1 | content
  *
- * with up to bcast_hops relays along any path, each relay waiting a random time up to bcast_window
- * airtimes of the frame and dropping it if it hears bcast_cancel copies first. Scoped broadcast
- * is MSH-34's.
+ * with up to bcast_hops relays along any path - but for those that can use bcast_sparse relays or
+ * fewer, which spend none (see Sparse networks) - each relay waiting a random time up to
+ * bcast_window airtimes of the frame and dropping it if it hears bcast_cancel copies first. Scoped
+ * broadcast is MSH-34's.
  *
  * How loud a broadcast goes, with power control (MSH-67): bcast_power. Broadcasts went as announces
  * do, loud enough for the power_k neighbours with the lowest floors. At high power those are near
@@ -780,6 +781,25 @@ struct tsim_distvec_config {
  * within link_margin_db of the floor, which sensing would use, goes unused, so a line 2 km apart
  * at SF9, whose links are that close, never routes.
  *
+ * Sparse networks. That cost was most of what candidate 3 lost at -5 dBm on the fast preset, where
+ * a node has 5 links: with link_margin_db 3, as it was until then, routes joined 47% of pairs, and
+ * MeshCore beat it under churn and movement. The rest was broadcast: four relay hops reached one
+ * node in ten, a flood there costing a frame a relay, not the crowd it costs where relays are
+ * many. Hence bcast_sparse, a relay that can use few relays spending no hop. Measured with
+ * tools/density.py --fast (3 seeds, -5 to 20 dBm), link_margin_db 0 and bcast_sparse 8 against 3
+ * and 0: unicast on time 60.7%, 90.4%, 98.1%, 97.5% and 95.9%, against 47.2%, 88.8%, 97.2%, 97.5%
+ * and 95.7%; broadcast 40.0%, 65.1%, 77.4%, 87.5% and 88.4%, against 9.8%, 40.8%, 72.3%, 86.0% and
+ * 88.7%; under churn 45.9%, 73.7%, 89.7%, 87.0% and 85.3%, against 21.0%, 60.4%, 86.3%, 88.7% and
+ * 85.7%; with leaves walking 43.0%, 65.0%, 79.8%, 89.3% and 92.9%, against 35.1%, 65.4%, 81.7%,
+ * 89.0% and 92.9%; routes joining 59.5% of pairs at -5 dBm. Deliveries per second of airtime 26.9,
+ * 29.9, 43.3, 51.8 and 52.0, against 7.3, 37.6, 43.9, 50.6 and 53.5: at 0 dBm floods reaching 24
+ * points more of the region took more airtime than they delivered. Each alone, seed 1: at -5 dBm
+ * no margin made unicast 56.7% and broadcast 11.6% from 42.9% and 9.1%, and bcast_sparse 8 took
+ * broadcast on to 39.0%. bcast_hops 16 in its place did as much there, 37.7%, but without the
+ * margin cost 3.7 points of unicast at 10 dBm with leaves walking and 13% of deliveries per second
+ * of airtime at 20 dBm with nothing moving; bcast_sparse 8, with no margin, 0.4 points at 10 dBm
+ * and 1.3% at 20, both with nothing moving. The defaults since.
+ *
  * The liveness probe (MSH-61), with links by strength and probe_hops above 0. A dead neighbour
  * wants a signal a live one never gives, and a live one always gives an answer when asked. After
  * probe_hops hops to a neighbour are lost in a row, with nothing heard from it between, the node
@@ -929,13 +949,15 @@ bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_con
  * a link kept through 8 rounds without one; a 32-byte reference frame, every link costing the same
  * (ETX off) and none used over ETX 32, 10% hysteresis and a 25% change threshold, a request every
  * 10 s while starved; a jitter of up to 2 airtimes; 32 hops, 2 hop retries after 4 s, 3 retries
- * waiting 5 s plus 4 times the metric; broadcasts over 4 hops, waiting up to 8 airtimes and dropped
+ * waiting 5 s plus 4 times the metric; broadcasts over 4 hops - none spent at a relay that can use
+ * 8 relays or fewer - and rescue floods over 2, waiting up to 8 airtimes and dropped
  * on the second copy heard, as loud as the routes to relays need. Power control on, with power_k 8
  * - without it, the region's unicast
  * fell from 22% to 2% as density rose (MSH-45) - frames going no quieter than -9 dBm, the SX1262's
  * least, with a 10 dB margin and 3 dB more for each try lost, and the SNR floor Semtech's for the
  * SF: -7.5 dB at SF7, 2.5 dB lower for each SF above. Per-link SF off, with sf_k 8 for when it is
- * on. The oracle off and links by strength, with a 3 dB margin for either oracle. Relays, when
+ * on. The oracle off and links by strength, coming up with no margin to spare and going down 3 dB
+ * below it, with a 3 dB margin for either oracle. Relays, when
  * elected, covering every node once, with 10-minute waits, and never standing down.
  *
  * The cap is per node, so in a neighbourhood of n nodes routing may take n times it of the

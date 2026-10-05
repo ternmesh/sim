@@ -1622,12 +1622,14 @@ static void the_link_oracle_uses_its_links_and_no_others(void) {
 }
 
 /* By strength, SF7 at 14 dBm, without power control: a neighbour at loss L is heard at SNR
- * 131 - L, over a -7.5 dB floor, so with 138.5 - L dB of margin. With link_band 1, a link comes up
- * with 3 dB each way, at a loss of 135.5 or less, and goes down below 2, over 136.5. */
+ * 131 - L, over a -7.5 dB floor, so with 138.5 - L dB of margin. With link_margin 3 and link_band
+ * 1, a link comes up with 3 dB each way, at a loss of 135.5 or less, and goes down below 2, over
+ * 136.5. */
 static void links_by_strength_come_up_and_go_down_on_margin(void) {
     struct rig r;
     rig_init(&r);
     r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.link_margin_db = 3; /* the margins below are against 3 dB, not the default */
     r.rc.link_band_db = 1;
     build(&r, 2, 1);
     link(&r, 0, 1, 137);
@@ -1651,6 +1653,7 @@ static void links_by_strength_come_up_and_go_down_on_margin(void) {
     /* One way only: node 1 hears node 0, never the reverse, so neither uses the link. */
     rig_init(&r);
     r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.link_margin_db = 3; /* the margins below are against 3 dB, not the default */
     build(&r, 2, 1);
     tsim_phy_set_loss_from(tsim_net_phy(r.net), 0, 1, LOSS_LOUD);
     tsim_phy_set_loss_from(tsim_net_phy(r.net), 1, 0, LOSS_NONE);
@@ -1664,6 +1667,7 @@ static void links_by_strength_come_up_and_go_down_on_margin(void) {
      * the link up. */
     rig_init(&r);
     r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.link_margin_db = 3; /* the margins below are against 3 dB, not the default */
     build(&r, 2, 1);
     tsim_phy_set_loss_from(tsim_net_phy(r.net), 0, 1, 134);
     tsim_phy_set_loss_from(tsim_net_phy(r.net), 1, 0, 135.9);
@@ -1677,6 +1681,7 @@ static void links_by_strength_come_up_and_go_down_on_margin(void) {
      * byte: at 14.5 dBm, a loss of 135.75 leaves 3.25 dB, up, where 15 dBm would leave 2.75. */
     rig_init(&r);
     r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.link_margin_db = 3; /* the margins below are against 3 dB, not the default */
     r.rc.tx_dbm = 14.5;
     build(&r, 2, 1);
     link(&r, 0, 1, 135.75);
