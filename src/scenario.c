@@ -868,7 +868,7 @@ static const char *distvec_set(void *config, const char *key, const char *value)
         return distvec_count(value, 1, UINT8_MAX, &c->solicit_hops);
     }
     if (strcmp(key, "leaf_tries") == 0) {
-        return distvec_count(value, 0, UINT8_MAX, &c->leaf_tries);
+        return distvec_count(value, 0, UINT8_MAX - 1, &c->leaf_tries);
     }
     if (strcmp(key, "here_cancel") == 0) {
         return distvec_count(value, 0, UINT8_MAX, &c->here_cancel);

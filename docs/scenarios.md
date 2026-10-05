@@ -221,7 +221,7 @@ default.
 | `routing.solicit_gap` (`distvec`) | `60 s` | with `routing.reattach`: the least time between a leaf's solicits, but for the second it sends to ask after a relay again, and how often it looks whether its anchor has gone quiet; no shorter than `routing.solicit_wait` |
 | `routing.solicit_tries` (`distvec`) | 3 | with `routing.reattach`: solicits left wholly unanswered in a row before a leaf stops looking, until it hears a relay new to it |
 | `routing.solicit_hops` (`distvec`) | 3 | with `routing.reattach`: frames to a relay given up on in a row, with nothing heard from it between, after which a leaf takes it out of use and asks after it, 1 to 255 |
-| `routing.leaf_tries` (`distvec`) | 1 | with `routing.reattach`: seqno requests a relay makes for a leaf it has lost its route to, the first a `routing.request_interval` after; it retracts the route if none brings one back, 0 to 255 |
+| `routing.leaf_tries` (`distvec`) | 1 | with `routing.reattach`: seqno requests a relay makes for a leaf it has lost its route to, the first a `routing.request_interval` after; it retracts the route if none brings one back, 0 to 254 |
 | `routing.here_window` (`distvec`) | 16 | with `routing.reattach`: the airtimes of its answer a relay not asked after waits at most before answering a solicit |
 | `routing.here_cancel` (`distvec`) | 3 | with `routing.reattach`: answers to the same solicit a relay not asked after hears that cancel its own; 0 never |
 | `routing.oracle_margin` (`distvec`) | 3 | dB above the floor, at `radio.tx_dbm` by the mean loss, that both ends of a link the oracle uses must have, 0 to 60; for `routing.links` oracle too |

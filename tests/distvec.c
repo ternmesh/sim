@@ -1862,6 +1862,10 @@ static void a_leaf_that_moves_is_reached_through_its_new_relay(void) {
     bad.solicit_hops = 0;
     CHECK(tsim_distvec_check(&bad) != NULL);
     bad.solicit_hops = 3;
+    bad.leaf_tries = UINT8_MAX;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.leaf_tries = UINT8_MAX - 1;
+    CHECK(tsim_distvec_check(&bad) == NULL);
     bad.power = true;
     bad.sf_min = 7; /* a solicit goes at one SF */
     CHECK(tsim_distvec_check(&bad) != NULL);

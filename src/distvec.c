@@ -541,10 +541,11 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     }
     if (c->reattach &&
         (!strength || c->sf_min || c->solicit_wait <= 0 || c->solicit_gap < c->solicit_wait ||
-         c->solicit_tries < 1 || c->solicit_hops < 1 || !(c->here_window >= 0))) {
+         c->solicit_tries < 1 || c->solicit_hops < 1 || c->leaf_tries == UINT8_MAX ||
+         !(c->here_window >= 0))) {
         return "reattach wants links by strength and no per-link SF, solicit_wait above 0, "
-               "solicit_gap no shorter, solicit_tries and solicit_hops 1 or more and here_window 0 "
-               "or more";
+               "solicit_gap no shorter, solicit_tries and solicit_hops 1 or more, leaf_tries under "
+               "255 and here_window 0 or more";
     }
     bool oracle = c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE;
     if (c->sf_min && (c->sf_min < TSIM_SF_MIN || c->sf_min > c->lora.sf || !strength || !c->power ||
@@ -1370,8 +1371,11 @@ static void reselect(struct router *r, uint32_t d) {
     }
     bool was = ds->sel != 0;
     ds->sel = chosen ? chosen->slot : 0;
-    if (!chosen && infeasible && !demand(r)) {
-        starved(r, d); /* on demand, a route is asked for only when a message needs it */
+    /* On demand, a route is asked for only when a message needs it. A route to a leaf this node
+     * announced is waited for even with nothing infeasible left: the leaf's newer seq may come. */
+    bool leaf_lost = r->config.reattach && ds->leaf && ds->advertised;
+    if (!chosen && (infeasible || leaf_lost) && !demand(r)) {
+        starved(r, d);
     }
     bool hold = !chosen && r->config.reattach && ds->leaf && ds->tries;
     ds->held = hold && (ds->held || ds->advertised);
@@ -1660,6 +1664,8 @@ static bool advertise(struct router *r, uint32_t d, uint8_t *out) {
         ds->adv_metric = metric;
         r->retracting -= ds->retracts > 0;
         ds->retracts = 0;
+    } else if (ds->held) {
+        return false; /* not retracted yet, if a change of before was still waiting to go */
     } else if (ds->advertised || ds->retracts) {
         /* A retraction lost on the air would leave a neighbour with the route for ever - routes
          * do not expire - so it goes RETRACTS times, the repeats in turn with the routes. */

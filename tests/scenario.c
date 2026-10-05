@@ -217,7 +217,7 @@ static void problems_say_where_they_are(void) {
          "a count from 1"},
         {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.solicit_hops = 0\n", 4,
          "a count from 1"},
-        {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.leaf_tries = 256\n", 4,
+        {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.leaf_tries = 255\n", 4,
          "a count from 0"},
         {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.links = sensed\n"
          "routing.reattach = yes\n",
