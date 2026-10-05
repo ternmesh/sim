@@ -1804,6 +1804,7 @@ static uint64_t moved_leaf_delivered(bool reattach, struct tsim_distvec_stats *l
     rig_init(&r);
     r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
     r.rc.reattach = reattach;
+    r.rc.solicit_hops = 1; /* its one message's lost hop is enough */
     strcpy(r.rc.relays, "0-2");
     CHECK(tsim_distvec_check(&r.rc) == NULL);
     build(&r, 5, 1);
@@ -1858,6 +1859,9 @@ static void a_leaf_that_moves_is_reached_through_its_new_relay(void) {
     bad.solicit_tries = 0;
     CHECK(tsim_distvec_check(&bad) != NULL);
     bad.solicit_tries = 3;
+    bad.solicit_hops = 0;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.solicit_hops = 3;
     bad.power = true;
     bad.sf_min = 7; /* a solicit goes at one SF */
     CHECK(tsim_distvec_check(&bad) != NULL);

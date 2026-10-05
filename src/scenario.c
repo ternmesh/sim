@@ -864,6 +864,12 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "here_window") == 0) {
         return distvec_factor(value, 0, 1e3, &c->here_window);
     }
+    if (strcmp(key, "solicit_hops") == 0) {
+        return distvec_count(value, 1, UINT8_MAX, &c->solicit_hops);
+    }
+    if (strcmp(key, "leaf_tries") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->leaf_tries);
+    }
     if (strcmp(key, "here_cancel") == 0) {
         return distvec_count(value, 0, UINT8_MAX, &c->here_cancel);
     }
