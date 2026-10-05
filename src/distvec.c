@@ -2895,17 +2895,22 @@ static bool overdue(const struct router *r, const struct neighbour *n) {
 }
 
 /* Whether a leaf that solicits starts to: only where it can use reattach_sparse relays or fewer
- * still heard within two of their promises - those it walked past long ago it may still count as
- * usable. Where it hears more, the relay it has walked from still reaches it more often than not,
- * and every relay around answers its solicit and passes on the seq it raises. */
+ * still heard within two of their promises, whatever solicit_quiet - those it walked past long ago
+ * it may still count as usable - or with reattach_sparse 255, wherever. Where it hears more, the
+ * relay it has walked from still reaches it more often than not, and every relay around answers its
+ * solicit and passes on the seq it raises. */
 static bool solicits_here(const struct router *r) {
     if (!reattaching(r)) {
         return false;
     }
+    if (r->config.reattach_sparse == UINT8_MAX) {
+        return true; /* no limit */
+    }
     uint32_t count = 0;
     for (size_t i = 0; i < r->nb_count; i++) {
         const struct neighbour *n = &r->nb[i];
-        count += n->used && n->infra && n->cost != INF && !overdue(r, n);
+        tsim_time promise = n->promise > 0 ? n->promise : imax(r);
+        count += n->used && n->infra && n->cost != INF && now(r) - n->heard <= 2 * promise;
     }
     return count <= r->config.reattach_sparse;
 }

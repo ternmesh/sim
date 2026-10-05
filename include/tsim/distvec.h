@@ -688,7 +688,7 @@ struct tsim_distvec_config {
      * before it waits for news of a relay; the airtimes a relay's answer waits at most, and the
      * answers to the same solicit heard that cancel a relay's own, 0 never. */
     bool reattach;
-    uint8_t reattach_sparse; /* relays at most a leaf can use that it solicits with (below) */
+    uint8_t reattach_sparse; /* relays at most a leaf hears that it solicits with; 255 any */
     tsim_time solicit_quiet; /* the anchor unheard this long is asked after; 0, two promises */
     tsim_time solicit_wait;
     tsim_time solicit_gap;
