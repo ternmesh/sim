@@ -62,6 +62,16 @@
 # 44, 81, 94, 97 and 93; with a fifth of all nodes moving 20, 60, 73, 77 and 85 - 1, 8, 17, 24 and
 # 40 when movers stood. Beats every incumbent's movement figure above from 0 dBm up.
 #
+# Rescue floods (routing.rescue_hops 2, on by default since; 3 seeds): a frame given up on at its
+# destination, or at its source's first hop, at a neighbour unheard past two promises is flooded
+# for two relay hops. Unicast on time with a quarter of the leaves walking 35, 65, 82, 89 and 93%
+# from -5 to 20 dBm, against the 34, 62, 73, 78 and 87 salvage left; nothing stressed 47, 89, 97,
+# 98 and 96 and broadcast 10, 41, 72, 86 and 89, within a point of before but broadcast at 5 dBm
+# (75 before); under churn 21, 60, 86, 89 and 86, within the seeds' spread. Deliveries per second
+# of airtime 7.3, 37.6, 43.9, 50.6 and 53.5, against 7.3, 37.3, 51.8, 52.1 and 54.8: at 5 dBm one
+# seed before was 63.5 where the others were 46, its announces settling to 1.2 ks of airtime
+# against 2.8-2.9 ks, and no flood went in that hour with them on; it was 43.6 since, as the others.
+#
 # Salvage (routing.salvage, on by default since; 3 seeds): a frame given up on goes to another
 # feasible next hop. Unicast on time under churn 23, 61, 87, 88 and 86% from -5 to 20 dBm, against
 # the 22, 59, 79, 80 and 77 above; under movement 34, 62, 73, 78 and 87, against 33, 60, 70, 75 and

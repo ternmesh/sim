@@ -278,6 +278,11 @@
  * relay routing a flood on once it had a route of its own made 3,068 floods an hour, every routed
  * copy given up on at a stale last hop flooding again.
  *
+ * Measured with tools/density.py --fast (3 seeds, -5 to 20 dBm), rescue_hops 2 against 0: unicast
+ * on time with a quarter of the leaves walking 35.1%, 65.4%, 81.7%, 89.0% and 92.9%, against
+ * 33.9%, 61.9%, 73.2%, 78.2% and 87.3%; with nothing stressed, and under churn, within the seeds'
+ * spread but broadcast at 5 dBm, 72.3% against 75.0%. On by default.
+ *
  * The source waits for the acknowledgement ack_wait plus ack_factor times the route's metric in
  * milliseconds - the metric being airtime, it is a round trip's worth - counted from when its frame
  * goes on the air, however long it queued, or from when the queue refused it; and without one sends
