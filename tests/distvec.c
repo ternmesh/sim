@@ -1857,6 +1857,12 @@ static void a_leaf_that_moves_is_reached_through_its_new_relay(void) {
     bad.solicit_gap = bad.solicit_wait;
     bad.solicit_tries = 0;
     CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.solicit_tries = 3;
+    bad.power = true;
+    bad.sf_min = 7; /* a solicit goes at one SF */
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.sf_min = 0;
+    CHECK(tsim_distvec_check(&bad) == NULL);
 }
 
 /* In a network that does not move, a leaf that solicits finds its relay there: the relay answers,

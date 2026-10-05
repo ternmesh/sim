@@ -535,10 +535,11 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
         (c->probe_tries < 1 || c->probe_tries > 32 || c->probe_wait <= 0)) {
         return "with probe_hops, probe_tries is not 1 to 32, or probe_wait is not above 0";
     }
-    if (c->reattach && (!strength || c->solicit_wait <= 0 || c->solicit_gap < c->solicit_wait ||
-                        c->solicit_tries < 1 || !(c->here_window >= 0))) {
-        return "reattach wants links by strength, solicit_wait above 0, solicit_gap no shorter, "
-               "solicit_tries 1 or more and here_window 0 or more";
+    if (c->reattach &&
+        (!strength || c->sf_min || c->solicit_wait <= 0 || c->solicit_gap < c->solicit_wait ||
+         c->solicit_tries < 1 || !(c->here_window >= 0))) {
+        return "reattach wants links by strength and no per-link SF, solicit_wait above 0, "
+               "solicit_gap no shorter, solicit_tries 1 or more and here_window 0 or more";
     }
     bool oracle = c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE;
     if (c->sf_min && (c->sf_min < TSIM_SF_MIN || c->sf_min > c->lora.sf || !strength || !c->power ||
@@ -2828,14 +2829,16 @@ static bool overdue(const struct router *r, const struct neighbour *n) {
     return now(r) - n->heard > 2 * promise;
 }
 
-/* A leaf wants to solicit, having had `was` as its anchor: at once, unless one waits on its
- * answers or the last went within solicit_gap. */
-static void want_solicit(struct router *r, uint32_t was) {
+/* A leaf wants to solicit, asking after the relay `was`, its anchor if `anchored`: at once,
+ * unless one waits on its answers or the last went within solicit_gap. While one is wanted or
+ * waits, the relay it asks after stays the one it was. */
+static void want_solicit(struct router *r, uint32_t was, bool anchored) {
     if (!reattaching(r)) {
         return;
     }
     if (!r->solicit_wanted && r->solicited < 0) {
         r->solicit_was = was;
+        r->suspect_anchored = anchored;
     }
     r->solicit_wanted = true;
     if (r->solicited < 0) {
@@ -2888,13 +2891,15 @@ static bool solicit_answered(struct router *r) {
         r->suspect_anchored = false;
         return false;
     }
+    if (!any) {
+        r->solicits++; /* wholly unanswered, the first of a pair as much as any */
+    }
     if (w && !r->doubt) {
         r->doubt = true;
-        return true;
+        return r->solicits < r->config.solicit_tries;
     }
     r->doubt = false;
     if (!any) {
-        r->solicits++;
         return false;
     }
     r->solicits = 0;
@@ -3014,6 +3019,9 @@ static void on_solicit(struct router *r, const uint8_t *b, uint32_t len, double 
     r->requests.ns -= cost;
     r->stats.heres++;
     hold(r, &tx, asked ? 0 : key, false, asked ? r->config.jitter : r->config.here_window);
+    if (!asked && r->held_count && r->held[r->held_count - 1].key == key) {
+        r->held[r->held_count - 1].heard = 0; /* here_cancel counts others' answers only */
+    }
 }
 
 /* A relay's answer to a solicit. Answers to the same one count towards cancelling this node's
@@ -3066,8 +3074,7 @@ static void missed(struct router *r, uint16_t s) {
     if (reattaching(r) && n->infra && n->cost != INF) {
         bool anchored = anchor(r) == n;
         mute(r, s, TSIM_DISTVEC_DOWN_HOP);
-        want_solicit(r, n->id);
-        r->suspect_anchored = anchored;
+        want_solicit(r, n->id, anchored);
     }
     /* A relay that cannot reach a leaf no longer routes to it there, and asks for a newer seq,
      * which reaches the leaf through any relay that still hears it (starved()). */
