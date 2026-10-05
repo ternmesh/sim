@@ -646,6 +646,9 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "elect_wait") == 0) {
         return distvec_time(value, false, &c->elect_wait);
     }
+    if (strcmp(key, "stand_mobile") == 0) {
+        return parse_yes_no(value, &c->stand_mobile) ? NULL : "expected yes or no";
+    }
     if (strcmp(key, "elect_hold") == 0) {
         return distvec_time(value, true, &c->elect_hold);
     }
@@ -748,6 +751,9 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     }
     if (strcmp(key, "hop_retries") == 0) {
         return distvec_count(value, 0, UINT8_MAX, &c->hop_retries);
+    }
+    if (strcmp(key, "salvage") == 0) {
+        return distvec_count(value, 0, 4, &c->salvage);
     }
     if (strcmp(key, "hop_wait") == 0) {
         return distvec_time(value, true, &c->hop_wait);
@@ -1902,6 +1908,7 @@ static void distvec_sum(struct tsim_net *net, const struct tsim_distvec_stats *r
         sum->solicits += s.solicits;
         sum->heres += s.heres;
         sum->reattached += s.reattached;
+        sum->salvaged += s.salvaged;
         sum->unrouted_infeasible += s.unrouted_infeasible;
         sum->unrouted_empty += s.unrouted_empty;
     }
@@ -1995,6 +2002,7 @@ static void health(struct window *w, tsim_time end, struct tsim_route_health *h)
         h->solicits_per_h = (double)(now.solicits - w->stats.solicits) / hours;
         h->heres_per_h = (double)(now.heres - w->stats.heres) / hours;
         h->reattached_per_h = (double)(now.reattached - w->stats.reattached) / hours;
+        h->salvaged_per_h = (double)(now.salvaged - w->stats.salvaged) / hours;
     }
     if (relays) {
         h->unrouted_infeasible = (double)now.unrouted_infeasible / relays;
@@ -2066,6 +2074,7 @@ static void churn_flip(struct tsim_sched *sched, void *ctx) {
         c->retired.solicits += st.solicits;
         c->retired.heres += st.heres;
         c->retired.reattached += st.reattached;
+        c->retired.salvaged += st.salvaged;
     }
     if (!tsim_net_power(c->net, ch->node, on) || !tsim_metrics_power(c->metrics, ch->node, on)) {
         c->failed = true;
@@ -2277,6 +2286,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     struct tsim_distvec_oracle oracle = {0};
     uint32_t *parents = NULL;
     uint8_t *relay_set = NULL;
+    uint8_t *mobile = NULL;
     struct window window = {0};
     struct churn churn = {0};
     struct moving moving = {0};
@@ -2347,6 +2357,22 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
             goto done;
         }
         *pk.set = relay_set;
+    }
+    /* A node that moves knows it does, as a handheld would: the same nodes move_start() picks. */
+    if (dv && dv->relay_pick == TSIM_DISTVEC_PICK_ELECT && s->move_share > 0) {
+        uint32_t k;
+        uint32_t *who =
+            pick(s, routing_config, s->move_nodes, s->move_share, UINT64_C(0xC6) << 56, &k);
+        mobile = calloc(s->nodes, 1);
+        if (!who || !mobile) {
+            free(who);
+            goto done;
+        }
+        for (uint32_t i = 0; i < k; i++) {
+            mobile[who[i]] = 1;
+        }
+        free(who);
+        dv->mobile = mobile;
     }
     net = tsim_net_create(sched, &np, s->nodes, s->routing->routing, routing_config, s->mac->mac,
                           s->mac_config);
@@ -2448,6 +2474,7 @@ done:
     tsim_net_destroy(net);
     tsim_distvec_oracle_free(&oracle);
     free(parents);
+    free(mobile);
     free(relay_set);
     free(churn.churners);
     move_free(&moving);

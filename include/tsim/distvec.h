@@ -233,6 +233,22 @@
  * is sent a frame it has already forwarded sends it on again if it no longer has it waiting, so a
  * hop whose implicit acknowledgement was lost hears one.
  *
+ * Salvage. A frame given up on is otherwise dropped, though the node may hold other routes to its
+ * destination: a relay that has gone down keeps its link for dead_hops frames, and every frame sent
+ * it meanwhile is lost. With `salvage`, a frame given up on goes instead, with its retries anew, to
+ * the best other neighbour this node holds a feasible route through - feasible as Babel's
+ * condition has it, so it cannot loop - up to `salvage` times a frame, never to a neighbour it was
+ * given up on at. Only the frame moves: the link is judged as before.
+ *
+ * Measured with tools/density.py --fast (region-distvec-fast.tsim, 3 seeds, -5 to 20 dBm), salvage
+ * 1 against 0: unicast on time under churn 23.0%, 61.2%, 87.0%, 88.4% and 85.9%, against 22, 59,
+ * 79, 80 and 77; with leaves walking 33.9%, 61.9%, 73.2%, 78.2% and 87.3%, against 33, 60, 70, 75
+ * and 85; with nothing stressed within 1 point either way, and deliveries per second of airtime
+ * within the seeds' spread. Most of what churn costs from 5 dBm up was frames sent a relay that had
+ * gone, and the sparsest network has no other route to send them. With leaves walking, frames a
+ * leaf gave up on at the relay it left were nearly all of what the source lost (230 of 361 at 10
+ * dBm, seed 1, 12 with salvage); what is left is the last hop, the relay it left. On by default.
+ *
  * The source waits for the acknowledgement ack_wait plus ack_factor times the route's metric in
  * milliseconds - the metric being airtime, it is a round trip's worth - counted from when its frame
  * goes on the air, however long it queued, or from when the queue refused it; and without one sends
@@ -552,6 +568,19 @@ struct tsim_distvec_config {
     uint8_t elect_cover;
     tsim_time elect_wait;
     tsim_time elect_hold;
+    /* With relay_pick elect: whether a node that knows it moves - a handheld, set so by its owner,
+     * or one whose GPS says so - may stand. With `stand_mobile` no, it never does, and announces a
+     * score of 0, so no orphan chooses it. `mobile` is [node], 1 for a node that moves: shared, and
+     * set by the driver from the nodes the scenario moves; NULL for none.
+     *
+     * Measured with tools/density.py --fast -s routing.relay_pick=elect (3 seeds, -5 to 20 dBm,
+     * salvage 1), unicast on time with a fifth of all nodes moving: 19.8%, 60.2%, 72.7%, 76.9% and
+     * 85.2% with stand_mobile no, against 1.0%, 7.7%, 17.3%, 23.6% and 39.9% before it (salvage 0),
+     * when movers stood and dragged the tier apart; nothing stressed 51.5%, 87.9%, 97.9%, 99.3% and
+     * 98.0%, and under churn 43.5%, 80.5%, 94.2%, 96.5% and 93.2%, as before. No by default: a node
+     * a person carries should not carry the network. */
+    bool stand_mobile;
+    const uint8_t *mobile;
 
     tsim_time imin;    /* Trickle */
     uint8_t doublings; /* imax is imin times 2^doublings, 0..16 */
@@ -576,6 +605,7 @@ struct tsim_distvec_config {
 
     uint8_t hop_max;
     uint8_t hop_retries;
+    uint8_t salvage; /* other next hops a frame given up on may be sent to, 0 none (below) */
     uint8_t retries;
     tsim_time hop_wait;
     tsim_time ack_wait;
@@ -938,6 +968,8 @@ struct tsim_distvec_stats {
     uint64_t solicits;
     uint64_t heres;
     uint64_t reattached;
+    /* With salvage: frames given up on that went to another next hop instead. */
+    uint64_t salvaged;
     /* With relay_pick elect: the times the node stood as a relay, and stood down. */
     uint64_t elected;
     uint64_t stood_down;

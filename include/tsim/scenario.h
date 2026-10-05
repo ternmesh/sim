@@ -76,7 +76,7 @@ enum tsim_churn_nodes {
 struct tsim_plugin;
 
 /* Room for any plugin's configuration. */
-#define TSIM_PLUGIN_CONFIG_MAX 512
+#define TSIM_PLUGIN_CONFIG_MAX 640
 
 struct tsim_scenario {
     uint64_t seed;
