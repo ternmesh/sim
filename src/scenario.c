@@ -755,6 +755,9 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "salvage") == 0) {
         return distvec_count(value, 0, 4, &c->salvage);
     }
+    if (strcmp(key, "rescue_hops") == 0) {
+        return distvec_count(value, 0, 254, &c->rescue_hops);
+    }
     if (strcmp(key, "hop_wait") == 0) {
         return distvec_time(value, true, &c->hop_wait);
     }
@@ -769,6 +772,9 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     }
     if (strcmp(key, "jitter") == 0) {
         return distvec_factor(value, 0, 1e3, &c->jitter);
+    }
+    if (strcmp(key, "bcast_sparse") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->bcast_sparse);
     }
     if (strcmp(key, "bcast_hops") == 0) {
         return distvec_count(value, 0, 254, &c->bcast_hops);
@@ -1909,6 +1915,7 @@ static void distvec_sum(struct tsim_net *net, const struct tsim_distvec_stats *r
         sum->heres += s.heres;
         sum->reattached += s.reattached;
         sum->salvaged += s.salvaged;
+        sum->rescues += s.rescues;
         sum->unrouted_infeasible += s.unrouted_infeasible;
         sum->unrouted_empty += s.unrouted_empty;
     }
@@ -2003,6 +2010,7 @@ static void health(struct window *w, tsim_time end, struct tsim_route_health *h)
         h->heres_per_h = (double)(now.heres - w->stats.heres) / hours;
         h->reattached_per_h = (double)(now.reattached - w->stats.reattached) / hours;
         h->salvaged_per_h = (double)(now.salvaged - w->stats.salvaged) / hours;
+        h->rescues_per_h = (double)(now.rescues - w->stats.rescues) / hours;
     }
     if (relays) {
         h->unrouted_infeasible = (double)now.unrouted_infeasible / relays;
@@ -2075,6 +2083,7 @@ static void churn_flip(struct tsim_sched *sched, void *ctx) {
         c->retired.heres += st.heres;
         c->retired.reattached += st.reattached;
         c->retired.salvaged += st.salvaged;
+        c->retired.rescues += st.rescues;
     }
     if (!tsim_net_power(c->net, ch->node, on) || !tsim_metrics_power(c->metrics, ch->node, on)) {
         c->failed = true;

@@ -33,6 +33,7 @@
 #define TYPE_HOP_ACK 0x0A
 #define TYPE_SOLICIT 0x0B
 #define TYPE_HERE 0x0C
+#define TYPE_FLOOD 0x0D
 
 #define ANNOUNCE_HEAD 16
 #define IHU_LEN 5
@@ -44,6 +45,7 @@
 #define DATA_HEAD 18
 #define ACK_LEN 18
 #define BCAST_HEAD 10
+#define FLOOD_HEAD 14 /* a rescue flood: a broadcast's head and its destination */
 /* With demand routes, a data, acknowledgement or reply frame's route to its source, and a route
  * request's length: see the header. */
 #define TRAIL_LEN 10
@@ -435,6 +437,8 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .hop_retries = 2,
         .stand_mobile = false,
         .salvage = 1,
+        .rescue_hops = 2,
+        .bcast_sparse = 8,
         .hop_wait = TSIM_S(4),
         .retries = 3,
         .ack_wait = TSIM_S(5),
@@ -453,7 +457,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .sf_k = 8,
         .links = TSIM_DISTVEC_LINKS_STRENGTH,
         .oracle_margin_db = 3,
-        .link_margin_db = 3,
+        .link_margin_db = 0,
         .link_band_db = 3,
         .dead_hops = 24,
         .silent_max = TSIM_S(24 * 3600),
@@ -539,6 +543,9 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     }
     if (c->salvage > SALVAGE_MAX) {
         return "salvage is over 4";
+    }
+    if (c->rescue_hops > 254) {
+        return "rescue_hops is over 254";
     }
     if (strength && (c->dead_hops < 1 || c->silent_max <= 0)) {
         return "dead_hops is 0, or silent_max is not above 0";
@@ -2865,8 +2872,9 @@ static struct neighbour *anchor(struct router *r) {
     return best;
 }
 
-/* Whether a relay has gone unheard past two of its promises - imax for one that has promised
- * nothing yet - as a leaf that has moved away from it finds. */
+/* Whether a neighbour has gone unheard past two of its promises - imax for one that has promised
+ * nothing yet - as a leaf finds of a relay it has moved away from, and a relay of a leaf that has
+ * moved away from it. */
 static bool overdue(const struct router *r, const struct neighbour *n) {
     if (r->config.solicit_quiet > 0) {
         return now(r) - n->heard > r->config.solicit_quiet;
@@ -3268,6 +3276,9 @@ static bool salvage(struct router *r, const struct hop *h) {
     return true;
 }
 
+static uint64_t flood_out(struct router *r, uint32_t src, uint32_t id, uint32_t dst,
+                          const uint8_t *content, uint32_t len, enum tsim_purpose purpose);
+
 static void hop_fire(void *ctx) {
     struct router *r = ctx;
     tsim_time t = now(r);
@@ -3301,7 +3312,21 @@ static void hop_fire(void *ctx) {
         if (r->slot_of[dead.next]) {
             missed(r, r->slot_of[dead.next]);
         }
-        if (salvage(r, &dead)) {
+        /* Rescued, with rescue_hops, if it was given up on at its destination or at its source's
+         * first hop, at a neighbour gone quiet: a leaf that walked away, or the relay a leaf
+         * walked away from. */
+        bool rescue = r->config.rescue_hops && dead.type == TYPE_DATA && !r->oracle &&
+                      (dead.src == r->self || dead.next == dead.dst) &&
+                      (!r->slot_of[dead.next] || overdue(r, slot(r, r->slot_of[dead.next]))) &&
+                      !seen(r, frame_key(TYPE_FLOOD, dead.src, dead.id)) &&
+                      dead.tx.len >= r->data_head;
+        if (!(rescue && dead.src == r->self) && salvage(r, &dead)) {
+            continue;
+        }
+        if (rescue) {
+            flood_out(r, dead.src, dead.id, dead.dst, dead.tx.bytes + r->data_head,
+                      dead.tx.len - r->data_head,
+                      dead.src == r->self ? TSIM_PURPOSE_DATA : TSIM_PURPOSE_RELAY);
             continue;
         }
         if (dead.tx.carries) {
@@ -3628,6 +3653,42 @@ static void forget_awaiting(struct awaiting *a) {
     }
     tsim_timer_destroy(a->timer);
     free(a);
+}
+
+/* A rescue flood (above): the message, flooded for its destination alone, as loud as this node
+ * may go. False if the queue refused it. */
+static uint64_t flood_out(struct router *r, uint32_t src, uint32_t id, uint32_t dst,
+                          const uint8_t *content, uint32_t len, enum tsim_purpose purpose) {
+    if (FLOOD_HEAD + len > FRAME_MAX) {
+        return 0;
+    }
+    struct tsim_tx tx =
+        frame(r, purpose, purpose == TSIM_PURPOSE_DATA ? PRIORITY_DATA : PRIORITY_RELAY);
+    tx.tx_dbm = r->config.tx_dbm; /* its links may be stale: as loud as it may, to find a relay */
+    tx.bytes[0] = TYPE_FLOOD;
+    put32(tx.bytes + 1, src);
+    put32(tx.bytes + 5, id);
+    tx.bytes[9] = (uint8_t)(r->config.rescue_hops + 1);
+    put32(tx.bytes + 10, dst);
+    memcpy(tx.bytes + FLOOD_HEAD, content, len);
+    tx.len = FLOOD_HEAD + len;
+    tx.carries = id;
+    tx.carries_at = FLOOD_HEAD;
+    uint64_t handle = 0;
+    unsigned mask = sf_mask(r);
+    for (uint8_t sf = TSIM_SF_MIN; sf < TSIM_SF_MIN + TSIM_SF_COUNT; sf++) {
+        if (mask >> (sf - TSIM_SF_MIN) & 1) {
+            struct tsim_tx copy = at_sf(r, &tx, sf, 0);
+            uint64_t h = tsim_node_send(r->node, &copy);
+            handle = handle ? handle : h;
+        }
+    }
+    if (handle) {
+        /* Only once one is queued: a flood the queue refused may be tried again. */
+        mark_seen(r, frame_key(TYPE_FLOOD, src, id));
+        r->stats.rescues++;
+    }
+    return handle;
 }
 
 static void send_attempt(struct awaiting *a) {
@@ -3983,6 +4044,57 @@ static void heard_again(struct router *r, uint64_t key, uint8_t cancel, uint8_t 
     }
 }
 
+/* A rescue flood: delivered and answered by its destination, passed on once by every relay, as a
+ * broadcast is. */
+static void on_flood(struct router *r, const uint8_t *b, uint32_t len, uint8_t heard_sf) {
+    uint32_t src = get32(b + 1), id = get32(b + 5), dst = get32(b + 10);
+    uint8_t hops = b[9];
+    if (src >= r->nodes || dst >= r->nodes || src == r->self) {
+        return;
+    }
+    uint64_t key = frame_key(TYPE_FLOOD, src, id);
+    if (seen(r, key)) {
+        heard_again(r, key, r->config.bcast_cancel, heard_sf);
+        return;
+    }
+    mark_seen(r, key);
+    if (dst == r->self) {
+        tsim_node_deliver(r->node, id);
+        if (!route_frame(r, TYPE_ACK, r->self, src, id, r->config.hop_max, NULL, 0,
+                         TSIM_PURPOSE_CONTROL, 0, NULL, NULL)) {
+            no_route(r, src, false);
+        }
+        return;
+    }
+    if (!r->infra || hops <= 1 || (r->config.bcast_cancel && r->config.bcast_cancel <= 1)) {
+        return;
+    }
+    struct tsim_tx tx = frame(r, TSIM_PURPOSE_RELAY, PRIORITY_RELAY);
+    tx.tx_dbm = bcast_dbm(r);
+    memcpy(tx.bytes, b, len);
+    tx.bytes[9] = (uint8_t)(hops - 1);
+    tx.len = len;
+    tx.carries = id;
+    tx.carries_at = FLOOD_HEAD;
+    unsigned mask = sf_mask(r);
+    for (uint8_t sf = TSIM_SF_MIN; sf < TSIM_SF_MIN + TSIM_SF_COUNT; sf++) {
+        if (mask >> (sf - TSIM_SF_MIN) & 1) {
+            struct tsim_tx copy = at_sf(r, &tx, sf, 0);
+            hold(r, &copy, key, false, r->config.bcast_window);
+        }
+    }
+}
+
+/* How many relays this node can use. */
+static uint32_t relay_neighbours(const struct router *r) {
+    uint32_t count = 0;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        count += n->used && n->infra && n->cost != INF;
+    }
+    return count;
+}
+
 static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t heard_sf) {
     uint32_t src = get32(b + 1), id = get32(b + 5);
     uint8_t hops = b[9];
@@ -3993,13 +4105,19 @@ static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t h
     }
     mark_seen(r, key);
     tsim_node_deliver(r->node, id);
-    if (!r->infra || hops <= 1 || (r->config.bcast_cancel && r->config.bcast_cancel <= 1)) {
+    if (!r->infra || hops == 0 || (r->config.bcast_cancel && r->config.bcast_cancel <= 1)) {
+        return;
+    }
+    /* A relay with few others to pass it on is a bridge, not a crowd: it spends no hop, and
+     * passes on even a broadcast with none left. */
+    bool spends = relay_neighbours(r) > r->config.bcast_sparse;
+    if (spends && hops <= 1) {
         return;
     }
     struct tsim_tx tx = frame(r, TSIM_PURPOSE_RELAY, PRIORITY_RELAY);
     tx.tx_dbm = bcast_dbm(r);
     memcpy(tx.bytes, b, len);
-    tx.bytes[9] = (uint8_t)(hops - 1);
+    tx.bytes[9] = (uint8_t)(spends ? hops - 1 : hops);
     tx.len = len;
     tx.carries = id;
     tx.carries_at = BCAST_HEAD;
@@ -4148,6 +4266,11 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
     case TYPE_BCAST:
         if (rx->len >= BCAST_HEAD) {
             on_bcast(r, rx->bytes, rx->len, rx->lora.sf);
+        }
+        return;
+    case TYPE_FLOOD:
+        if (rx->len >= FLOOD_HEAD) {
+            on_flood(r, rx->bytes, rx->len, rx->lora.sf);
         }
         return;
     case TYPE_PROBE:

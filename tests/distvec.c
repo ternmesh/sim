@@ -1475,6 +1475,28 @@ static void a_broadcast_reaches_the_line_once_per_relay(void) {
     rig_close(&r);
 }
 
+/* With bcast_sparse, a relay that can use few relays spends no hop of a broadcast: along a line,
+ * where each has two, two hops reach three nodes, and with bcast_sparse 2 the whole line. */
+static uint64_t line_reached(uint8_t sparse) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.bcast_hops = 2;
+    r.rc.bcast_sparse = sparse;
+    line(&r, 6, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(60));
+    uint64_t b = tsim_net_originate(r.net, 0, TSIM_BROADCAST, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(120));
+    uint64_t got = tsim_net_message(r.net, b)->delivered;
+    rig_close(&r);
+    return got;
+}
+
+static void a_broadcast_spends_no_hop_where_relays_are_few(void) {
+    CHECK_EQ_U64(line_reached(0), 3);
+    CHECK_EQ_U64(line_reached(1), 3);
+    CHECK_EQ_U64(line_reached(2), 5);
+}
+
 static void the_config_is_checked(void) {
     struct tsim_lora l = tsim_lora_default(7, 125000);
     struct tsim_distvec_config c = tsim_distvec_default(0, &l, 14.0);
@@ -1600,12 +1622,14 @@ static void the_link_oracle_uses_its_links_and_no_others(void) {
 }
 
 /* By strength, SF7 at 14 dBm, without power control: a neighbour at loss L is heard at SNR
- * 131 - L, over a -7.5 dB floor, so with 138.5 - L dB of margin. With link_band 1, a link comes up
- * with 3 dB each way, at a loss of 135.5 or less, and goes down below 2, over 136.5. */
+ * 131 - L, over a -7.5 dB floor, so with 138.5 - L dB of margin. With link_margin 3 and link_band
+ * 1, a link comes up with 3 dB each way, at a loss of 135.5 or less, and goes down below 2, over
+ * 136.5. */
 static void links_by_strength_come_up_and_go_down_on_margin(void) {
     struct rig r;
     rig_init(&r);
     r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.link_margin_db = 3; /* the margins below are against 3 dB, not the default */
     r.rc.link_band_db = 1;
     build(&r, 2, 1);
     link(&r, 0, 1, 137);
@@ -1629,6 +1653,7 @@ static void links_by_strength_come_up_and_go_down_on_margin(void) {
     /* One way only: node 1 hears node 0, never the reverse, so neither uses the link. */
     rig_init(&r);
     r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.link_margin_db = 3; /* the margins below are against 3 dB, not the default */
     build(&r, 2, 1);
     tsim_phy_set_loss_from(tsim_net_phy(r.net), 0, 1, LOSS_LOUD);
     tsim_phy_set_loss_from(tsim_net_phy(r.net), 1, 0, LOSS_NONE);
@@ -1642,6 +1667,7 @@ static void links_by_strength_come_up_and_go_down_on_margin(void) {
      * the link up. */
     rig_init(&r);
     r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.link_margin_db = 3; /* the margins below are against 3 dB, not the default */
     build(&r, 2, 1);
     tsim_phy_set_loss_from(tsim_net_phy(r.net), 0, 1, 134);
     tsim_phy_set_loss_from(tsim_net_phy(r.net), 1, 0, 135.9);
@@ -1655,6 +1681,7 @@ static void links_by_strength_come_up_and_go_down_on_margin(void) {
      * byte: at 14.5 dBm, a loss of 135.75 leaves 3.25 dB, up, where 15 dBm would leave 2.75. */
     rig_init(&r);
     r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.link_margin_db = 3; /* the margins below are against 3 dB, not the default */
     r.rc.tx_dbm = 14.5;
     build(&r, 2, 1);
     link(&r, 0, 1, 135.75);
@@ -1700,6 +1727,7 @@ static void by_strength_a_neighbour_is_gone_when_frames_to_it_fail(void) {
     rig_init(&r);
     r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
     r.rc.dead_hops = 3;
+    r.rc.rescue_hops = 0; /* the frames given up on, counted, not flooded */
     line(&r, 3, 1);
     tsim_sched_run_until(r.sched, TSIM_S(600));
     uint32_t next = 0;
@@ -1870,6 +1898,56 @@ static void a_leaf_that_moves_is_reached_through_its_new_relay(void) {
     bad.sf_min = 7; /* a solicit goes at one SF */
     CHECK(tsim_distvec_check(&bad) != NULL);
     bad.sf_min = 0;
+    CHECK(tsim_distvec_check(&bad) == NULL);
+}
+
+/* Rescue floods: relays 0, 1 and 2 in a line, leaf 3 hearing relay 0 and leaf 4 relay 1. Leaf 3
+ * goes quiet past two of its promises, then turns up next to relay 2, unheard by it yet: the routes
+ * to it still end at relay 0, which gives the last hop of a message from leaf 4 up and floods it,
+ * and relay 2 passes it on to leaf 3. Returns whether it was delivered. */
+static bool rescued(uint8_t rescue_hops, struct tsim_distvec_stats *relay) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.rescue_hops = rescue_hops;
+    strcpy(r.rc.relays, "0-2");
+    CHECK(tsim_distvec_check(&r.rc) == NULL);
+    build(&r, 5, 1);
+    link(&r, 0, 1, LOSS_LOUD);
+    link(&r, 1, 2, LOSS_LOUD);
+    link(&r, 3, 0, LOSS_LOUD);
+    link(&r, 4, 1, LOSS_LOUD);
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(900));
+    uint32_t next = 0;
+    CHECK(route(&r, 4, 3, &next) && next == 1);
+    link(&r, 3, 0, LOSS_NONE);
+    tsim_sched_run_until(r.sched, TSIM_S(5400));
+    CHECK(route(&r, 1, 3, &next) && next == 0);
+    link(&r, 3, 2, LOSS_LOUD);
+    uint64_t m = tsim_net_originate(r.net, 4, 3, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(5460));
+    bool got = tsim_net_message(r.net, m)->delivered > 0;
+    tsim_distvec_stats(at(&r, 0), relay);
+    rig_close(&r);
+    return got;
+}
+
+static void a_message_lost_at_a_leaf_gone_quiet_is_flooded(void) {
+    struct tsim_distvec_stats st;
+    CHECK(rescued(2, &st));
+    CHECK_EQ_U64(st.rescues, 1);
+    CHECK(!rescued(0, &st));
+    CHECK_EQ_U64(st.rescues, 0);
+    CHECK(!rescued(1, &st)); /* relay 1 passes it on; relay 2 is one hop too far */
+    CHECK_EQ_U64(st.rescues, 1);
+
+    struct rig r;
+    rig_init(&r);
+    struct tsim_distvec_config bad = r.rc;
+    bad.rescue_hops = 255; /* would not fit the byte the frame counts hops in */
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.rescue_hops = 254;
     CHECK(tsim_distvec_check(&bad) == NULL);
 }
 
@@ -2433,6 +2511,7 @@ int main(void) {
     RUN(links_by_strength_come_up_and_go_down_on_margin);
     RUN(a_lost_hop_takes_no_link_down_by_strength);
     RUN(by_strength_a_neighbour_is_gone_when_frames_to_it_fail);
+    RUN(a_message_lost_at_a_leaf_gone_quiet_is_flooded);
     RUN(by_strength_silence_is_checked_as_often_as_silent_max_needs);
     RUN(an_unanswered_probe_takes_the_link_out_of_use);
     RUN(a_live_neighbour_answers_the_probe);
@@ -2491,6 +2570,7 @@ int main(void) {
     RUN(a_lost_message_is_booked_where_it_was_lost);
     RUN(routes_stay_loop_free_while_links_change);
     RUN(a_broadcast_reaches_the_line_once_per_relay);
+    RUN(a_broadcast_spends_no_hop_where_relays_are_few);
     RUN(the_config_is_checked);
     return CHECK_DONE();
 }

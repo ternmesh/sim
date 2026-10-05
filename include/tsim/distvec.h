@@ -249,6 +249,40 @@
  * leaf gave up on at the relay it left were nearly all of what the source lost (230 of 361 at 10
  * dBm, seed 1, 12 with salvage); what is left is the last hop, the relay it left. On by default.
  *
+ * Rescue floods, with rescue_hops above 0. A leaf that walks is routed to the relay it left for as
+ * long as routes take to cross the network, and sends to it for as long as its links stay up: on
+ * the region at 10 dBm with a quarter of the leaves walking (seed 1), 143 of 232 messages to them
+ * were lost at the last hop and 84 of 273 from them at the first, against 13 of 946 between nodes
+ * that stay. Louder last tries changed nothing - walkers go kilometres - and re-attachment caught
+ * few of them: a leaf sends a message every half hour. So a frame given up on where the routes
+ * have gone stale is flooded instead, as MeshCore falls back to a flood when its path fails. A
+ * node floods a data frame it gave up on at the frame's destination, or at its own first hop as
+ * the source - a source without trying salvage first, its routes as stale as its links - if that
+ * neighbour has gone unheard past two of its promises, as overdue() has it for re-attachment; and
+ * at most once a frame:
+ *
+ *     type 0x0D | source 4 | id 4 | hops 1 | destination 4 | content
+ *
+ * at tx_dbm, its links perhaps stale. Every relay passes it on once, as a broadcast, for
+ * rescue_hops relay hops, and the destination delivers and acknowledges it as any message.
+ *
+ * Measured there, 10 dBm, seed 1, with leaves walking: unicast on time 79.2% without, and with
+ * rescue_hops 1, 2 and 4 84.4%, 89.6% and 92.0% flooding on any such give-up, for deliveries per
+ * second of airtime of 41.2 falling to 39.1, 33.8 and 27.4. With nothing moving, at 20 dBm,
+ * rescue_hops 2 so made 241 floods an hour where 10 messages a run ended on a hop given up: in a
+ * crowd, a hop's acknowledgement is often lost when its frame was not. Only at a neighbour unheard
+ * past one promise, 90.7% with leaves walking and 57 floods an hour with nothing moving; past two,
+ * 91.2% and 21, at 37.0 and 53.6 deliveries per second of airtime against 41.2 and 54.0 without.
+ * Flooding the source's last attempt instead delivered 400 messages by flood in the hour and
+ * flooded 279 already delivered, their acknowledgements late; a
+ * relay routing a flood on once it had a route of its own made 3,068 floods an hour, every routed
+ * copy given up on at a stale last hop flooding again.
+ *
+ * Measured with tools/density.py --fast (3 seeds, -5 to 20 dBm), rescue_hops 2 against 0: unicast
+ * on time with a quarter of the leaves walking 35.1%, 65.4%, 81.7%, 89.0% and 92.9%, against
+ * 33.9%, 61.9%, 73.2%, 78.2% and 87.3%; with nothing stressed, and under churn, within the seeds'
+ * spread but broadcast at 5 dBm, 72.3% against 75.0%. On by default.
+ *
  * The source waits for the acknowledgement ack_wait plus ack_factor times the route's metric in
  * milliseconds - the metric being airtime, it is a round trip's worth - counted from when its frame
  * goes on the air, however long it queued, or from when the queue refused it; and without one sends
@@ -261,9 +295,10 @@
  *
  *     type 0x05 | source 4 | id 4 | hops 1 | content
  *
- * with up to bcast_hops relays along any path, each relay waiting a random time up to bcast_window
- * airtimes of the frame and dropping it if it hears bcast_cancel copies first. Scoped broadcast
- * is MSH-34's.
+ * with up to bcast_hops relays along any path - but for those that can use bcast_sparse relays or
+ * fewer, which spend none (see Sparse networks) - each relay waiting a random time up to
+ * bcast_window airtimes of the frame and dropping it if it hears bcast_cancel copies first. Scoped
+ * broadcast is MSH-34's.
  *
  * How loud a broadcast goes, with power control (MSH-67): bcast_power. Broadcasts went as announces
  * do, loud enough for the power_k neighbours with the lowest floors. At high power those are near
@@ -607,12 +642,14 @@ struct tsim_distvec_config {
     uint8_t hop_retries;
     uint8_t salvage; /* other next hops a frame given up on may be sent to, 0 none (below) */
     uint8_t retries;
+    uint8_t rescue_hops; /* relay hops a rescue flood goes, 0 for none (below) */
     tsim_time hop_wait;
     tsim_time ack_wait;
     double ack_factor;
     double jitter; /* airtimes a frame sent in answer to one received waits, at most */
 
     uint8_t bcast_hops;
+    uint8_t bcast_sparse; /* relays at most a relay can use that spend no hop of a broadcast */
     double bcast_window;
     uint8_t bcast_cancel; /* copies heard, its own first one included, 0 for never */
 
@@ -743,6 +780,25 @@ struct tsim_distvec_config {
  * 4.9-13.4% to 29.0-41.3%, and broadcast from 16.1-23.0% to 1.1-16.3%. What it costs: a link
  * within link_margin_db of the floor, which sensing would use, goes unused, so a line 2 km apart
  * at SF9, whose links are that close, never routes.
+ *
+ * Sparse networks. That cost was most of what candidate 3 lost at -5 dBm on the fast preset, where
+ * a node has 5 links: with link_margin_db 3, as it was until then, routes joined 47% of pairs, and
+ * MeshCore beat it under churn and movement. The rest was broadcast: four relay hops reached one
+ * node in ten, a flood there costing a frame a relay, not the crowd it costs where relays are
+ * many. Hence bcast_sparse, a relay that can use few relays spending no hop. Measured with
+ * tools/density.py --fast (3 seeds, -5 to 20 dBm), link_margin_db 0 and bcast_sparse 8 against 3
+ * and 0: unicast on time 60.7%, 90.4%, 98.1%, 97.5% and 95.9%, against 47.2%, 88.8%, 97.2%, 97.5%
+ * and 95.7%; broadcast 40.0%, 65.1%, 77.4%, 87.5% and 88.4%, against 9.8%, 40.8%, 72.3%, 86.0% and
+ * 88.7%; under churn 45.9%, 73.7%, 89.7%, 87.0% and 85.3%, against 21.0%, 60.4%, 86.3%, 88.7% and
+ * 85.7%; with leaves walking 43.0%, 65.0%, 79.8%, 89.3% and 92.9%, against 35.1%, 65.4%, 81.7%,
+ * 89.0% and 92.9%; routes joining 59.5% of pairs at -5 dBm. Deliveries per second of airtime 26.9,
+ * 29.9, 43.3, 51.8 and 52.0, against 7.3, 37.6, 43.9, 50.6 and 53.5: at 0 dBm floods reaching 24
+ * points more of the region took more airtime than they delivered. Each alone, seed 1: at -5 dBm
+ * no margin made unicast 56.7% and broadcast 11.6% from 42.9% and 9.1%, and bcast_sparse 8 took
+ * broadcast on to 39.0%. bcast_hops 16 in its place did as much there, 37.7%, but without the
+ * margin cost 3.7 points of unicast at 10 dBm with leaves walking and 13% of deliveries per second
+ * of airtime at 20 dBm with nothing moving; bcast_sparse 8, with no margin, 0.4 points at 10 dBm
+ * and 1.3% at 20, both with nothing moving. The defaults since.
  *
  * The liveness probe (MSH-61), with links by strength and probe_hops above 0. A dead neighbour
  * wants a signal a live one never gives, and a live one always gives an answer when asked. After
@@ -893,13 +949,15 @@ bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_con
  * a link kept through 8 rounds without one; a 32-byte reference frame, every link costing the same
  * (ETX off) and none used over ETX 32, 10% hysteresis and a 25% change threshold, a request every
  * 10 s while starved; a jitter of up to 2 airtimes; 32 hops, 2 hop retries after 4 s, 3 retries
- * waiting 5 s plus 4 times the metric; broadcasts over 4 hops, waiting up to 8 airtimes and dropped
+ * waiting 5 s plus 4 times the metric; broadcasts over 4 hops - none spent at a relay that can use
+ * 8 relays or fewer - and rescue floods over 2, waiting up to 8 airtimes and dropped
  * on the second copy heard, as loud as the routes to relays need. Power control on, with power_k 8
  * - without it, the region's unicast
  * fell from 22% to 2% as density rose (MSH-45) - frames going no quieter than -9 dBm, the SX1262's
  * least, with a 10 dB margin and 3 dB more for each try lost, and the SNR floor Semtech's for the
  * SF: -7.5 dB at SF7, 2.5 dB lower for each SF above. Per-link SF off, with sf_k 8 for when it is
- * on. The oracle off and links by strength, with a 3 dB margin for either oracle. Relays, when
+ * on. The oracle off and links by strength, coming up with no margin to spare and going down 3 dB
+ * below it, with a 3 dB margin for either oracle. Relays, when
  * elected, covering every node once, with 10-minute waits, and never standing down.
  *
  * The cap is per node, so in a neighbourhood of n nodes routing may take n times it of the
@@ -970,6 +1028,8 @@ struct tsim_distvec_stats {
     uint64_t reattached;
     /* With salvage: frames given up on that went to another next hop instead. */
     uint64_t salvaged;
+    /* With rescue_hops: messages it flooded, given up on at a neighbour gone quiet. */
+    uint64_t rescues;
     /* With relay_pick elect: the times the node stood as a relay, and stood down. */
     uint64_t elected;
     uint64_t stood_down;
