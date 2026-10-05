@@ -433,7 +433,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .request_interval = TSIM_S(10),
         .hop_max = 32,
         .hop_retries = 2,
-        .stand_mobile = true,
+        .stand_mobile = false,
         .salvage = 1,
         .hop_wait = TSIM_S(4),
         .retries = 3,

@@ -571,7 +571,14 @@ struct tsim_distvec_config {
     /* With relay_pick elect: whether a node that knows it moves - a handheld, set so by its owner,
      * or one whose GPS says so - may stand. With `stand_mobile` no, it never does, and announces a
      * score of 0, so no orphan chooses it. `mobile` is [node], 1 for a node that moves: shared, and
-     * set by the driver from the nodes the scenario moves; NULL for none. */
+     * set by the driver from the nodes the scenario moves; NULL for none.
+     *
+     * Measured with tools/density.py --fast -s routing.relay_pick=elect (3 seeds, -5 to 20 dBm,
+     * salvage 1), unicast on time with a fifth of all nodes moving: 19.8%, 60.2%, 72.7%, 76.9% and
+     * 85.2% with stand_mobile no, against 1.0%, 7.7%, 17.3%, 23.6% and 39.9% before it (salvage 0),
+     * when movers stood and dragged the tier apart; nothing stressed 51.5%, 87.9%, 97.9%, 99.3% and
+     * 98.0%, and under churn 43.5%, 80.5%, 94.2%, 96.5% and 93.2%, as before. No by default: a node
+     * a person carries should not carry the network. */
     bool stand_mobile;
     const uint8_t *mobile;
 
