@@ -795,8 +795,8 @@ struct tsim_distvec_config {
  * Relays took a link to a leaf out of use after a single frame lost, as leaves did a relay's: on
  * LoRa one frame in a few is lost, so links flapped, and each flap reset the relay's Trickle -
  * relays sent over half again as many announces with nothing moving. And a leaf asked after its
-relay
- * for every frame lost, its solicits and their answers costing airtime and its messages detours.
+ * relay for every frame lost, its solicits and their answers costing airtime and its messages
+ * detours.
  * Now relays no longer take a leaf's link out of use for a frame lost, leaves wait for
  * solicit_hops, and leaf routes are repaired as above. Tried and not kept: selecting the newest
  * seq first for leaves alone, as DSDV does, which made every seq a leaf raised - answering a
@@ -804,7 +804,15 @@ relay
  * nothing moving); and a notice a leaf sends along its new routes to its old relay, so the relays
  * between learn its new seq first, which changed nothing measurable.
  *
-RESULTS_PLACEHOLDER */
+ * Measured with tools/density.py --fast (region-distvec-fast.tsim, 3 seeds), unicast on time off
+ * and on, at 0 and 20 dBm: with nothing moving 88.8% and 88.5%, 95.8% and 97.8%; with a quarter
+ * of the leaves walking 59.8% and 67.3%, 84.8% and 89.0%; driving, 5 to 20 m/s, 59.2% and 65.7%,
+ * 75.7% and 86.1%; under churn 58.5% and 57.9%, 77.3% and 77.7%. Broadcast is within 1.3 points
+ * of off, but for driving at 0 dBm: 36.6% against 40.2%. Deliveries per second of airtime with
+ * nothing moving are 34.4 against 37.9 at 0 dBm and 50.7 against 54.4 at 20 (27.7 and 49.5 before
+ * MSH-72); driving, 14.4 against 19.7 and 32.9 against 52.0, no better than before. Nearly all of
+ * those deliveries are broadcasts, so a unicast delivered that was not before costs relay airtime
+ * and adds almost nothing to them. Off by default until what movement costs is found. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */
