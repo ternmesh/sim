@@ -783,16 +783,16 @@ struct tsim_distvec_config {
  * infeasible when it broke.
  *
  * Measured with tools/density.py --fast (region-distvec-fast.tsim, 3 seeds), unicast on time off
- * and on: with a quarter of the leaves walking, 59.8% and 70.0% at 0 dBm, 84.8% and 87.2% at 20
- * dBm; driving, 5 to 20 m/s, 59.2% and 66.0%, 75.7% and 82.7%; with nothing moving, 88.8% and
- * 87.7%, 95.8% and 96.9%; under churn, 58.5% and 59.8%, 77.3% and 79.7%. Off by default for what
- * it costs: deliveries per second of airtime fall 11-21% with nothing moving (37.9 to 29.8 at 0
- * dBm, 54.4 to 48.6 at 20) and 32-38% driving, and broadcast 0-5 points. With nothing moving, the
- * links taken out of use for a frame lost - 116 an hour at 0 dBm, seed 1 - bring 60% more
- * announce airtime; with leaves walking, seqno requests go from 4846 an hour to 31813 and outages
- * from 473 to 4959: each link to a leaf a relay takes out of use leaves the routes behind it
- * infeasible, and every one asks for a newer seq. That repair, not finding the relays, is what is
- * left to make cheap. */
+ * and on: with a quarter of the leaves walking, 59.8% and 68.7% at 0 dBm, 84.8% and 87.0% at 20
+ * dBm; driving, 5 to 20 m/s, 59.2% and 66.7%, 75.7% and 82.8%; with nothing moving, 88.8% and
+ * 86.9%, 95.8% and 96.8%; under churn, 58.5% and 58.8%, 77.3% and 77.9%. Off by default for what
+ * it costs: deliveries per second of airtime fall 9-27% with nothing moving (37.9 to 27.7 at 0 dBm,
+ * 54.4 to 49.5 at 20) and 31-37% driving, and broadcast 0-5 points. At 0 dBm (seed 1), with nothing
+ * moving, the links taken out of use for a frame lost - 110 an hour - bring 1176 seqno requests an
+ * hour where there were none, and 2.7 times the announce airtime; with leaves walking, seqno
+ * requests go from 4846 an hour to 37777 and outages from 473 to 4794: each link to a leaf a relay
+ * takes out of use leaves the routes behind it infeasible, and every one asks for a newer seq. That
+ * repair, not finding the relays, is what is left to make cheap. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */
