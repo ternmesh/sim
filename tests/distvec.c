@@ -1826,13 +1826,16 @@ static void an_unanswered_probe_takes_the_link_out_of_use(void) {
  * Leaf 3 moves to relay 2. Its next message loses its first hop to relay 0; it takes relay 0 out of
  * use, solicits, and relay 2 answers, so the message gets there through relay 2. Relay 0 then
  * twice leaves its solicits unanswered: leaf 3 raises its seq, and a message to it gets there too.
- * Returns how many of the two were delivered. */
-static uint64_t moved_leaf_delivered(bool reattach, struct tsim_distvec_stats *leaf) {
+ * Returns how many of the two were delivered. With reattach_sparse 0, leaf 3 - which can use one
+ * relay when the hop is lost - does not solicit on it. */
+static uint64_t moved_leaf_delivered(bool reattach, uint8_t sparse,
+                                     struct tsim_distvec_stats *leaf) {
     struct rig r;
     rig_init(&r);
     r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
     r.rc.reattach = reattach;
     r.rc.solicit_hops = 1; /* its one message's lost hop is enough */
+    r.rc.reattach_sparse = sparse;
     strcpy(r.rc.relays, "0-2");
     CHECK(tsim_distvec_check(&r.rc) == NULL);
     build(&r, 5, 1);
@@ -1856,7 +1859,7 @@ static uint64_t moved_leaf_delivered(bool reattach, struct tsim_distvec_stats *l
     uint64_t delivered =
         tsim_net_message(r.net, up)->delivered + tsim_net_message(r.net, down)->delivered;
     tsim_distvec_stats(at(&r, 3), leaf);
-    if (reattach) {
+    if (reattach && sparse) {
         CHECK(route(&r, 3, 4, &next) && next == 2);
         CHECK(route(&r, 4, 3, &next) && next == 1);
         CHECK(route(&r, 1, 3, &next) && next == 2);
@@ -1867,21 +1870,24 @@ static uint64_t moved_leaf_delivered(bool reattach, struct tsim_distvec_stats *l
 
 static void a_leaf_that_moves_is_reached_through_its_new_relay(void) {
     struct tsim_distvec_stats st;
-    CHECK_EQ_U64(moved_leaf_delivered(true, &st), 2);
+    CHECK_EQ_U64(moved_leaf_delivered(true, UINT8_MAX, &st), 2);
     CHECK(st.solicits >= 1);
     CHECK_EQ_U64(st.reattached, 1);
     CHECK_EQ_U64(st.down[TSIM_DISTVEC_DOWN_HOP], 1);
-    CHECK(moved_leaf_delivered(false, &st) < 2);
+    CHECK_EQ_U64(moved_leaf_delivered(true, 1, &st), 2);
+    CHECK_EQ_U64(st.reattached, 1);
+    moved_leaf_delivered(true, 0, &st); /* solicits only once it has no relay at all */
+    CHECK_EQ_U64(st.down[TSIM_DISTVEC_DOWN_HOP], 0);
+    CHECK(moved_leaf_delivered(false, UINT8_MAX, &st) < 2);
     CHECK_EQ_U64(st.solicits, 0);
 
     struct rig r;
     rig_init(&r);
     struct tsim_distvec_config bad = r.rc;
     bad.reattach = true;
-    CHECK(tsim_distvec_check(&bad) != NULL); /* links sensed */
-    bad.links = TSIM_DISTVEC_LINKS_STRENGTH;
-    CHECK(tsim_distvec_check(&bad) == NULL);
     bad.solicit_gap = bad.solicit_wait - 1;
+    CHECK(tsim_distvec_check(&bad) == NULL); /* links sensed: off, so not checked */
+    bad.links = TSIM_DISTVEC_LINKS_STRENGTH;
     CHECK(tsim_distvec_check(&bad) != NULL);
     bad.solicit_gap = bad.solicit_wait;
     bad.solicit_tries = 0;
@@ -1895,9 +1901,12 @@ static void a_leaf_that_moves_is_reached_through_its_new_relay(void) {
     bad.leaf_tries = UINT8_MAX - 1;
     CHECK(tsim_distvec_check(&bad) == NULL);
     bad.power = true;
-    bad.sf_min = 7; /* a solicit goes at one SF */
-    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.sf_min = 7; /* a solicit goes at one SF: off, so not checked */
+    bad.leaf_tries = UINT8_MAX;
+    CHECK(tsim_distvec_check(&bad) == NULL);
     bad.sf_min = 0;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.leaf_tries = UINT8_MAX - 1;
     CHECK(tsim_distvec_check(&bad) == NULL);
 }
 

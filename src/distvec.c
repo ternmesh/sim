@@ -439,6 +439,8 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .salvage = 1,
         .rescue_hops = 2,
         .bcast_sparse = 8,
+        .reattach = true,
+        .reattach_sparse = 4,
         .hop_wait = TSIM_S(4),
         .retries = 3,
         .ack_wait = TSIM_S(5),
@@ -554,13 +556,12 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
         (c->probe_tries < 1 || c->probe_tries > 32 || c->probe_wait <= 0)) {
         return "with probe_hops, probe_tries is not 1 to 32, or probe_wait is not above 0";
     }
-    if (c->reattach &&
-        (!strength || c->sf_min || c->solicit_wait <= 0 || c->solicit_gap < c->solicit_wait ||
-         c->solicit_tries < 1 || c->solicit_hops < 1 || c->leaf_tries == UINT8_MAX ||
-         !(c->here_window >= 0))) {
-        return "reattach wants links by strength and no per-link SF, solicit_wait above 0, "
-               "solicit_gap no shorter, solicit_tries and solicit_hops 1 or more, leaf_tries under "
-               "255 and here_window 0 or more";
+    /* Re-attachment works only over links by strength at one SF; elsewhere it is simply off. */
+    if (c->reattach && strength && !c->sf_min &&
+        (c->solicit_wait <= 0 || c->solicit_gap < c->solicit_wait || c->solicit_tries < 1 ||
+         c->solicit_hops < 1 || c->leaf_tries == UINT8_MAX || !(c->here_window >= 0))) {
+        return "reattach wants solicit_wait above 0, solicit_gap no shorter, solicit_tries and "
+               "solicit_hops 1 or more, leaf_tries under 255 and here_window 0 or more";
     }
     bool oracle = c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE;
     if (c->sf_min && (c->sf_min < TSIM_SF_MIN || c->sf_min > c->lora.sf || !strength || !c->power ||
@@ -2852,6 +2853,16 @@ static void on_probe(struct router *r, const uint8_t *b, uint32_t len, double sn
 
 /* --- Re-attachment (MSH-62) --- */
 
+/* How many relays this node can use. */
+static uint32_t relay_neighbours(const struct router *r) {
+    uint32_t count = 0;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        count += n->used && n->infra && n->cost != INF;
+    }
+    return count;
+}
+
 /* Whether this node is a leaf that solicits. */
 static bool reattaching(const struct router *r) {
     return r->config.reattach && by_strength(r) && !r->infra && !r->oracle;
@@ -2881,6 +2892,27 @@ static bool overdue(const struct router *r, const struct neighbour *n) {
     }
     tsim_time promise = n->promise > 0 ? n->promise : imax(r);
     return now(r) - n->heard > 2 * promise;
+}
+
+/* Whether a leaf that solicits starts to: only where it can use reattach_sparse relays or fewer
+ * still heard within two of their promises, whatever solicit_quiet - those it walked past long ago
+ * it may still count as usable - or with reattach_sparse 255, wherever. Where it hears more, the
+ * relay it has walked from still reaches it more often than not, and every relay around answers its
+ * solicit and passes on the seq it raises. */
+static bool solicits_here(const struct router *r) {
+    if (!reattaching(r)) {
+        return false;
+    }
+    if (r->config.reattach_sparse == UINT8_MAX) {
+        return true; /* no limit */
+    }
+    uint32_t count = 0;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        tsim_time promise = n->promise > 0 ? n->promise : imax(r);
+        count += n->used && n->infra && n->cost != INF && now(r) - n->heard <= 2 * promise;
+    }
+    return count <= r->config.reattach_sparse;
 }
 
 /* A leaf wants to solicit, asking after the relay `was`, its anchor if `anchored`: at once,
@@ -2999,7 +3031,8 @@ static void attach_fire(void *ctx) {
         r->solicited = -1;
         r->solicit_wanted |= again;
     }
-    if (r->solicited < 0 && !r->solicit_wanted && r->solicits < r->config.solicit_tries) {
+    if (r->solicited < 0 && !r->solicit_wanted && r->solicits < r->config.solicit_tries &&
+        solicits_here(r)) {
         const struct neighbour *a = anchor(r);
         if (!a || overdue(r, a)) {
             r->solicit_wanted = true;
@@ -3125,7 +3158,7 @@ static void missed(struct router *r, uint16_t s) {
     n->boost = n->boost + r->config.step_db > room ? room : n->boost + r->config.step_db;
     /* A leaf that solicits sends no more through a relay that lost its frame, and asks after it:
      * if it is there, its answer brings it back. */
-    if (reattaching(r) && n->infra && n->cost != INF && n->lost + 1u >= r->config.solicit_hops) {
+    if (solicits_here(r) && n->infra && n->cost != INF && n->lost + 1u >= r->config.solicit_hops) {
         bool anchored = anchor(r) == n;
         mute(r, s, TSIM_DISTVEC_DOWN_HOP);
         want_solicit(r, n->id, anchored);
@@ -4085,16 +4118,6 @@ static void on_flood(struct router *r, const uint8_t *b, uint32_t len, uint8_t h
     }
 }
 
-/* How many relays this node can use. */
-static uint32_t relay_neighbours(const struct router *r) {
-    uint32_t count = 0;
-    for (size_t i = 0; i < r->nb_count; i++) {
-        const struct neighbour *n = &r->nb[i];
-        count += n->used && n->infra && n->cost != INF;
-    }
-    return count;
-}
-
 static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t heard_sf) {
     uint32_t src = get32(b + 1), id = get32(b + 5);
     uint8_t hops = b[9];
@@ -4462,6 +4485,10 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->nodes = tsim_node_count(node);
     r->infra = tsim_distvec_relay(c, r->self);
     r->config = *c;
+    /* Off where it cannot work, as tsim_distvec_check() allows: with links not by strength, or
+     * per-link SFs. */
+    r->config.reattach =
+        c->reattach && c->links == TSIM_DISTVEC_LINKS_STRENGTH && !c->sf_min && !c->oracle;
     r->oracle = c->oracle ? c->oracle_routes : NULL;
     if (c->relay_pick != TSIM_DISTVEC_PICK_LIST && c->relay_pick != TSIM_DISTVEC_PICK_ELECT &&
         !c->relay_set) {

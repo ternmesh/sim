@@ -861,6 +861,9 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "reattach") == 0) {
         return parse_yes_no(value, &c->reattach) ? NULL : "expected yes or no";
     }
+    if (strcmp(key, "reattach_sparse") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->reattach_sparse);
+    }
     if (strcmp(key, "solicit_quiet") == 0) {
         return distvec_time(value, true, &c->solicit_quiet);
     }

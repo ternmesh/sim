@@ -683,11 +683,13 @@ struct tsim_distvec_config {
     uint8_t probe_hops;   /* hops lost running, nothing heard between, that start one; 0 never */
     uint8_t probe_tries;  /* probes unanswered that forget the neighbour, 1..32 */
     tsim_time probe_wait; /* a probe's wait for its answer, and the most the next waits more */
-    /* With links by strength, re-attachment (MSH-62, below): whether a leaf solicits; how long it
+    /* With links by strength at one SF - off otherwise, whatever it says - re-attachment (MSH-62,
+     * below): whether a leaf solicits; how long it
      * waits for answers, the least time between its solicits, and how many go unanswered in a row
      * before it waits for news of a relay; the airtimes a relay's answer waits at most, and the
      * answers to the same solicit heard that cancel a relay's own, 0 never. */
     bool reattach;
+    uint8_t reattach_sparse; /* relays at most a leaf hears that it solicits with; 255 any */
     tsim_time solicit_quiet; /* the anchor unheard this long is asked after; 0, two promises */
     tsim_time solicit_wait;
     tsim_time solicit_gap;
@@ -898,8 +900,27 @@ struct tsim_distvec_config {
  * airtime with nothing moving are 36.1 against 37.9 at 0 dBm and 51.9 against 54.4 at 20, within
  * 5% (27.7 and 49.5 before MSH-72); driving, 14.2 against 19.7 and 33.4 against 52.0, no better
  * than before. Nearly all of those deliveries are broadcasts, so a unicast delivered that was not
- * before costs relay airtime and adds almost nothing to them. Off by default until what driving
- * costs is found. */
+ * before costs relay airtime and adds almost nothing to them.
+ *
+ * Where few relays are heard (reattach_sparse). Most of what driving cost was where the network is
+ * dense: a leaf there solicits, every relay in earshot answers - some 24 answers a solicit at
+ * 20 dBm - and the seq it raises goes out from all of them, announce airtime more than doubling,
+ * while the relay it drove from mostly still reaches it. So a leaf starts to solicit only while it
+ * hears reattach_sparse relays or fewer, each heard within two of its promises: counted as usable
+ * instead, a walker kept the relays it had passed long ago and never solicited where it needed to.
+ * Measured with tools/density.py --fast (3 seeds, -5 to 20 dBm) on the defaults of #42, unicast on
+ * time with a quarter of the leaves walking off, on, and on with reattach_sparse 4: 43.0, 48.9 and
+ * 48.6% at -5 dBm, 65.0, 71.6 and 71.7% at 0, 79.8, 82.4 and 82.3% at 5, 92.9, 92.3 and 93.9% at
+ * 20; driving, 5 to 20 m/s, 42.4, 45.3 and 44.9% at -5 dBm, 67.2, 69.5 and 69.4% at 0, 88.1, 88.3
+ * and 89.7% at 10, 90.9, 89.2 and 93.5% at 20. With nothing moving, 95.9, 97.9 and 98.6% at 20 dBm,
+ * and deliveries per second of airtime 52.0, 49.2 and 56.0; under churn within the seeds' spread.
+ * Driving still costs airtime: deliveries per second of it 40.4, 28.6 and 31.8 at 10 dBm, 37.6,
+ * 27.9 and 31.8 at 20; walking 36.2, 31.3 and 34.0 at 20. reattach_sparse 4 kept nearly everything
+ * re-attachment gained where it is sparse and most of what it cost where it is dense, and 8 a
+ * little less of both, so re-attachment is on by default since, with reattach_sparse 4. It is off,
+ * whatever reattach says, where it cannot work: links not by strength, or per-link SFs. With
+ * elected relays it still costs airtime at 20 dBm with nothing moving - per_s 73.9 against 98.9 -
+ * for reasons region-distvec-fast.tsim sets out, not yet resolved. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */
@@ -957,7 +978,9 @@ bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_con
  * least, with a 10 dB margin and 3 dB more for each try lost, and the SNR floor Semtech's for the
  * SF: -7.5 dB at SF7, 2.5 dB lower for each SF above. Per-link SF off, with sf_k 8 for when it is
  * on. The oracle off and links by strength, coming up with no margin to spare and going down 3 dB
- * below it, with a 3 dB margin for either oracle. Relays, when
+ * below it, with a 3 dB margin for either oracle. Re-attachment on, where links are by strength at
+ * one SF, a leaf soliciting where it hears 4 relays or fewer, with solicit_hops 3 and solicits a
+ * minute apart. Relays, when
  * elected, covering every node once, with 10-minute waits, and never standing down.
  *
  * The cap is per node, so in a neighbourhood of n nodes routing may take n times it of the
