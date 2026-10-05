@@ -755,14 +755,8 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "salvage") == 0) {
         return distvec_count(value, 0, 4, &c->salvage);
     }
-    if (strcmp(key, "hop_rescue") == 0) {
-        return parse_yes_no(value, &c->hop_rescue) ? NULL : "expected yes or no";
-    }
     if (strcmp(key, "rescue_hops") == 0) {
         return distvec_count(value, 0, 254, &c->rescue_hops);
-    }
-    if (strcmp(key, "rescue") == 0) {
-        return distvec_count(value, 0, UINT8_MAX, &c->rescue);
     }
     if (strcmp(key, "hop_wait") == 0) {
         return distvec_time(value, true, &c->hop_wait);

@@ -249,6 +249,35 @@
  * leaf gave up on at the relay it left were nearly all of what the source lost (230 of 361 at 10
  * dBm, seed 1, 12 with salvage); what is left is the last hop, the relay it left. On by default.
  *
+ * Rescue floods, with rescue_hops above 0. A leaf that walks is routed to the relay it left for as
+ * long as routes take to cross the network, and sends to it for as long as its links stay up: on
+ * the region at 10 dBm with a quarter of the leaves walking (seed 1), 143 of 232 messages to them
+ * were lost at the last hop and 84 of 273 from them at the first, against 13 of 946 between nodes
+ * that stay. Louder last tries changed nothing - walkers go kilometres - and re-attachment caught
+ * few of them: a leaf sends a message every half hour. So a frame given up on where the routes
+ * have gone stale is flooded instead, as MeshCore falls back to a flood when its path fails. A
+ * node floods a data frame it gave up on at the frame's destination, or at its own first hop as
+ * the source - a source without trying salvage first, its routes as stale as its links - if that
+ * neighbour has gone unheard past two of its promises, as overdue() has it for re-attachment; and
+ * at most once a frame:
+ *
+ *     type 0x0D | source 4 | id 4 | hops 1 | destination 4 | content
+ *
+ * at tx_dbm, its links perhaps stale. Every relay passes it on once, as a broadcast, for
+ * rescue_hops relay hops, and the destination delivers and acknowledges it as any message.
+ *
+ * Measured there, 10 dBm, seed 1, with leaves walking: unicast on time 79.2% without, and with
+ * rescue_hops 1, 2 and 4 84.4%, 89.6% and 92.0% flooding on any such give-up, for deliveries per
+ * second of airtime of 41.2 falling to 39.1, 33.8 and 27.4. With nothing moving, at 20 dBm,
+ * rescue_hops 2 so made 241 floods an hour where 10 messages a run ended on a hop given up: in a
+ * crowd, a hop's acknowledgement is often lost when its frame was not. Only at a neighbour unheard
+ * past one promise, 90.7% with leaves walking and 57 floods an hour with nothing moving; past two,
+ * 91.2% and 21, at 37.0 and 53.6 deliveries per second of airtime against 41.2 and 54.0 without.
+ * Flooding the source's last attempt instead delivered 400 messages by flood in the hour and
+ * flooded 279 already delivered, their acknowledgements late; a
+ * relay routing a flood on once it had a route of its own made 3,068 floods an hour, every routed
+ * copy given up on at a stale last hop flooding again.
+ *
  * The source waits for the acknowledgement ack_wait plus ack_factor times the route's metric in
  * milliseconds - the metric being airtime, it is a round trip's worth - counted from when its frame
  * goes on the air, however long it queued, or from when the queue refused it; and without one sends
@@ -607,9 +636,7 @@ struct tsim_distvec_config {
     uint8_t hop_retries;
     uint8_t salvage; /* other next hops a frame given up on may be sent to, 0 none (below) */
     uint8_t retries;
-    uint8_t rescue; /* the attempt, 1..retries, a source floods rather than routes; 0 none */
-    bool hop_rescue;
-    uint8_t rescue_hops;
+    uint8_t rescue_hops; /* relay hops a rescue flood goes, 0 for none (below) */
     tsim_time hop_wait;
     tsim_time ack_wait;
     double ack_factor;
@@ -973,7 +1000,7 @@ struct tsim_distvec_stats {
     uint64_t reattached;
     /* With salvage: frames given up on that went to another next hop instead. */
     uint64_t salvaged;
-    /* With rescue: messages it flooded as a source. */
+    /* With rescue_hops: messages it flooded, given up on at a neighbour gone quiet. */
     uint64_t rescues;
     /* With relay_pick elect: the times the node stood as a relay, and stood down. */
     uint64_t elected;

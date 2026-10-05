@@ -1700,6 +1700,7 @@ static void by_strength_a_neighbour_is_gone_when_frames_to_it_fail(void) {
     rig_init(&r);
     r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
     r.rc.dead_hops = 3;
+    r.rc.rescue_hops = 0; /* the frames given up on, counted, not flooded */
     line(&r, 3, 1);
     tsim_sched_run_until(r.sched, TSIM_S(600));
     uint32_t next = 0;
@@ -1870,6 +1871,56 @@ static void a_leaf_that_moves_is_reached_through_its_new_relay(void) {
     bad.sf_min = 7; /* a solicit goes at one SF */
     CHECK(tsim_distvec_check(&bad) != NULL);
     bad.sf_min = 0;
+    CHECK(tsim_distvec_check(&bad) == NULL);
+}
+
+/* Rescue floods: relays 0, 1 and 2 in a line, leaf 3 hearing relay 0 and leaf 4 relay 1. Leaf 3
+ * goes quiet past two of its promises, then turns up next to relay 2, unheard by it yet: the routes
+ * to it still end at relay 0, which gives the last hop of a message from leaf 4 up and floods it,
+ * and relay 2 passes it on to leaf 3. Returns whether it was delivered. */
+static bool rescued(uint8_t rescue_hops, struct tsim_distvec_stats *relay) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.rescue_hops = rescue_hops;
+    strcpy(r.rc.relays, "0-2");
+    CHECK(tsim_distvec_check(&r.rc) == NULL);
+    build(&r, 5, 1);
+    link(&r, 0, 1, LOSS_LOUD);
+    link(&r, 1, 2, LOSS_LOUD);
+    link(&r, 3, 0, LOSS_LOUD);
+    link(&r, 4, 1, LOSS_LOUD);
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(900));
+    uint32_t next = 0;
+    CHECK(route(&r, 4, 3, &next) && next == 1);
+    link(&r, 3, 0, LOSS_NONE);
+    tsim_sched_run_until(r.sched, TSIM_S(5400));
+    CHECK(route(&r, 1, 3, &next) && next == 0);
+    link(&r, 3, 2, LOSS_LOUD);
+    uint64_t m = tsim_net_originate(r.net, 4, 3, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(5460));
+    bool got = tsim_net_message(r.net, m)->delivered > 0;
+    tsim_distvec_stats(at(&r, 0), relay);
+    rig_close(&r);
+    return got;
+}
+
+static void a_message_lost_at_a_leaf_gone_quiet_is_flooded(void) {
+    struct tsim_distvec_stats st;
+    CHECK(rescued(2, &st));
+    CHECK_EQ_U64(st.rescues, 1);
+    CHECK(!rescued(0, &st));
+    CHECK_EQ_U64(st.rescues, 0);
+    CHECK(!rescued(1, &st)); /* relay 1 passes it on; relay 2 is one hop too far */
+    CHECK_EQ_U64(st.rescues, 1);
+
+    struct rig r;
+    rig_init(&r);
+    struct tsim_distvec_config bad = r.rc;
+    bad.rescue_hops = 255; /* would not fit the byte the frame counts hops in */
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.rescue_hops = 254;
     CHECK(tsim_distvec_check(&bad) == NULL);
 }
 
@@ -2433,6 +2484,7 @@ int main(void) {
     RUN(links_by_strength_come_up_and_go_down_on_margin);
     RUN(a_lost_hop_takes_no_link_down_by_strength);
     RUN(by_strength_a_neighbour_is_gone_when_frames_to_it_fail);
+    RUN(a_message_lost_at_a_leaf_gone_quiet_is_flooded);
     RUN(by_strength_silence_is_checked_as_often_as_silent_max_needs);
     RUN(an_unanswered_probe_takes_the_link_out_of_use);
     RUN(a_live_neighbour_answers_the_probe);

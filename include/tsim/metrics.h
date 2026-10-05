@@ -71,7 +71,7 @@ struct tsim_route_health {
     double heres_per_h;
     double reattached_per_h;
     double salvaged_per_h; /* frames given up on sent to another next hop instead, all nodes */
-    double rescues_per_h;  /* messages their sources flooded, all nodes */
+    double rescues_per_h;  /* messages flooded to rescue them, all nodes */
     double unrouted_infeasible;
     double unrouted_empty;
     /* As the run ends, the nodes up listening on each SF, from SF7 (MSH-49). */

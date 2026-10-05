@@ -188,6 +188,7 @@ default.
 | `routing.hop_max` (`distvec`) | 32 | hops a message may take, 1 to 255 |
 | `routing.hop_retries`, `routing.hop_wait` (`distvec`) | 2, `4 s` | how often a hop sends a frame again when it does not hear its next hop pass it on, and how long it waits, beyond twice the frame's airtime |
 | `routing.stand_mobile` (`distvec`) | `no` | with `routing.relay_pick` elect: whether a node that knows it moves - those `move.share` moves - may stand as a relay |
+| `routing.rescue_hops` (`distvec`) | 2 | rescue floods: a data frame given up on at its destination, or at its source's first hop, where the neighbour has gone unheard past two of its promises and no other route takes it, is flooded for its destination instead, relays passing it on once as a broadcast for this many relay hops, 0 to 254; 0 is none |
 | `routing.salvage` (`distvec`) | 1 | how many times a data frame given up on goes, with its retries anew, to another neighbour this node holds a feasible route through instead of being dropped, 0 to 4; never to a neighbour it was given up on at |
 | `routing.retries` (`distvec`) | 3 | sends after the first, for a message the destination does not acknowledge |
 | `routing.ack_wait`, `routing.ack_factor` (`distvec`) | `5 s`, 4 | the source waits this long, plus this many times the route's metric in milliseconds, for the acknowledgement |

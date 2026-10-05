@@ -437,8 +437,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .hop_retries = 2,
         .stand_mobile = false,
         .salvage = 1,
-        .rescue = 0,
-        .rescue_hops = 4,
+        .rescue_hops = 2,
         .hop_wait = TSIM_S(4),
         .retries = 3,
         .ack_wait = TSIM_S(5),
@@ -544,8 +543,8 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     if (c->salvage > SALVAGE_MAX) {
         return "salvage is over 4";
     }
-    if (c->rescue > c->retries) {
-        return "rescue is over retries";
+    if (c->rescue_hops > 254) {
+        return "rescue_hops is over 254";
     }
     if (strength && (c->dead_hops < 1 || c->silent_max <= 0)) {
         return "dead_hops is 0, or silent_max is not above 0";
@@ -2872,8 +2871,9 @@ static struct neighbour *anchor(struct router *r) {
     return best;
 }
 
-/* Whether a relay has gone unheard past two of its promises - imax for one that has promised
- * nothing yet - as a leaf that has moved away from it finds. */
+/* Whether a neighbour has gone unheard past two of its promises - imax for one that has promised
+ * nothing yet - as a leaf finds of a relay it has moved away from, and a relay of a leaf that has
+ * moved away from it. */
 static bool overdue(const struct router *r, const struct neighbour *n) {
     if (r->config.solicit_quiet > 0) {
         return now(r) - n->heard > r->config.solicit_quiet;
@@ -3311,8 +3311,12 @@ static void hop_fire(void *ctx) {
         if (r->slot_of[dead.next]) {
             missed(r, r->slot_of[dead.next]);
         }
-        bool rescue = r->config.hop_rescue && dead.type == TYPE_DATA && !r->oracle &&
+        /* Rescued, with rescue_hops, if it was given up on at its destination or at its source's
+         * first hop, at a neighbour gone quiet: a leaf that walked away, or the relay a leaf
+         * walked away from. */
+        bool rescue = r->config.rescue_hops && dead.type == TYPE_DATA && !r->oracle &&
                       (dead.src == r->self || dead.next == dead.dst) &&
+                      (!r->slot_of[dead.next] || overdue(r, slot(r, r->slot_of[dead.next]))) &&
                       !seen(r, frame_key(TYPE_FLOOD, dead.src, dead.id)) &&
                       dead.tx.len >= r->data_head;
         if (!(rescue && dead.src == r->self) && salvage(r, &dead)) {
@@ -3650,8 +3654,8 @@ static void forget_awaiting(struct awaiting *a) {
     free(a);
 }
 
-/* A message's rescue attempt: flooded, as a broadcast is, for its destination alone. Every relay
- * that hears it passes it on once, so it finds the destination wherever routes have lost it. */
+/* A rescue flood (above): the message, flooded for its destination alone, as loud as this node
+ * may go. False if the queue refused it. */
 static uint64_t flood_out(struct router *r, uint32_t src, uint32_t id, uint32_t dst,
                           const uint8_t *content, uint32_t len, enum tsim_purpose purpose) {
     if (FLOOD_HEAD + len > FRAME_MAX) {
@@ -3669,7 +3673,6 @@ static uint64_t flood_out(struct router *r, uint32_t src, uint32_t id, uint32_t 
     tx.len = FLOOD_HEAD + len;
     tx.carries = id;
     tx.carries_at = FLOOD_HEAD;
-    mark_seen(r, frame_key(TYPE_FLOOD, src, id));
     uint64_t handle = 0;
     unsigned mask = sf_mask(r);
     for (uint8_t sf = TSIM_SF_MIN; sf < TSIM_SF_MIN + TSIM_SF_COUNT; sf++) {
@@ -3679,35 +3682,18 @@ static uint64_t flood_out(struct router *r, uint32_t src, uint32_t id, uint32_t 
             handle = handle ? handle : h;
         }
     }
-    r->stats.rescues++;
-    return handle;
-}
-
-static void send_rescue(struct awaiting *a) {
-    struct router *r = a->owner;
-    uint64_t handle = flood_out(r, r->self, a->id, a->dst, a->content, a->len, TSIM_PURPOSE_DATA);
-    /* Every relay on the way waits up to bcast_window airtimes before passing it on. */
-    double hops = (double)r->config.rescue_hops + 1;
-    tsim_time wait =
-        r->config.ack_wait + (tsim_time)(hops * (r->config.bcast_window + 1) * r->ref_ms * 2 *
-                                         r->config.ack_factor * (double)TSIM_MS(1));
-    a->routeless = false;
     if (handle) {
-        a->handle = handle;
-        a->wait = wait;
-        return;
+        /* Only once one is queued: a flood the queue refused may be tried again. */
+        mark_seen(r, frame_key(TYPE_FLOOD, src, id));
+        r->stats.rescues++;
     }
-    tsim_timer_start(a->timer, wait);
+    return handle;
 }
 
 static void send_attempt(struct awaiting *a) {
     struct router *r = a->owner;
     tsim_time wait = r->config.ack_wait;
     uint64_t handle = 0;
-    if (r->config.rescue && a->attempt == r->config.rescue && !r->oracle) {
-        send_rescue(a);
-        return;
-    }
     if (route_frame(r, TYPE_DATA, r->self, a->dst, a->id, r->config.hop_max, a->content, a->len,
                     TSIM_PURPOSE_DATA, a->id, NULL, &handle)) {
         uint16_t route_metric = INF;
