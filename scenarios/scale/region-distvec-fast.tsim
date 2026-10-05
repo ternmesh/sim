@@ -55,6 +55,11 @@
 # its routes have not settled - reach 47% at SF7 -5 dBm - and its results swing most from seed to
 # seed. SF8 is worse for it than SF7 from 0 dBm up, more airtime per frame for the same load, as
 # MSH-49 found; at -5 dBm, where SF7 leaves 5 links per node, SF8's reach helps, 65% against 47%.
+#
+# Re-attachment (MSH-62, -s routing.reattach=yes; 3 seeds), unicast on time off and on: a quarter
+# of the leaves walking 59.8% and 70.0% at 0 dBm, 84.8% and 87.2% at 20 dBm; driving 59.2% and
+# 66.0%, 75.7% and 82.7%; nothing moving 88.8% and 87.7%, 95.8% and 96.9%. It costs 11-38% of the
+# deliveries per second of airtime, in repair: see include/tsim/distvec.h.
 nodes     = 1000
 placement = uniform
 area      = 18000 x 18000
