@@ -40,8 +40,8 @@ struct tsim_delivery {
 
 /* How candidate 3's links and routes held up over the window (MSH-54). Only tsim_scenario_run()
  * fills it, and only for distvec; `present` is false otherwise. Causes are in the order of enum
- * tsim_distvec_down: ihu, rate, silent, hop, timeout, probe. */
-#define TSIM_HEALTH_CAUSES 6
+ * tsim_distvec_down: ihu, rate, silent, hop, timeout, probe, solicit. */
+#define TSIM_HEALTH_CAUSES 7
 struct tsim_route_health {
     bool present;
     double down_per_h[TSIM_HEALTH_CAUSES];   /* usable links going out of use, all nodes */
@@ -65,6 +65,11 @@ struct tsim_route_health {
     double probes_per_h;
     double probes_answered_per_h;
     double probe_acks_per_h;
+    /* Re-attachment (MSH-62), per hour, all nodes: solicits sent, answers queued, and leaves that
+     * took another relay after soliciting. */
+    double solicits_per_h;
+    double heres_per_h;
+    double reattached_per_h;
     double unrouted_infeasible;
     double unrouted_empty;
     /* As the run ends, the nodes up listening on each SF, from SF7 (MSH-49). */

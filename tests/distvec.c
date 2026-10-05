@@ -1794,6 +1794,95 @@ static void an_unanswered_probe_takes_the_link_out_of_use(void) {
     CHECK(tsim_distvec_check(&bad) == NULL);
 }
 
+/* Re-attachment (MSH-62): relays 0, 1 and 2 in a line, leaf 3 hearing relay 0 and leaf 4 relay 1.
+ * Leaf 3 moves to relay 2. Its next message loses its first hop to relay 0; it takes relay 0 out of
+ * use, solicits, and relay 2 answers, so the message gets there through relay 2. Relay 0 then
+ * twice leaves its solicits unanswered: leaf 3 raises its seq, and a message to it gets there too.
+ * Returns how many of the two were delivered. */
+static uint64_t moved_leaf_delivered(bool reattach, struct tsim_distvec_stats *leaf) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.reattach = reattach;
+    strcpy(r.rc.relays, "0-2");
+    CHECK(tsim_distvec_check(&r.rc) == NULL);
+    build(&r, 5, 1);
+    link(&r, 0, 1, LOSS_LOUD);
+    link(&r, 1, 2, LOSS_LOUD);
+    link(&r, 3, 0, LOSS_LOUD);
+    link(&r, 4, 1, LOSS_LOUD);
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(900));
+    uint32_t next = 0;
+    CHECK(route(&r, 3, 4, &next) && next == 0);
+    CHECK(route(&r, 4, 3, &next) && next == 1);
+    link(&r, 3, 0, LOSS_NONE);
+    link(&r, 3, 2, LOSS_LOUD);
+    uint64_t up = tsim_net_originate(r.net, 3, 4, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(1020));
+    uint64_t down = tsim_net_originate(r.net, 4, 3, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(1140));
+    CHECK(tsim_net_message(r.net, up)->finished);
+    CHECK(tsim_net_message(r.net, down)->finished);
+    uint64_t delivered =
+        tsim_net_message(r.net, up)->delivered + tsim_net_message(r.net, down)->delivered;
+    tsim_distvec_stats(at(&r, 3), leaf);
+    if (reattach) {
+        CHECK(route(&r, 3, 4, &next) && next == 2);
+        CHECK(route(&r, 4, 3, &next) && next == 1);
+        CHECK(route(&r, 1, 3, &next) && next == 2);
+    }
+    rig_close(&r);
+    return delivered;
+}
+
+static void a_leaf_that_moves_is_reached_through_its_new_relay(void) {
+    struct tsim_distvec_stats st;
+    CHECK_EQ_U64(moved_leaf_delivered(true, &st), 2);
+    CHECK(st.solicits >= 1);
+    CHECK_EQ_U64(st.reattached, 1);
+    CHECK_EQ_U64(st.down[TSIM_DISTVEC_DOWN_HOP], 1);
+    CHECK(moved_leaf_delivered(false, &st) < 2);
+    CHECK_EQ_U64(st.solicits, 0);
+
+    struct rig r;
+    rig_init(&r);
+    struct tsim_distvec_config bad = r.rc;
+    bad.reattach = true;
+    CHECK(tsim_distvec_check(&bad) != NULL); /* links sensed */
+    bad.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    CHECK(tsim_distvec_check(&bad) == NULL);
+    bad.solicit_gap = bad.solicit_wait - 1;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.solicit_gap = bad.solicit_wait;
+    bad.solicit_tries = 0;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+}
+
+/* In a network that does not move, a leaf that solicits finds its relay there: the relay answers,
+ * and nothing re-attaches. */
+static void a_leaf_that_stays_does_not_reattach(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.reattach = true;
+    strcpy(r.rc.relays, "0-1");
+    build(&r, 3, 1);
+    link(&r, 0, 1, LOSS_LOUD);
+    link(&r, 2, 0, LOSS_LOUD);
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(4 * 3600));
+    struct tsim_distvec_stats st;
+    tsim_distvec_stats(at(&r, 2), &st);
+    CHECK_EQ_U64(st.reattached, 0);
+    for (int c = 0; c < TSIM_DISTVEC_DOWN_COUNT; c++) {
+        CHECK_EQ_U64(st.down[c], 0);
+    }
+    uint32_t next = 0;
+    CHECK(route(&r, 2, 1, &next) && next == 0);
+    rig_close(&r);
+}
+
 /* A live neighbour answers: node 1 goes deaf to node 0 long enough for a message's hops to fail,
  * so node 0 probes it; once node 1 hears again, it answers a probe, and node 0 keeps it. */
 static void a_live_neighbour_answers_the_probe(void) {
@@ -2333,6 +2422,8 @@ int main(void) {
     RUN(by_strength_silence_is_checked_as_often_as_silent_max_needs);
     RUN(an_unanswered_probe_takes_the_link_out_of_use);
     RUN(a_live_neighbour_answers_the_probe);
+    RUN(a_leaf_that_moves_is_reached_through_its_new_relay);
+    RUN(a_leaf_that_stays_does_not_reattach);
     RUN(a_near_neighbour_is_sent_to_quieter_than_a_far_one);
     RUN(a_relay_goes_loud_enough_for_the_hop_before);
     RUN(a_hop_lost_at_its_power_is_tried_again_louder);

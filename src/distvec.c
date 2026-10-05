@@ -30,6 +30,8 @@
 #define TYPE_PROBE 0x08
 #define TYPE_PROBE_ACK 0x09
 #define TYPE_HOP_ACK 0x0A
+#define TYPE_SOLICIT 0x0B
+#define TYPE_HERE 0x0C
 
 #define ANNOUNCE_HEAD 16
 #define IHU_LEN 5
@@ -46,8 +48,10 @@
 #define RREQ_LEN 27
 #define PROBE_LEN 10   /* a probe or its answer */
 #define HOP_ACK_LEN 20 /* with per-link SF: a data frame's head, power byte and type */
-#define PARKED_MAX 16  /* frames a relay holds while it asks for a route */
-#define RREQ_SEQ 0x01  /* a route request's flag: it asks for the target's seq */
+#define SOLICIT_LEN 14 /* re-attachment: see the header */
+#define HERE_LEN 14
+#define PARKED_MAX 16 /* frames a relay holds while it asks for a route */
+#define RREQ_SEQ 0x01 /* a route request's flag: it asks for the target's seq */
 /* The longest IHU round an announce can tell, in its two bytes. */
 #define ROUND_MAX 32767
 /* The most announces a neighbour may go without an IHU, whatever its round: half the 16-bit count,
@@ -176,6 +180,7 @@ struct neighbour {
     uint64_t probe_handle; /* its probe in the queue, until it goes; 0 for none */
     tsim_time probe_due;   /* when the next probe goes, or the last is given up on; -1 queued */
     bool mute;             /* left the probe unanswered: unused until something is heard from it */
+    bool announced;        /* an announce of its has been heard, not only a solicit or an answer */
     uint8_t sf; /* with per-link SF, the SF it listens on, from its announces; 0 unknown */
     /* With relay_pick elect, from its last announce: whether it said, when, the relays it hears
      * and the tier it is in or next to. */
@@ -373,6 +378,20 @@ struct router {
     struct tsim_timer *park_timer; /* with demand routes: when parked frames next look for routes */
     struct tsim_timer *probe_timer;
     uint32_t probing; /* neighbours being probed */
+    /* Re-attachment, for a leaf: when its solicit waiting on answers went, or -1 for none; when
+     * the last went, or -1; how many it numbered; how many in a row went unanswered; whether one is
+     * wanted, and the anchor it had then; and whether its next announce goes at tx_dbm. */
+    tsim_time solicited;
+    tsim_time solicit_last;
+    uint16_t solicit_id;
+    uint8_t solicits;
+    bool solicit_wanted;
+    uint32_t solicit_was;  /* the relay it asks after: the anchor, or one that lost a frame */
+    bool doubt;            /* that relay left one solicit unanswered already */
+    bool suspect_anchored; /* that relay, muted for a frame it lost, was the anchor */
+    uint32_t attached;     /* the anchor it last raised its seq for, or TSIM_BROADCAST */
+    bool loud;
+    struct tsim_timer *attach_timer;
     struct parked *parked;
     size_t parked_count;
 };
@@ -433,6 +452,11 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .silent_max = TSIM_S(24 * 3600),
         .probe_tries = 6,
         .probe_wait = TSIM_S(5),
+        .solicit_wait = TSIM_S(10),
+        .solicit_gap = TSIM_S(60),
+        .solicit_tries = 3,
+        .here_window = 16,
+        .here_cancel = 3,
     };
 }
 
@@ -511,6 +535,11 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
         (c->probe_tries < 1 || c->probe_tries > 32 || c->probe_wait <= 0)) {
         return "with probe_hops, probe_tries is not 1 to 32, or probe_wait is not above 0";
     }
+    if (c->reattach && (!strength || c->solicit_wait <= 0 || c->solicit_gap < c->solicit_wait ||
+                        c->solicit_tries < 1 || !(c->here_window >= 0))) {
+        return "reattach wants links by strength, solicit_wait above 0, solicit_gap no shorter, "
+               "solicit_tries 1 or more and here_window 0 or more";
+    }
     bool oracle = c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE;
     if (c->sf_min && (c->sf_min < TSIM_SF_MIN || c->sf_min > c->lora.sf || !strength || !c->power ||
                       c->routes != TSIM_DISTVEC_ROUTES_PROACTIVE || c->sf_k < 1)) {
@@ -556,6 +585,10 @@ static bool demand(const struct router *r) {
 
 /* Whether this node announces its route to `d`: infrastructure does, but never to a leaf when
  * leaves are reached through their parents, and with demand routes nobody does. */
+static bool reattaching(const struct router *r);
+static struct neighbour *anchor(struct router *r);
+static void mute(struct router *r, uint16_t s, enum tsim_distvec_down cause);
+
 static bool announces(const struct router *r, uint32_t d) {
     return r->infra && !(by_parent(r) && r->dest[d].leaf) && !demand(r);
 }
@@ -698,7 +731,9 @@ static void node_power(struct router *r) {
     unsigned have = 0, k = c->power_k;
     for (size_t i = 0; i < r->nb_count; i++) {
         const struct neighbour *n = &r->nb[i];
-        if (!n->used || isnan(n->floor) || (by_parent(r) && !n->infra) ||
+        /* A leaf that solicits leaves out the neighbours it has given up on. */
+        bool skip = reattaching(r) && n->mute;
+        if (!n->used || isnan(n->floor) || skip || (by_parent(r) && !n->infra) ||
             (have == k && n->floor >= low[k - 1])) {
             continue;
         }
@@ -1008,6 +1043,10 @@ static struct neighbour *next_toward(struct router *r, uint32_t dst, uint16_t *m
     const struct entry *e = t < r->nodes && t != r->self ? live_sel(r, t) : NULL;
     if (!e) {
         struct neighbour *p = t < r->nodes && t != r->self ? up(r) : NULL;
+        /* A leaf that solicits sends what it has no route for to its anchor, which has. */
+        if (!p && t < r->nodes && t != r->self && reattaching(r) && !by_parent(r)) {
+            p = anchor(r);
+        }
         if (p && metric) {
             *metric = total(p->cost, one);
         }
@@ -1295,13 +1334,18 @@ static void reselect(struct router *r, uint32_t d) {
         if (e == cur) {
             cur_total = t;
         }
-        if (t < best_total) {
+        /* With re-attachment, of routes as good, the newer seq: a leaf that has moved raises its
+         * seq, and a route as short at the old one leads to where it was. */
+        bool tie = r->config.reattach && best && t == best_total && newer(e->seq, best->seq);
+        if (t < best_total || tie) {
             best = e;
             best_total = t;
         }
     }
     struct entry *chosen = best;
-    if (cur && cur_total != INF && best != cur &&
+    bool newer_as_good =
+        r->config.reattach && best && cur && best_total <= cur_total && newer(best->seq, cur->seq);
+    if (cur && cur_total != INF && best != cur && !newer_as_good &&
         !((double)best_total < (double)cur_total * (1.0 - r->config.hysteresis))) {
         chosen = cur; /* not enough better to move */
     }
@@ -1382,6 +1426,17 @@ static void update_for(struct router *r, uint32_t d, uint16_t seq, uint16_t metr
         return;
     }
     struct dest *ds = &r->dest[d];
+    /* With re-attachment, a leaf this node hears that is heard of elsewhere with a seq newer than
+     * its own announces brought has raised it to re-attach, unheard here: it has moved away, and
+     * the link to it goes out of use until it is heard again. */
+    uint16_t ds_slot = r->slot_of[d];
+    if (r->config.reattach && by_strength(r) && metric != INF && ds_slot && ds_slot != s) {
+        const struct entry *direct = entry_by(ds, ds_slot);
+        const struct neighbour *leaf = slot(r, ds_slot);
+        if (direct && !leaf->infra && leaf->cost != INF && newer(seq, direct->seq)) {
+            mute(r, ds_slot, TSIM_DISTVEC_DOWN_SOLICIT);
+        }
+    }
     struct entry *e = entry_by(ds, s);
     /* On demand a route lasts route_ttl from when it was last heard of - but not a neighbour's
      * route to itself, which lasts as long as the link. */
@@ -2006,6 +2061,9 @@ static void announce(struct router *r) {
             return;
         }
         node_power(r);
+        if (r->loud) {
+            r->node_dbm = r->config.tx_dbm; /* a leaf just re-attached: every relay in range */
+        }
         struct tsim_tx tx = frame(r, TSIM_PURPOSE_ANNOUNCE, PRIORITY_ANNOUNCE);
         tx.len = build(r, tx.bytes);
         /* One copy for each SF, the same frame but for its power: one the queue refuses after
@@ -2034,6 +2092,7 @@ static void announce(struct router *r) {
          * announces lost on the air, which a refused one never reached. */
         r->ann_seq++;
         r->asked = false;
+        r->loud = false;
         b->ns -= spent;
     }
 }
@@ -2298,6 +2357,9 @@ static void set_role(struct router *r, bool infra) {
     r->changed = true;
     trickle_reset(r);
     r->changed = false;
+    if (reattaching(r)) {
+        tsim_timer_start(r->attach_timer, r->config.solicit_gap); /* a leaf now: it looks too */
+    }
 }
 
 /* What a node would wait to do now. */
@@ -2392,12 +2454,14 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
             len) {
         return;
     }
-    bool fresh = r->slot_of[from] == 0;
+    /* A neighbour known only from a solicit or an answer to one is new to the announces. */
+    bool fresh = r->slot_of[from] == 0 || !slot(r, r->slot_of[from])->announced;
     uint16_t s = neighbour(r, from);
     if (!s) {
         return;
     }
     struct neighbour *n = slot(r, s);
+    n->announced = true;
     uint16_t seq = get16(b + 5);
     if (fresh) {
         n->history = 1;
@@ -2421,6 +2485,7 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     bool news = fresh ? n->infra : n->infra != was_infra;
     if (news) {
         r->relay_news = now(r);
+        r->solicits = 0; /* a relay new to it: worth asking again */
     }
     if (electing(r)) {
         const uint8_t *e = b + ANNOUNCE_HEAD + (r->config.power ? 1 : 0);
@@ -2638,23 +2703,30 @@ static struct tsim_tx probe_frame(const struct router *r, uint8_t type, uint32_t
     return tx;
 }
 
-/* The neighbour in slot `s` left probe_tries probes unanswered: its link goes out of use, its
- * routes kept, until something is heard from it. */
-static void silenced(struct router *r, uint16_t s) {
+/* The link to the neighbour in slot `s` goes out of use, for `cause`, its routes kept, until
+ * something is heard from it. */
+static void mute(struct router *r, uint16_t s, enum tsim_distvec_down cause) {
     struct neighbour *n = slot(r, s);
-    probe_stop(r, n, false);
     n->mute = true;
     uint16_t was = n->cost;
     n->cost = INF;
-    link_down(r, n, was, TSIM_DISTVEC_DOWN_PROBE);
+    link_down(r, n, was, cause);
     if (was != INF) {
         n->cost_used = INF;
         r->changed = true;
         reselect_through(r, s);
         choose_parent(r);
-        trickle_reset(r);
+        if (r->infra || !reattaching(r)) {
+            trickle_reset(r); /* a leaf's announce, itself and its IHUs, is the same */
+        }
         r->changed = false;
     }
+}
+
+/* The neighbour in slot `s` left probe_tries probes unanswered. */
+static void silenced(struct router *r, uint16_t s) {
+    probe_stop(r, slot(r, s), false);
+    mute(r, s, TSIM_DISTVEC_DOWN_PROBE);
 }
 
 static void probe_fire(void *ctx) {
@@ -2703,6 +2775,7 @@ static bool probe_sent(struct router *r, uint64_t handle) {
 static void heard_from(struct router *r, uint16_t s, const uint8_t *power, double snr);
 static void hold(struct router *r, const struct tsim_tx *tx, uint64_t key, bool listen,
                  double airtimes);
+static void heard_again(struct router *r, uint64_t key, uint8_t cancel, uint8_t sf);
 
 /* A probe or an answer: its sender is heard, by strength, by every node that decodes it, and a
  * probe for this node is answered. */
@@ -2723,6 +2796,261 @@ static void on_probe(struct router *r, const uint8_t *b, uint32_t len, double sn
     }
 }
 
+/* --- Re-attachment (MSH-62) --- */
+
+/* Whether this node is a leaf that solicits. */
+static bool reattaching(const struct router *r) {
+    return r->config.reattach && by_strength(r) && !r->infra && !r->oracle;
+}
+
+/* A leaf's anchor: of the relays it can use, the one it has the most margin with; NULL for none.
+ */
+static struct neighbour *anchor(struct router *r) {
+    struct neighbour *best = NULL;
+    double best_m = -INFINITY;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        struct neighbour *n = &r->nb[i];
+        if (n->used && n->infra && n->cost != INF && margin(r, n) > best_m) {
+            best_m = margin(r, n);
+            best = n;
+        }
+    }
+    return best;
+}
+
+/* Whether a relay has gone unheard past two of its promises - imax for one that has promised
+ * nothing yet - as a leaf that has moved away from it finds. */
+static bool overdue(const struct router *r, const struct neighbour *n) {
+    if (r->config.solicit_quiet > 0) {
+        return now(r) - n->heard > r->config.solicit_quiet;
+    }
+    tsim_time promise = n->promise > 0 ? n->promise : imax(r);
+    return now(r) - n->heard > 2 * promise;
+}
+
+/* A leaf wants to solicit, having had `was` as its anchor: at once, unless one waits on its
+ * answers or the last went within solicit_gap. */
+static void want_solicit(struct router *r, uint32_t was) {
+    if (!reattaching(r)) {
+        return;
+    }
+    if (!r->solicit_wanted && r->solicited < 0) {
+        r->solicit_was = was;
+    }
+    r->solicit_wanted = true;
+    if (r->solicited < 0) {
+        tsim_time t = now(r),
+                  next = r->solicit_last < 0 ? t : r->solicit_last + r->config.solicit_gap;
+        tsim_timer_start(r->attach_timer, next > t ? next - t : 0);
+    }
+}
+
+/* Queues a solicit at tx_dbm, out of the requests' share of the cap: false if it cannot pay or
+ * the queue refused it. */
+static bool send_solicit(struct router *r) {
+    struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_CONTROL);
+    tx.tx_dbm = r->config.tx_dbm;
+    tx.bytes[0] = TYPE_SOLICIT;
+    put32(tx.bytes + 1, r->self);
+    put16(tx.bytes + 5, r->seq);
+    put16(tx.bytes + 7, (uint16_t)(r->solicit_id + 1));
+    put32(tx.bytes + 9, r->solicit_was);
+    tx.bytes[13] = power_byte(tx.tx_dbm);
+    tx.len = SOLICIT_LEN;
+    double cost = (double)tsim_lora_airtime(&tx.lora, tx.len);
+    refill(r, &r->requests);
+    if (r->requests.ns < cost || !tsim_node_send(r->node, &tx)) {
+        return false;
+    }
+    r->requests.ns -= cost;
+    r->solicit_id++;
+    r->stats.solicits++;
+    return true;
+}
+
+/* The answers to a leaf's solicit are in. The relay it asked after answered: nothing is wrong. It
+ * did not: the leaf asks once more, and if it is still unanswered while another relay answered,
+ * takes it out of use until it is heard again - and if it was the anchor, raises its seq and
+ * announces it at once, at tx_dbm, so the relays now around it hear it and the routes to it
+ * everywhere move to them. Returns whether to ask again at once. */
+static bool solicit_answered(struct router *r) {
+    bool any = false;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        any |= n->used && n->infra && n->heard >= r->solicited;
+    }
+    uint32_t was = r->solicit_was;
+    uint16_t ws = was < r->nodes ? r->slot_of[was] : 0;
+    struct neighbour *w = ws ? slot(r, ws) : NULL;
+    if (w && w->heard >= r->solicited) {
+        r->solicits = 0;
+        r->doubt = false;
+        r->suspect_anchored = false;
+        return false;
+    }
+    if (w && !r->doubt) {
+        r->doubt = true;
+        return true;
+    }
+    r->doubt = false;
+    if (!any) {
+        r->solicits++;
+        return false;
+    }
+    r->solicits = 0;
+    bool anchored = w && (anchor(r) == w || r->suspect_anchored);
+    r->suspect_anchored = false;
+    /* It has moved: every relay that did not answer is as far behind as the one asked after. */
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        if (n->used && n->infra && n->heard < r->solicited && n->cost != INF) {
+            mute(r, (uint16_t)(i + 1), TSIM_DISTVEC_DOWN_SOLICIT);
+        }
+    }
+    /* Raised once for each relay it moves to: the routes to it already lead to the one it has. */
+    const struct neighbour *now_at = anchor(r);
+    if (now_at && !w && r->attached == TSIM_BROADCAST) {
+        r->attached = now_at->id; /* its first: no route leads anywhere else yet */
+    }
+    if ((anchored || !w) && now_at && now_at->id != r->attached) {
+        r->attached = now_at->id;
+        r->stats.reattached++;
+        r->seq++;
+        r->asked = true;
+        r->loud = true;
+        r->interval = r->config.imin;
+        trickle_begin(r);
+    }
+    return false;
+}
+
+/* A leaf's re-attachment timer: the answers to its solicit are in, a solicit wanted may go, or it
+ * looks again - every solicit_gap - whether its anchor has gone quiet. */
+static void attach_fire(void *ctx) {
+    struct router *r = ctx;
+    if (!reattaching(r)) {
+        r->solicited = -1;
+        r->solicit_wanted = false;
+        return;
+    }
+    tsim_time t = now(r), gap = r->config.solicit_gap;
+    bool again = false;
+    if (r->solicited >= 0 && t >= r->solicited + r->config.solicit_wait) {
+        again = solicit_answered(r);
+        r->solicited = -1;
+        r->solicit_wanted |= again;
+    }
+    if (r->solicited < 0 && !r->solicit_wanted && r->solicits < r->config.solicit_tries) {
+        const struct neighbour *a = anchor(r);
+        if (!a || overdue(r, a)) {
+            r->solicit_wanted = true;
+            r->solicit_was = a ? a->id : TSIM_BROADCAST;
+            r->suspect_anchored = a != NULL;
+        }
+    }
+    if (r->solicited < 0 && r->solicit_wanted &&
+        (again || r->solicit_last < 0 || t - r->solicit_last >= gap) && send_solicit(r)) {
+        r->solicit_wanted = false;
+        r->solicited = t;
+        r->solicit_last = t;
+    }
+    tsim_time next = t + gap;
+    if (r->solicited >= 0) {
+        next = r->solicited + r->config.solicit_wait;
+    } else if (r->solicit_wanted && r->solicit_last + gap > t) {
+        next = r->solicit_last + gap;
+    }
+    tsim_timer_start(r->attach_timer, next - t);
+}
+
+/* A solicit. A relay that hears it with link_margin_db to spare answers, after a random wait of up
+ * to here_window airtimes, loud enough for the leaf, out of the requests' share of its cap - unless
+ * here_cancel answers to it come first - and names it in its next announce; any other node that
+ * knows the sender hears it. */
+static void on_solicit(struct router *r, const uint8_t *b, uint32_t len, double snr) {
+    if (len < SOLICIT_LEN || !by_strength(r)) {
+        return;
+    }
+    uint32_t from = get32(b + 1);
+    if (from >= r->nodes || from == r->self) {
+        return;
+    }
+    if (!r->infra) {
+        if (r->slot_of[from]) {
+            heard_from(r, r->slot_of[from], b + 13, snr);
+        }
+        return;
+    }
+    uint16_t s = neighbour(r, from);
+    if (!s) {
+        return;
+    }
+    struct neighbour *n = slot(r, s);
+    heard_from(r, s, b + 13, snr);
+    bool asked = get32(b + 9) == r->self; /* the relay asked after: answers first, uncancelled */
+    n->ihu_owed = true;
+    double ours = r->config.tx_dbm - n->floor;
+    uint64_t key = frame_key(TYPE_HERE, from, get16(b + 7));
+    if (!(ours >= r->config.link_margin_db) || seen(r, key)) {
+        return;
+    }
+    mark_seen(r, key);
+    struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_CONTROL);
+    tx.tx_dbm = power_for(r, n, NAN);
+    tx.lora.sf = sf_to(r, from);
+    tx.bytes[0] = TYPE_HERE;
+    put32(tx.bytes + 1, r->self);
+    put32(tx.bytes + 5, from);
+    put16(tx.bytes + 9, get16(b + 7));
+    tx.bytes[11] = margin_byte(ours);
+    tx.bytes[12] = power_byte(tx.tx_dbm);
+    tx.bytes[13] = FLAG_INFRA;
+    tx.len = HERE_LEN;
+    double cost = (double)tsim_lora_airtime(&tx.lora, tx.len);
+    refill(r, &r->requests);
+    if (r->requests.ns < cost) {
+        return;
+    }
+    r->requests.ns -= cost;
+    r->stats.heres++;
+    hold(r, &tx, asked ? 0 : key, false, asked ? r->config.jitter : r->config.here_window);
+}
+
+/* A relay's answer to a solicit. Answers to the same one count towards cancelling this node's
+ * own; the leaf it answers takes the relay as a neighbour it hears, with the margin the relay hears
+ * it with as its IHU, and names it in its next announce; any other node that knows the relay hears
+ * it. */
+static void on_here(struct router *r, const uint8_t *b, uint32_t len, double snr) {
+    if (len < HERE_LEN || !by_strength(r)) {
+        return;
+    }
+    uint32_t from = get32(b + 1), to = get32(b + 5);
+    if (from >= r->nodes || from == r->self || to >= r->nodes) {
+        return;
+    }
+    heard_again(r, frame_key(TYPE_HERE, to, get16(b + 9)), r->config.here_cancel, 0);
+    if (to != r->self) {
+        if (r->slot_of[from]) {
+            heard_from(r, r->slot_of[from], b + 12, snr);
+        }
+        return;
+    }
+    bool fresh = r->slot_of[from] == 0;
+    uint16_t s = neighbour(r, from);
+    if (!s) {
+        return;
+    }
+    struct neighbour *n = slot(r, s);
+    bool infra = b[13] & FLAG_INFRA;
+    if (fresh || n->infra != infra) {
+        n->infra = infra;
+        r->relay_news = now(r);
+    }
+    n->dr = b[11];
+    n->ihu_owed = true;
+    heard_from(r, s, b + 12, snr);
+}
+
 /* --- Next hops and their implicit acknowledgements --- */
 
 /* A frame never reached the neighbour in slot `s`: evidence against the link, as good as HOP_MISS
@@ -2733,6 +3061,19 @@ static void missed(struct router *r, uint16_t s) {
     struct neighbour *n = slot(r, s);
     double room = r->config.tx_dbm - r->config.tx_min_dbm;
     n->boost = n->boost + r->config.step_db > room ? room : n->boost + r->config.step_db;
+    /* A leaf that solicits sends no more through a relay that lost its frame, and asks after it:
+     * if it is there, its answer brings it back. */
+    if (reattaching(r) && n->infra && n->cost != INF) {
+        bool anchored = anchor(r) == n;
+        mute(r, s, TSIM_DISTVEC_DOWN_HOP);
+        want_solicit(r, n->id);
+        r->suspect_anchored = anchored;
+    }
+    /* A relay that cannot reach a leaf no longer routes to it there, and asks for a newer seq,
+     * which reaches the leaf through any relay that still hears it (starved()). */
+    if (r->config.reattach && by_strength(r) && r->infra && !n->infra && n->cost != INF) {
+        mute(r, s, TSIM_DISTVEC_DOWN_HOP);
+    }
     /* By strength, a lost hop is a lost frame - until dead_hops of them, with nothing heard from
      * it between: then the neighbour is gone. */
     if (by_strength(r) && ++n->lost >= r->config.dead_hops) {
@@ -2880,7 +3221,9 @@ static void heard_from(struct router *r, uint16_t s, const uint8_t *power, doubl
         r->changed = true;
         reselect_through(r, s);
         choose_parent(r);
-        trickle_reset(r);
+        if (r->infra || !reattaching(r)) {
+            trickle_reset(r); /* a leaf's announce is the same */
+        }
         r->changed = false;
     }
 }
@@ -2902,9 +3245,10 @@ static void overheard(struct router *r, const uint8_t *b, double snr) {
             }
             uint16_t s = r->slot_of[h->next];
             /* Its next hop sent what passed it on, and the first copy of an acknowledgement, with
-             * hop_max hops left; a relay may have sent a later one. */
+             * hop_max hops left; a relay may have sent a later one. Two waiting for the same frame
+             * from different next hops - a retry sent another way - leave unknown which sent it. */
             if (passed || hops == r->config.hop_max) {
-                from = h->next;
+                from = from == TSIM_BROADCAST || from == h->next ? h->next : TSIM_BROADCAST - 1;
             }
             if (s && slot(r, s)->boost > 0) {
                 slot(r, s)->boost = slot(r, s)->boost > 1 ? slot(r, s)->boost - 1 : 0;
@@ -3687,6 +4031,12 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
     case TYPE_PROBE_ACK:
         on_probe(r, rx->bytes, rx->len, rx->snr_db);
         return;
+    case TYPE_SOLICIT:
+        on_solicit(r, rx->bytes, rx->len, rx->snr_db);
+        return;
+    case TYPE_HERE:
+        on_here(r, rx->bytes, rx->len, rx->snr_db);
+        return;
     case TYPE_HOP_ACK:
         /* Heard as the frame it stands for, passed on. */
         if (per_sf(r) && rx->len >= HOP_ACK_LEN &&
@@ -3808,6 +4158,10 @@ static void router_start(void *self) {
     r->started = now(r);
     trickle_begin(r);
     tsim_timer_start(r->house, house_period(r));
+    if (reattaching(r)) {
+        tsim_timer_start(r->attach_timer,
+                         (tsim_time)((double)r->config.solicit_gap * tsim_rng_unit(&r->rng)));
+    }
     if (r->config.seq_period > 0) {
         tsim_timer_start(r->seq_timer,
                          (tsim_time)((double)r->config.seq_period * tsim_rng_unit(&r->rng)));
@@ -3833,6 +4187,7 @@ static void router_destroy(void *self) {
     tsim_timer_destroy(r->park_timer);
     tsim_timer_destroy(r->probe_timer);
     tsim_timer_destroy(r->elect_timer);
+    tsim_timer_destroy(r->attach_timer);
     free(r->starving);
     free(r->asks);
     free(r->dest);
@@ -3935,8 +4290,12 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->park_timer = tsim_timer_create(node, park_fire, r);
     r->probe_timer = tsim_timer_create(node, probe_fire, r);
     r->elect_timer = tsim_timer_create(node, elect_fire, r);
-    if (!r->elect_timer || !r->probe_timer || !r->seq_timer || !r->park_timer || !r->dest ||
-        !r->slot_of || !r->trickle || !r->cap_timer || !r->hop_timer || !r->out_timer ||
+    r->attach_timer = tsim_timer_create(node, attach_fire, r);
+    r->solicited = -1;
+    r->solicit_last = -1;
+    r->attached = TSIM_BROADCAST;
+    if (!r->attach_timer || !r->elect_timer || !r->probe_timer || !r->seq_timer || !r->park_timer ||
+        !r->dest || !r->slot_of || !r->trickle || !r->cap_timer || !r->hop_timer || !r->out_timer ||
         !r->house || !r->request_timer || !r->ask_timer) {
         router_destroy(r);
         return NULL;

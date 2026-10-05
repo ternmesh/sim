@@ -211,6 +211,13 @@ static void problems_say_where_they_are(void) {
          "a count from 1"},
         {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.probe_wait = 0 s\n", 4,
          "expected a time"},
+        {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.reattach = maybe\n", 4,
+         "expected yes or no"},
+        {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.solicit_tries = 0\n", 4,
+         "a count from 1"},
+        {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.links = sensed\n"
+         "routing.reattach = yes\n",
+         0, "reattach wants links by strength"},
         {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.relay_pick = degree\n", 0,
          "relay_count is 0"},
         {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.relay_pick = best\n", 4,

@@ -846,6 +846,27 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "probe_wait") == 0) {
         return distvec_time(value, false, &c->probe_wait);
     }
+    if (strcmp(key, "reattach") == 0) {
+        return parse_yes_no(value, &c->reattach) ? NULL : "expected yes or no";
+    }
+    if (strcmp(key, "solicit_quiet") == 0) {
+        return distvec_time(value, true, &c->solicit_quiet);
+    }
+    if (strcmp(key, "solicit_wait") == 0) {
+        return distvec_time(value, false, &c->solicit_wait);
+    }
+    if (strcmp(key, "solicit_gap") == 0) {
+        return distvec_time(value, false, &c->solicit_gap);
+    }
+    if (strcmp(key, "solicit_tries") == 0) {
+        return distvec_count(value, 1, UINT8_MAX, &c->solicit_tries);
+    }
+    if (strcmp(key, "here_window") == 0) {
+        return distvec_factor(value, 0, 1e3, &c->here_window);
+    }
+    if (strcmp(key, "here_cancel") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->here_cancel);
+    }
     if (strcmp(key, "oracle_margin") == 0) {
         return distvec_factor(value, 0, 60, &c->oracle_margin_db);
     }
@@ -1872,6 +1893,9 @@ static void distvec_sum(struct tsim_net *net, const struct tsim_distvec_stats *r
         sum->probes += s.probes;
         sum->probes_answered += s.probes_answered;
         sum->probe_acks += s.probe_acks;
+        sum->solicits += s.solicits;
+        sum->heres += s.heres;
+        sum->reattached += s.reattached;
         sum->unrouted_infeasible += s.unrouted_infeasible;
         sum->unrouted_empty += s.unrouted_empty;
     }
@@ -1962,6 +1986,9 @@ static void health(struct window *w, tsim_time end, struct tsim_route_health *h)
         h->probes_per_h = (double)(now.probes - w->stats.probes) / hours;
         h->probes_answered_per_h = (double)(now.probes_answered - w->stats.probes_answered) / hours;
         h->probe_acks_per_h = (double)(now.probe_acks - w->stats.probe_acks) / hours;
+        h->solicits_per_h = (double)(now.solicits - w->stats.solicits) / hours;
+        h->heres_per_h = (double)(now.heres - w->stats.heres) / hours;
+        h->reattached_per_h = (double)(now.reattached - w->stats.reattached) / hours;
     }
     if (relays) {
         h->unrouted_infeasible = (double)now.unrouted_infeasible / relays;
@@ -2030,6 +2057,9 @@ static void churn_flip(struct tsim_sched *sched, void *ctx) {
         c->retired.probes += st.probes;
         c->retired.probes_answered += st.probes_answered;
         c->retired.probe_acks += st.probe_acks;
+        c->retired.solicits += st.solicits;
+        c->retired.heres += st.heres;
+        c->retired.reattached += st.reattached;
     }
     if (!tsim_net_power(c->net, ch->node, on) || !tsim_metrics_power(c->metrics, ch->node, on)) {
         c->failed = true;

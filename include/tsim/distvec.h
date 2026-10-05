@@ -615,6 +615,17 @@ struct tsim_distvec_config {
     uint8_t probe_hops;   /* hops lost running, nothing heard between, that start one; 0 never */
     uint8_t probe_tries;  /* probes unanswered that forget the neighbour, 1..32 */
     tsim_time probe_wait; /* a probe's wait for its answer, and the most the next waits more */
+    /* With links by strength, re-attachment (MSH-62, below): whether a leaf solicits; how long it
+     * waits for answers, the least time between its solicits, and how many go unanswered in a row
+     * before it waits for news of a relay; the airtimes a relay's answer waits at most, and the
+     * answers to the same solicit heard that cancel a relay's own, 0 never. */
+    bool reattach;
+    tsim_time solicit_quiet; /* the anchor unheard this long is asked after; 0, two promises */
+    tsim_time solicit_wait;
+    tsim_time solicit_gap;
+    uint8_t solicit_tries;
+    double here_window;
+    uint8_t here_cancel;
     const struct tsim_distvec_oracle
         *oracle_routes; /* with either: set by the driver, never parsed */
 };
@@ -729,7 +740,47 @@ struct tsim_distvec_config {
  * airtime alone: 64.2% and 64.1% without churn, 44.7% and 41.1% with it. Forgetting the
  * neighbour on the verdict, rather than taking its link out of use, did worse still: 39-48% and
  * 32-44% with churn. Finding a dead relay sooner is not what is missing: routes around it come
- * over the same lossy announces, however soon it is found. */
+ * over the same lossy announces, however soon it is found.
+ *
+ * Re-attachment (MSH-62), with links by strength and `reattach`. A leaf that moves keeps sending to
+ * the relay it was next to, whose link by strength stays up until dead_hops frames are lost - a
+ * leaf sends too few for that - and the routes to it keep leading there. It learns of the relays
+ * now around it only from their announces, which Trickle stretches and power control keeps quiet.
+ * So a leaf that solicits asks instead. When a frame to a relay is lost, that relay goes out of
+ * use at once and is asked after; and every solicit_gap the leaf looks whether its anchor - the
+ * relay it has the most margin with - has gone unheard for solicit_quiet, or with 0 two of its
+ * promises, or whether it has none. A solicit goes at tx_dbm, out of the requests' share of the
+ * cap, at most one a solicit_gap but for the second of a pair:
+ *
+ *     type 0x0B | sender 4 | seq 2 | id 2 | asked after 4 | power 1
+ *
+ * A relay that hears it with link_margin_db to spare answers loud enough for the leaf, out of the
+ * requests' share of its own cap, and names the leaf in its next announce:
+ *
+ *     type 0x0C | relay 4 | leaf 4 | id 2 | margin 1 | power 1 | flags 1
+ *
+ * The relay asked after answers after the usual jitter; the others after a random wait of up to
+ * here_window airtimes, unless here_cancel answers to the same solicit come first. The margin is
+ * the relay's IHU for the leaf, so the leaf can use the relay as soon as it hears the answer, and
+ * sends what it has no route for to its anchor, which has. If the relay asked after answers,
+ * nothing is wrong. If it leaves two solicits in a row unanswered while another relay answers, it
+ * and every relay that did not answer go out of use until heard again, and if it was the anchor,
+ * the leaf raises its seq and announces at once, at tx_dbm, so the relays now around it hear it and
+ * the routes to it move to them: once for each relay it moves to, and not for its first. With no
+ * answer at all it tries again, up to solicit_tries in a row, then waits for a relay new to it.
+ * Asking after the relay twice, and only it answering first and uncancelled, is what keeps a lost
+ * answer from moving a leaf that has not moved: each move raises a seq every relay then announces.
+ *
+ * The routes to a leaf that has moved lead to its old relay, so `reattach` changes three things
+ * for every node. A relay that loses a frame to a leaf takes the link to it out of use at once, as
+ * a leaf does a relay's, so its route there goes and it asks for a newer one. A node that hears a
+ * leaf's newer seq from elsewhere than from the leaf takes its link to the leaf out of use: the
+ * leaf has re-attached, unheard here. And of routes as good, the newer seq is selected, however
+ * little better the current one would need to be beaten by: a relay between the old relay and the
+ * new one holds two routes as short, and would keep the one to where the leaf was. Selecting the
+ * newest seq whatever its metric, as DSDV does, set off storms of seqno requests on the region -
+ * fifty thousand an hour where there were none - each newer route leaving the older ones
+ * infeasible when it broke. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */
@@ -820,6 +871,7 @@ enum tsim_distvec_down {
     TSIM_DISTVEC_DOWN_HOP,
     TSIM_DISTVEC_DOWN_TIMEOUT,
     TSIM_DISTVEC_DOWN_PROBE,
+    TSIM_DISTVEC_DOWN_SOLICIT,
     TSIM_DISTVEC_DOWN_COUNT,
 };
 
@@ -848,6 +900,11 @@ struct tsim_distvec_stats {
     uint64_t probes;
     uint64_t probes_answered;
     uint64_t probe_acks;
+    /* Re-attachment: solicits that went on the air, answers queued, and the times a leaf took
+     * another relay after soliciting and raised its seq. */
+    uint64_t solicits;
+    uint64_t heres;
+    uint64_t reattached;
     /* With relay_pick elect: the times the node stood as a relay, and stood down. */
     uint64_t elected;
     uint64_t stood_down;
