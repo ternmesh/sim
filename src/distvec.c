@@ -439,7 +439,8 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .salvage = 1,
         .rescue_hops = 2,
         .bcast_sparse = 8,
-        .reattach_sparse = UINT8_MAX,
+        .reattach = true,
+        .reattach_sparse = 4,
         .hop_wait = TSIM_S(4),
         .retries = 3,
         .ack_wait = TSIM_S(5),
@@ -555,13 +556,12 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
         (c->probe_tries < 1 || c->probe_tries > 32 || c->probe_wait <= 0)) {
         return "with probe_hops, probe_tries is not 1 to 32, or probe_wait is not above 0";
     }
-    if (c->reattach &&
-        (!strength || c->sf_min || c->solicit_wait <= 0 || c->solicit_gap < c->solicit_wait ||
-         c->solicit_tries < 1 || c->solicit_hops < 1 || c->leaf_tries == UINT8_MAX ||
-         !(c->here_window >= 0))) {
-        return "reattach wants links by strength and no per-link SF, solicit_wait above 0, "
-               "solicit_gap no shorter, solicit_tries and solicit_hops 1 or more, leaf_tries under "
-               "255 and here_window 0 or more";
+    /* Re-attachment works only over links by strength at one SF; elsewhere it is simply off. */
+    if (c->reattach && strength && !c->sf_min &&
+        (c->solicit_wait <= 0 || c->solicit_gap < c->solicit_wait || c->solicit_tries < 1 ||
+         c->solicit_hops < 1 || c->leaf_tries == UINT8_MAX || !(c->here_window >= 0))) {
+        return "reattach wants solicit_wait above 0, solicit_gap no shorter, solicit_tries and "
+               "solicit_hops 1 or more, leaf_tries under 255 and here_window 0 or more";
     }
     bool oracle = c->oracle || c->links == TSIM_DISTVEC_LINKS_ORACLE;
     if (c->sf_min && (c->sf_min < TSIM_SF_MIN || c->sf_min > c->lora.sf || !strength || !c->power ||
@@ -4485,6 +4485,10 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->nodes = tsim_node_count(node);
     r->infra = tsim_distvec_relay(c, r->self);
     r->config = *c;
+    /* Off where it cannot work, as tsim_distvec_check() allows: with links not by strength, or
+     * per-link SFs. */
+    r->config.reattach =
+        c->reattach && c->links == TSIM_DISTVEC_LINKS_STRENGTH && !c->sf_min && !c->oracle;
     r->oracle = c->oracle ? c->oracle_routes : NULL;
     if (c->relay_pick != TSIM_DISTVEC_PICK_LIST && c->relay_pick != TSIM_DISTVEC_PICK_ELECT &&
         !c->relay_set) {

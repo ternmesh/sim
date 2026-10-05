@@ -219,9 +219,8 @@ static void problems_say_where_they_are(void) {
          "a count from 1"},
         {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.leaf_tries = 255\n", 4,
          "a count from 0"},
-        {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.links = sensed\n"
-         "routing.reattach = yes\n",
-         0, "reattach wants links by strength"},
+        {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.solicit_gap = 5 s\n", 0,
+         "reattach wants solicit_wait"},
         {"nodes = 2\nrouting = distvec\nmac = meshcore\nrouting.relay_pick = degree\n", 0,
          "relay_count is 0"},
         {"nodes = 2\nrouting = meshcore\nmac = meshcore\nrouting.relay_pick = best\n", 4,

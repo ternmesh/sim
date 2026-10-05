@@ -1885,10 +1885,9 @@ static void a_leaf_that_moves_is_reached_through_its_new_relay(void) {
     rig_init(&r);
     struct tsim_distvec_config bad = r.rc;
     bad.reattach = true;
-    CHECK(tsim_distvec_check(&bad) != NULL); /* links sensed */
-    bad.links = TSIM_DISTVEC_LINKS_STRENGTH;
-    CHECK(tsim_distvec_check(&bad) == NULL);
     bad.solicit_gap = bad.solicit_wait - 1;
+    CHECK(tsim_distvec_check(&bad) == NULL); /* links sensed: off, so not checked */
+    bad.links = TSIM_DISTVEC_LINKS_STRENGTH;
     CHECK(tsim_distvec_check(&bad) != NULL);
     bad.solicit_gap = bad.solicit_wait;
     bad.solicit_tries = 0;
@@ -1902,9 +1901,12 @@ static void a_leaf_that_moves_is_reached_through_its_new_relay(void) {
     bad.leaf_tries = UINT8_MAX - 1;
     CHECK(tsim_distvec_check(&bad) == NULL);
     bad.power = true;
-    bad.sf_min = 7; /* a solicit goes at one SF */
-    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.sf_min = 7; /* a solicit goes at one SF: off, so not checked */
+    bad.leaf_tries = UINT8_MAX;
+    CHECK(tsim_distvec_check(&bad) == NULL);
     bad.sf_min = 0;
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    bad.leaf_tries = UINT8_MAX - 1;
     CHECK(tsim_distvec_check(&bad) == NULL);
 }
 

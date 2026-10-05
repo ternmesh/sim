@@ -68,6 +68,21 @@
 # a quarter of the leaves walking 43, 65, 80, 89 and 93; reach 60% at -5 dBm. At -5 dBm that beats
 # MeshCore's 37/16, churn 35 and move 37 above, where it was behind under churn and movement.
 #
+# Re-attachment where few relays are heard (routing.reattach yes and routing.reattach_sparse 4, the
+# defaults since; 3 seeds): unicast / broadcast on time 61/40, 91/67, 98/78, 98/87 and 99/90% from
+# -5 to 20 dBm; per_s 25.9, 34.8, 42.5, 49.0 and 56.0; under churn 46, 74, 90, 90 and 87; with a
+# quarter of the leaves walking 49, 72, 82, 90 and 94, against 43, 65, 80, 89 and 93 before; driving
+# (5 to 20 m/s) 45, 69, 90 and 94 at -5, 0, 10 and 20 dBm, against 42, 67, 88 and 91, with 15-21%
+# fewer deliveries per second of airtime from 0 dBm up. Re-attachment on everywhere made walking 49,
+# 72, 82, 89 and 92, but per_s 49.2 at 20 dBm and driving per_s 28-29 at 10-20 dBm, against 32 with
+# the gate.
+#
+# Self-organised on the defaults of #42 (-s routing.relay_pick=elect; 3 seeds): unicast /
+# broadcast on time 80/47, 95/65, 98/78, 98/87 and 99/94% from -5 to 20 dBm; per_s 20.0, 33.4,
+# 61.1, 76.3 and 98.9; under churn 67, 90, 94, 94 and 93; walking 48, 64, 75, 82 and 93; reach 81%
+# at -5 dBm, where the 200 sites reach 60%: relays elected where the nodes are cover a sparse map
+# better than sites picked over it.
+#
 # Rescue floods (routing.rescue_hops 2, on by default since; 3 seeds): a frame given up on at its
 # destination, or at its source's first hop, at a neighbour unheard past two promises is flooded
 # for two relay hops. Unicast on time with a quarter of the leaves walking 35, 65, 82, 89 and 93%
