@@ -648,6 +648,7 @@ struct tsim_distvec_config {
     double jitter; /* airtimes a frame sent in answer to one received waits, at most */
 
     uint8_t bcast_hops;
+    uint8_t bcast_sparse; /* relays at most a relay can use that spend no hop of a broadcast */
     double bcast_window;
     uint8_t bcast_cancel; /* copies heard, its own first one included, 0 for never */
 

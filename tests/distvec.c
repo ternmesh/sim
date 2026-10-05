@@ -1475,6 +1475,28 @@ static void a_broadcast_reaches_the_line_once_per_relay(void) {
     rig_close(&r);
 }
 
+/* With bcast_sparse, a relay that can use few relays spends no hop of a broadcast: along a line,
+ * where each has two, two hops reach three nodes, and with bcast_sparse 2 the whole line. */
+static uint64_t line_reached(uint8_t sparse) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.bcast_hops = 2;
+    r.rc.bcast_sparse = sparse;
+    line(&r, 6, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(60));
+    uint64_t b = tsim_net_originate(r.net, 0, TSIM_BROADCAST, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(120));
+    uint64_t got = tsim_net_message(r.net, b)->delivered;
+    rig_close(&r);
+    return got;
+}
+
+static void a_broadcast_spends_no_hop_where_relays_are_few(void) {
+    CHECK_EQ_U64(line_reached(0), 3);
+    CHECK_EQ_U64(line_reached(1), 3);
+    CHECK_EQ_U64(line_reached(2), 5);
+}
+
 static void the_config_is_checked(void) {
     struct tsim_lora l = tsim_lora_default(7, 125000);
     struct tsim_distvec_config c = tsim_distvec_default(0, &l, 14.0);
@@ -2543,6 +2565,7 @@ int main(void) {
     RUN(a_lost_message_is_booked_where_it_was_lost);
     RUN(routes_stay_loop_free_while_links_change);
     RUN(a_broadcast_reaches_the_line_once_per_relay);
+    RUN(a_broadcast_spends_no_hop_where_relays_are_few);
     RUN(the_config_is_checked);
     return CHECK_DONE();
 }

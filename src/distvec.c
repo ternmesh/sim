@@ -438,6 +438,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .stand_mobile = false,
         .salvage = 1,
         .rescue_hops = 2,
+        .bcast_sparse = 0,
         .hop_wait = TSIM_S(4),
         .retries = 3,
         .ack_wait = TSIM_S(5),
@@ -4084,6 +4085,16 @@ static void on_flood(struct router *r, const uint8_t *b, uint32_t len, uint8_t h
     }
 }
 
+/* How many relays this node can use. */
+static uint32_t relay_neighbours(const struct router *r) {
+    uint32_t count = 0;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        count += n->used && n->infra && n->cost != INF;
+    }
+    return count;
+}
+
 static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t heard_sf) {
     uint32_t src = get32(b + 1), id = get32(b + 5);
     uint8_t hops = b[9];
@@ -4094,13 +4105,19 @@ static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t h
     }
     mark_seen(r, key);
     tsim_node_deliver(r->node, id);
-    if (!r->infra || hops <= 1 || (r->config.bcast_cancel && r->config.bcast_cancel <= 1)) {
+    if (!r->infra || hops == 0 || (r->config.bcast_cancel && r->config.bcast_cancel <= 1)) {
+        return;
+    }
+    /* A relay with few others to pass it on is a bridge, not a crowd: it spends no hop, and
+     * passes on even a broadcast with none left. */
+    bool spends = relay_neighbours(r) > r->config.bcast_sparse;
+    if (spends && hops <= 1) {
         return;
     }
     struct tsim_tx tx = frame(r, TSIM_PURPOSE_RELAY, PRIORITY_RELAY);
     tx.tx_dbm = bcast_dbm(r);
     memcpy(tx.bytes, b, len);
-    tx.bytes[9] = (uint8_t)(hops - 1);
+    tx.bytes[9] = (uint8_t)(spends ? hops - 1 : hops);
     tx.len = len;
     tx.carries = id;
     tx.carries_at = BCAST_HEAD;

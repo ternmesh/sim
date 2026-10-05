@@ -773,6 +773,9 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "jitter") == 0) {
         return distvec_factor(value, 0, 1e3, &c->jitter);
     }
+    if (strcmp(key, "bcast_sparse") == 0) {
+        return distvec_count(value, 0, UINT8_MAX, &c->bcast_sparse);
+    }
     if (strcmp(key, "bcast_hops") == 0) {
         return distvec_count(value, 0, 254, &c->bcast_hops);
     }
