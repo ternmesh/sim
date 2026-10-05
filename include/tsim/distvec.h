@@ -240,6 +240,15 @@
  * condition has it, so it cannot loop - up to `salvage` times a frame, never to a neighbour it was
  * given up on at. Only the frame moves: the link is judged as before.
  *
+ * Measured with tools/density.py --fast (region-distvec-fast.tsim, 3 seeds, -5 to 20 dBm), salvage
+ * 1 against 0: unicast on time under churn 23.0%, 61.2%, 87.0%, 88.4% and 85.9%, against 22, 59,
+ * 79, 80 and 77; with leaves walking 33.9%, 61.9%, 73.2%, 78.2% and 87.3%, against 33, 60, 70, 75
+ * and 85; with nothing stressed within 1 point either way, and deliveries per second of airtime
+ * within the seeds' spread. Most of what churn costs from 5 dBm up was frames sent a relay that had
+ * gone, and the sparsest network has no other route to send them. With leaves walking, frames a
+ * leaf gave up on at the relay it left were nearly all of what the source lost (230 of 361 at 10
+ * dBm, seed 1, 12 with salvage); what is left is the last hop, the relay it left. On by default.
+ *
  * The source waits for the acknowledgement ack_wait plus ack_factor times the route's metric in
  * milliseconds - the metric being airtime, it is a round trip's worth - counted from when its frame
  * goes on the air, however long it queued, or from when the queue refused it; and without one sends
@@ -559,6 +568,12 @@ struct tsim_distvec_config {
     uint8_t elect_cover;
     tsim_time elect_wait;
     tsim_time elect_hold;
+    /* With relay_pick elect: whether a node that knows it moves - a handheld, set so by its owner,
+     * or one whose GPS says so - may stand. With `stand_mobile` no, it never does, and announces a
+     * score of 0, so no orphan chooses it. `mobile` is [node], 1 for a node that moves: shared, and
+     * set by the driver from the nodes the scenario moves; NULL for none. */
+    bool stand_mobile;
+    const uint8_t *mobile;
 
     tsim_time imin;    /* Trickle */
     uint8_t doublings; /* imax is imin times 2^doublings, 0..16 */

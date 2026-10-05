@@ -646,6 +646,9 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "elect_wait") == 0) {
         return distvec_time(value, false, &c->elect_wait);
     }
+    if (strcmp(key, "stand_mobile") == 0) {
+        return parse_yes_no(value, &c->stand_mobile) ? NULL : "expected yes or no";
+    }
     if (strcmp(key, "elect_hold") == 0) {
         return distvec_time(value, true, &c->elect_hold);
     }
@@ -2283,6 +2286,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     struct tsim_distvec_oracle oracle = {0};
     uint32_t *parents = NULL;
     uint8_t *relay_set = NULL;
+    uint8_t *mobile = NULL;
     struct window window = {0};
     struct churn churn = {0};
     struct moving moving = {0};
@@ -2353,6 +2357,22 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
             goto done;
         }
         *pk.set = relay_set;
+    }
+    /* A node that moves knows it does, as a handheld would: the same nodes move_start() picks. */
+    if (dv && dv->relay_pick == TSIM_DISTVEC_PICK_ELECT && s->move_share > 0) {
+        uint32_t k;
+        uint32_t *who =
+            pick(s, routing_config, s->move_nodes, s->move_share, UINT64_C(0xC6) << 56, &k);
+        mobile = calloc(s->nodes, 1);
+        if (!who || !mobile) {
+            free(who);
+            goto done;
+        }
+        for (uint32_t i = 0; i < k; i++) {
+            mobile[who[i]] = 1;
+        }
+        free(who);
+        dv->mobile = mobile;
     }
     net = tsim_net_create(sched, &np, s->nodes, s->routing->routing, routing_config, s->mac->mac,
                           s->mac_config);
@@ -2454,6 +2474,7 @@ done:
     tsim_net_destroy(net);
     tsim_distvec_oracle_free(&oracle);
     free(parents);
+    free(mobile);
     free(relay_set);
     free(churn.churners);
     move_free(&moving);

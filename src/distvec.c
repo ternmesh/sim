@@ -433,7 +433,8 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .request_interval = TSIM_S(10),
         .hop_max = 32,
         .hop_retries = 2,
-        .salvage = 0,
+        .stand_mobile = true,
+        .salvage = 1,
         .hop_wait = TSIM_S(4),
         .retries = 3,
         .ack_wait = TSIM_S(5),
@@ -593,6 +594,11 @@ static bool electing(const struct router *r) {
 }
 
 /* Whether routes come on demand. The oracle's never do: it is handed them. */
+/* With relay_pick elect, whether this node may stand: not if it moves and stand_mobile is no. */
+static bool may_stand(const struct router *r) {
+    return r->config.stand_mobile || !r->config.mobile || !r->config.mobile[r->self];
+}
+
 static bool demand(const struct router *r) {
     return r->config.routes == TSIM_DISTVEC_ROUTES_DEMAND && !r->oracle;
 }
@@ -2235,7 +2241,7 @@ static bool orphan(const struct router *r) {
 /* A leaf's score: how many of the nodes it can use, itself among them, are orphans, as they last
  * said; 0 for a relay. */
 static uint8_t score(const struct router *r) {
-    if (r->infra) {
+    if (r->infra || !may_stand(r)) {
         return 0;
     }
     unsigned k = orphan(r);
@@ -2252,11 +2258,12 @@ static uint32_t choice(const struct router *r) {
     if (!orphan(r)) {
         return TIER_NONE;
     }
-    uint32_t best = r->self;
-    unsigned top = score(r);
+    uint32_t best = may_stand(r) ? r->self : TIER_NONE;
+    unsigned top = may_stand(r) ? score(r) : 0;
     for (size_t i = 0; i < r->nb_count; i++) {
         const struct neighbour *n = &r->nb[i];
-        if (linked(n) && !n->infra && n->told &&
+        /* A score of 0 covers no orphan: it is a node that will not stand. */
+        if (linked(n) && !n->infra && n->told && n->score > 0 &&
             (n->score > top || (n->score == top && n->id < best))) {
             best = n->id;
             top = n->score;
@@ -2407,7 +2414,7 @@ static uint8_t elect_want(struct router *r) {
                    ? ELECT_DOWN
                    : ELECT_NONE;
     }
-    bool gap = two_tiers(r);
+    bool gap = may_stand(r) && two_tiers(r);
     if (!gap) {
         r->gap_since = -1;
     } else if (r->gap_since < 0) {
@@ -2460,7 +2467,7 @@ static void elect_fire(void *ctx) {
         }
         return;
     }
-    if (r->infra) {
+    if (r->infra || !may_stand(r)) {
         return;
     }
     /* Not before its links have had time to come up, nor while they still are. */
@@ -3191,7 +3198,8 @@ static uint64_t send_hop(struct router *r, const struct tsim_tx *tx, bool listen
 
 /* With salvage (above), sends a frame given up on at `h->next` to the best other neighbour this
  * node holds a feasible route through to where the frame is going, with its retries anew. False if
- * there is none, or the frame has been salvaged as often as it may. */
+ * there is none, or the frame has been salvaged as often as it may; true once the frame is out of
+ * the caller's hands, sent or refused by the queue, which then books its drop itself. */
 static bool salvage(struct router *r, const struct hop *h) {
     if (h->salvages >= r->config.salvage || r->oracle || h->type != TYPE_DATA) {
         return false;
@@ -3245,12 +3253,13 @@ static bool salvage(struct router *r, const struct hop *h) {
         tx.tx_dbm = power_for(r, best, NAN);
         tx.bytes[18] = power_byte(tx.tx_dbm);
     }
+    size_t was = r->hop_count;
     uint64_t handle = send_hop(r, &tx, true);
     if (!handle) {
-        return false;
+        return true; /* refused by the queue, which booked the message's drop */
     }
-    struct hop *now_hop = &r->hops[r->hop_count - 1];
-    if (now_hop->handle == handle) {
+    struct hop *now_hop = r->hop_count > was ? &r->hops[r->hop_count - 1] : NULL;
+    if (now_hop && now_hop->handle == handle) {
         now_hop->salvages = (uint8_t)(h->salvages + 1);
         memcpy(now_hop->gone, h->gone, sizeof h->gone);
         now_hop->gone[h->salvages] = h->next;
