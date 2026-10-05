@@ -918,7 +918,9 @@ struct tsim_distvec_config {
  * 27.9 and 31.8 at 20; walking 36.2, 31.3 and 34.0 at 20. reattach_sparse 4 kept nearly everything
  * re-attachment gained where it is sparse and most of what it cost where it is dense, and 8 a
  * little less of both, so re-attachment is on by default since, with reattach_sparse 4. It is off,
- * whatever reattach says, where it cannot work: links not by strength, or per-link SFs. */
+ * whatever reattach says, where it cannot work: links not by strength, or per-link SFs. With
+ * elected relays it still costs airtime at 20 dBm with nothing moving - per_s 73.9 against 98.9 -
+ * for reasons region-distvec-fast.tsim sets out, not yet resolved. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */
