@@ -439,6 +439,7 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .salvage = 1,
         .rescue_hops = 2,
         .bcast_sparse = 8,
+        .reattach_sparse = UINT8_MAX,
         .hop_wait = TSIM_S(4),
         .retries = 3,
         .ack_wait = TSIM_S(5),
@@ -2852,6 +2853,16 @@ static void on_probe(struct router *r, const uint8_t *b, uint32_t len, double sn
 
 /* --- Re-attachment (MSH-62) --- */
 
+/* How many relays this node can use. */
+static uint32_t relay_neighbours(const struct router *r) {
+    uint32_t count = 0;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        count += n->used && n->infra && n->cost != INF;
+    }
+    return count;
+}
+
 /* Whether this node is a leaf that solicits. */
 static bool reattaching(const struct router *r) {
     return r->config.reattach && by_strength(r) && !r->infra && !r->oracle;
@@ -2881,6 +2892,22 @@ static bool overdue(const struct router *r, const struct neighbour *n) {
     }
     tsim_time promise = n->promise > 0 ? n->promise : imax(r);
     return now(r) - n->heard > 2 * promise;
+}
+
+/* Whether a leaf that solicits starts to: only where it can use reattach_sparse relays or fewer
+ * still heard within two of their promises - those it walked past long ago it may still count as
+ * usable. Where it hears more, the relay it has walked from still reaches it more often than not,
+ * and every relay around answers its solicit and passes on the seq it raises. */
+static bool solicits_here(const struct router *r) {
+    if (!reattaching(r)) {
+        return false;
+    }
+    uint32_t count = 0;
+    for (size_t i = 0; i < r->nb_count; i++) {
+        const struct neighbour *n = &r->nb[i];
+        count += n->used && n->infra && n->cost != INF && !overdue(r, n);
+    }
+    return count <= r->config.reattach_sparse;
 }
 
 /* A leaf wants to solicit, asking after the relay `was`, its anchor if `anchored`: at once,
@@ -2999,7 +3026,8 @@ static void attach_fire(void *ctx) {
         r->solicited = -1;
         r->solicit_wanted |= again;
     }
-    if (r->solicited < 0 && !r->solicit_wanted && r->solicits < r->config.solicit_tries) {
+    if (r->solicited < 0 && !r->solicit_wanted && r->solicits < r->config.solicit_tries &&
+        solicits_here(r)) {
         const struct neighbour *a = anchor(r);
         if (!a || overdue(r, a)) {
             r->solicit_wanted = true;
@@ -3125,7 +3153,7 @@ static void missed(struct router *r, uint16_t s) {
     n->boost = n->boost + r->config.step_db > room ? room : n->boost + r->config.step_db;
     /* A leaf that solicits sends no more through a relay that lost its frame, and asks after it:
      * if it is there, its answer brings it back. */
-    if (reattaching(r) && n->infra && n->cost != INF && n->lost + 1u >= r->config.solicit_hops) {
+    if (solicits_here(r) && n->infra && n->cost != INF && n->lost + 1u >= r->config.solicit_hops) {
         bool anchored = anchor(r) == n;
         mute(r, s, TSIM_DISTVEC_DOWN_HOP);
         want_solicit(r, n->id, anchored);
@@ -4083,16 +4111,6 @@ static void on_flood(struct router *r, const uint8_t *b, uint32_t len, uint8_t h
             hold(r, &copy, key, false, r->config.bcast_window);
         }
     }
-}
-
-/* How many relays this node can use. */
-static uint32_t relay_neighbours(const struct router *r) {
-    uint32_t count = 0;
-    for (size_t i = 0; i < r->nb_count; i++) {
-        const struct neighbour *n = &r->nb[i];
-        count += n->used && n->infra && n->cost != INF;
-    }
-    return count;
 }
 
 static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t heard_sf) {
