@@ -805,14 +805,15 @@ struct tsim_distvec_config {
  * between learn its new seq first, which changed nothing measurable.
  *
  * Measured with tools/density.py --fast (region-distvec-fast.tsim, 3 seeds), unicast on time off
- * and on, at 0 and 20 dBm: with nothing moving 88.8% and 88.5%, 95.8% and 97.8%; with a quarter
- * of the leaves walking 59.8% and 67.3%, 84.8% and 89.0%; driving, 5 to 20 m/s, 59.2% and 65.7%,
- * 75.7% and 86.1%; under churn 58.5% and 57.9%, 77.3% and 77.7%. Broadcast is within 1.3 points
- * of off, but for driving at 0 dBm: 36.6% against 40.2%. Deliveries per second of airtime with
- * nothing moving are 34.4 against 37.9 at 0 dBm and 50.7 against 54.4 at 20 (27.7 and 49.5 before
- * MSH-72); driving, 14.4 against 19.7 and 32.9 against 52.0, no better than before. Nearly all of
- * those deliveries are broadcasts, so a unicast delivered that was not before costs relay airtime
- * and adds almost nothing to them. Off by default until what movement costs is found. */
+ * and on, at 0 and 20 dBm: with nothing moving 88.8% and 88.7%, 95.8% and 97.5%; with a quarter
+ * of the leaves walking 59.8% and 67.5%, 84.8% and 89.7%; driving, 5 to 20 m/s, 59.2% and 65.4%,
+ * 75.7% and 86.3%; under churn 58.5% and 58.5%, 77.3% and 77.4%. Broadcast is within 0.2 points
+ * of off with nothing moving, and 2.3-4.1 points under it driving. Deliveries per second of
+ * airtime with nothing moving are 36.1 against 37.9 at 0 dBm and 51.9 against 54.4 at 20, within
+ * 5% (27.7 and 49.5 before MSH-72); driving, 14.2 against 19.7 and 33.4 against 52.0, no better
+ * than before. Nearly all of those deliveries are broadcasts, so a unicast delivered that was not
+ * before costs relay airtime and adds almost nothing to them. Off by default until what driving
+ * costs is found. */
 struct tsim_distvec_oracle_route {
     uint32_t next; /* TSIM_BROADCAST for no route */
     uint8_t hops;  /* at most 255 */

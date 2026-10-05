@@ -57,9 +57,9 @@
 # MSH-49 found; at -5 dBm, where SF7 leaves 5 links per node, SF8's reach helps, 65% against 47%.
 #
 # Re-attachment (MSH-62 and MSH-72, -s routing.reattach=yes; 3 seeds), unicast on time off and
-# on: a quarter of the leaves walking 59.8% and 67.3% at 0 dBm, 84.8% and 89.0% at 20 dBm; driving
-# 59.2% and 65.7%, 75.7% and 86.1%; nothing moving 88.8% and 88.5%, 95.8% and 97.8%. Deliveries per
-# second of airtime fall 7-9% with nothing moving and 27-37% driving: see include/tsim/distvec.h.
+# on: a quarter of the leaves walking 59.8% and 67.5% at 0 dBm, 84.8% and 89.7% at 20 dBm; driving
+# 59.2% and 65.4%, 75.7% and 86.3%; nothing moving 88.8% and 88.7%, 95.8% and 97.5%. Deliveries per
+# second of airtime fall 5% with nothing moving and 28-36% driving: see include/tsim/distvec.h.
 nodes     = 1000
 placement = uniform
 area      = 18000 x 18000
