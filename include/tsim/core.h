@@ -22,11 +22,11 @@
  * its content, with its number where the frame's tag is; its destination acknowledges every copy,
  * and its source sends it again until it is acknowledged or given up. A frame does not say where
  * it came from, and on a device its destination knows from the session: here it looks the
- * message's number up in a table every node shares, which stands for those sessions and nothing
- * else. What the core does not have, the plugin does not make up: there is no broadcast, so a
- * broadcast is refused, and scenarios that compare delivery are run with traffic.broadcast = 0.
- * Nor does anything choose relays; `relay_pick` names them as it does for candidate 3, and with
- * none picked every node is one.
+ * message's number up in a table the nodes of one network share, which stands for those sessions
+ * and nothing else. What the core does not have, the plugin does not make up: there is no
+ * broadcast, so a broadcast is refused, and scenarios that compare delivery are run with
+ * traffic.broadcast = 0. Nor does anything choose relays; `relay_pick` names them as it does for
+ * candidate 3, and with none picked every node is one.
  *
  * The radio gives the core what an SX1262 would: a signal-to-noise ratio in quarters of a decibel,
  * from -32 to 31.75.

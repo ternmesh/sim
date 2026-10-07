@@ -146,6 +146,30 @@ static void a_message_goes_hop_by_hop_and_is_acknowledged(void) {
     rig_close(&r);
 }
 
+/* Message numbers start at 1 in every network: two running at once must not take each other's
+ * senders for their own, or an acknowledgement goes to the wrong node. */
+static void two_networks_at_once_keep_their_messages_apart(void) {
+    struct rig a, b;
+    line(&a, 6, 3, NULL);
+    line(&b, 6, 4, NULL);
+    run(&a, TSIM_S(600));
+    run(&b, TSIM_S(600));
+    uint64_t one = message(&a, 0, 5);
+    uint64_t two = message(&b, 4, 1); /* the same number, from another node */
+    CHECK(one == two);
+    run(&a, TSIM_S(660));
+    run(&b, TSIM_S(660));
+    const struct tsim_message_record *m = tsim_net_message(a.net, one);
+    CHECK(m && m->delivered == 1 && m->finished);
+    m = tsim_net_message(b.net, two);
+    CHECK(m && m->delivered == 1 && m->finished);
+    /* Acknowledged at the first try, each of them: sent once from its source. */
+    CHECK_EQ_U64(frames(&a, 0, TSIM_PURPOSE_DATA), 1);
+    CHECK_EQ_U64(frames(&b, 4, TSIM_PURPOSE_DATA), 1);
+    rig_close(&a);
+    rig_close(&b);
+}
+
 /* The core has no broadcast, and the plugin must say so, not seem to. */
 static void a_broadcast_is_refused(void) {
     struct rig r;
@@ -243,6 +267,7 @@ int main(void) {
     RUN(a_line_learns_every_route);
     RUN(without_messages_its_frames_are_announces_and_requests);
     RUN(a_message_goes_hop_by_hop_and_is_acknowledged);
+    RUN(two_networks_at_once_keep_their_messages_apart);
     RUN(a_broadcast_is_refused);
     RUN(a_message_that_cannot_arrive_is_given_up);
     RUN(a_grid_never_loops_while_it_settles);
