@@ -1,0 +1,19 @@
+# The town scenario under the firmware's core (tsim/core.h): the code a device runs, every node a
+# relay. The core carries no messages yet, so there is no traffic: what is measured is the routes
+# the nodes hold as the warmup ends, and what an hour of announces and requests costs after it.
+# tools/core.py compares it with candidate 3, and checks it.
+nodes     = 200
+placement = uniform
+area      = 8000 x 8000
+
+radio.sf     = 9
+radio.bw     = 125000
+radio.tx_dbm = 20
+
+routing = core
+mac     = meshcore
+
+traffic.interval  = none
+
+warmup       = 3 h
+duration     = 1 h
