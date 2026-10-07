@@ -929,6 +929,14 @@ static const char *core_set(void *config, const char *key, const char *value) {
         return parse_u64(value, UINT32_MAX, &v) ? (c->destinations = (uint32_t)v, NULL)
                                                 : "expected a count, or 0 for every node";
     }
+    if (strcmp(key, "frames") == 0) {
+        return parse_u64(value, 255, &v) && v > 0 ? (c->frames = (uint32_t)v, NULL)
+                                                  : "expected a count from 1 to 255";
+    }
+    if (strcmp(key, "salvage") == 0) {
+        return parse_u64(value, 4, &v) ? (c->salvage = (uint32_t)v, NULL)
+                                       : "expected a count from 0 to 4";
+    }
     return "is not a setting of core";
 }
 

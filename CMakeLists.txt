@@ -53,8 +53,9 @@ target_compile_options(ternsim PRIVATE ${TSIM_WARNINGS})
 set(TSIM_FIRMWARE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../firmware" CACHE PATH
     "A checkout of ternmesh/firmware, for the core routing")
 option(TSIM_REQUIRE_CORE "Fail if the firmware's source is not there to build the core from" OFF)
-if(EXISTS "${TSIM_FIRMWARE_DIR}/src/route.c")
+if(EXISTS "${TSIM_FIRMWARE_DIR}/src/forward.c")
     add_library(terncore STATIC
+        ${TSIM_FIRMWARE_DIR}/src/forward.c
         ${TSIM_FIRMWARE_DIR}/src/lora.c
         ${TSIM_FIRMWARE_DIR}/src/route.c
         ${TSIM_FIRMWARE_DIR}/src/sha256.c
