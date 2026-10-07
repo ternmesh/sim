@@ -44,11 +44,11 @@
  *   region, fast (region-distvec-fast.tsim, SF7, 200 relays)
  *     candidate 3               99.63%   99.57%      842 s
  *     without re-attachment     97.21%   97.21%      665 s
- *     core                      97.11%   97.11%      693 s
+ *     core                      97.09%   97.09%      687 s
  *   region, deployed (region-distvec-deployed.tsim, SF8 at 62.5 kHz, 200 relays)
  *     candidate 3               92.68%   78.46%     5762 s
  *     without re-attachment     85.01%   85.01%     4280 s
- *     core                      92.09%   92.09%     4317 s
+ *     core                      92.07%   92.07%     4319 s
  *
  * So the core is candidate 3 without re-attachment, to a tenth of a point, on three of the four,
  * and what it lacks on the fast preset is re-attachment: with seed 1 there, 25 leaves and a relay
@@ -57,6 +57,21 @@
  * candidate 3 without re-attachment, which is not explained; candidate 3's neighbour_timeout is
  * not it. With seed 1, no route of the core's went round in any of the four: every route held
  * that did not arrive ended at a node with none.
+ *
+ * A board has fewer places for neighbours than these runs gave it, 255, and on the last two of
+ * these a node at full power is heard by 280 and 490 others. Routes held with `neighbours` 32 and
+ * 64 (3 seeds), first with the core keeping the neighbours it heard first, as it did until
+ * 2026-10-07, then keeping every link that is up and otherwise the nearest:
+ *
+ *                               32 places          64 places
+ *   town                      100.00%  100.00%   100.00%  100.00%
+ *   region                     98.53%   99.87%    99.98%   99.99%
+ *   region, fast               64.39%   87.58%    92.62%   96.15%
+ *   region, deployed           17.45%   81.72%    76.53%   90.88%
+ *
+ * With 255 places the two agree to 0.02 of a point. With 32 or 64 on the fast preset some seeds
+ * do not settle: six hours on they still send requests, and 3 ks of announces an hour against
+ * 0.6 ks, which is not explained.
  *
  * None of this is delivery. The figures candidate 3 is judged on come from the frames that follow
  * routes, which the core has still to get. */
