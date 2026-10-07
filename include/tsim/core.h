@@ -16,12 +16,17 @@
  * It is built only when the firmware's source is there to build from (TSIM_FIRMWARE_DIR in
  * CMakeLists.txt), and TSIM_HAVE_CORE says whether it was.
  *
- * What the core has, the plugin runs: announces, links, routes and requests, as the specification
- * has them, in its frames. A node's routing id is its index plus one. What the core does not have
- * yet, the plugin does not make up: there are no frames that follow the routes, so every message
- * is refused, and a scenario measures the routes the nodes hold (the report's `routes` and `reach`)
- * and the airtime they cost, never delivery. Nor does anything choose relays; `relay_pick` names
- * them as it does for candidate 3, and with none picked every node is one.
+ * What the core has, the plugin runs: announces, links, routes and requests, and the frames that
+ * follow routes (tern/forward.h), as the specification has them, in its frames. A node's routing
+ * id is its index plus one. A message goes as a secured unicast frame would, 23 bytes longer than
+ * its content, with its number where the frame's tag is; its destination acknowledges every copy,
+ * and its source sends it again until it is acknowledged or given up. A frame does not say where
+ * it came from, and on a device its destination knows from the session: here it looks the
+ * message's number up in a table the nodes of one network share, which stands for those sessions
+ * and nothing else. What the core does not have, the plugin does not make up: there is no
+ * broadcast, so a broadcast is refused, and scenarios that compare delivery are run with
+ * traffic.broadcast = 0. Nor does anything choose relays; `relay_pick` names them as it does for
+ * candidate 3, and with none picked every node is one.
  *
  * The radio gives the core what an SX1262 would: a signal-to-noise ratio in quarters of a decibel,
  * from -32 to 31.75.
@@ -73,8 +78,25 @@
  * do not settle: six hours on they still send requests, and 3 ks of announces an hour against
  * 0.6 ks, which is not explained.
  *
- * None of this is delivery. The figures candidate 3 is judged on come from the frames that follow
- * routes, which the core has still to get. */
+ * Delivery, with every node sending a message to another at random every half hour and none
+ * broadcast (-s traffic.broadcast=0, 3 seeds): messages that arrived within the minute allowed,
+ * and how many did for each second on the air, all nodes together. Candidate 3 is run as it is,
+ * and plain, without re-attachment or rescue floods, which the core has neither of; the
+ * incumbents as their own scenarios have them.
+ *
+ *                               town            region, fast     region, deployed
+ *   Meshtastic                  21.0%  0.008    19.0%  0.013      1.1%  0.001
+ *   MeshCore                    -               30.3%  0.026      5.7%  0.004
+ *   candidate 3                100.0%  0.122    99.4%  0.538      9.2%  0.006
+ *   candidate 3, plain          -               96.8%  0.390     19.1%  0.016
+ *   core, 255 neighbours       100.0%  0.132    96.7%  0.438     14.4%  0.013
+ *   core, 64 neighbours         99.9%  0.133    95.2%  0.320     11.6%  0.010
+ *
+ * So on the fast preset the core delivers what candidate 3 does plain, and what candidate 3 has
+ * over both there is re-attachment and rescue. On the deployed preset, where the channel is full
+ * and most of what is sent is lost, the core is 5 points short of candidate 3 plain, which is not
+ * explained, and both are ahead of candidate 3 as it is, whose rescue floods cost more there than
+ * they bring. */
 struct tsim_core_config {
     uint16_t channel;
     struct tsim_lora lora;
@@ -89,6 +111,10 @@ struct tsim_core_config {
      * destination past the end of its table is one it does not know. */
     uint32_t neighbours;   /* 1..255 */
     uint32_t destinations; /* 0 for one each for every node */
+    /* Frames a node has in hand at once, its own and those it passes on: 1..255. One more is
+     * dropped. */
+    uint32_t frames;
+    uint32_t salvage; /* other neighbours a frame given up on is tried at: 0..4 */
 };
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,

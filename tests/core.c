@@ -112,7 +112,7 @@ static void a_line_learns_every_route(void) {
     rig_close(&r);
 }
 
-static void its_frames_are_announces_and_requests_and_nothing_else(void) {
+static void without_messages_its_frames_are_announces_and_requests(void) {
     struct rig r;
     line(&r, 6, 2, NULL);
     run(&r, TSIM_S(600));
@@ -124,17 +124,78 @@ static void its_frames_are_announces_and_requests_and_nothing_else(void) {
     rig_close(&r);
 }
 
-/* The core carries no messages yet, and the plugin must say so, not seem to. */
-static void a_message_is_refused(void) {
+static uint64_t message(struct rig *r, uint32_t from, uint32_t to) {
+    return tsim_net_originate(r->net, from, to, 16);
+}
+
+static void a_message_goes_hop_by_hop_and_is_acknowledged(void) {
+    struct rig r;
+    line(&r, 6, 3, NULL);
+    run(&r, TSIM_S(600));
+    uint64_t id = message(&r, 0, 5);
+    CHECK(id != 0);
+    run(&r, TSIM_S(660));
+    const struct tsim_message_record *m = tsim_net_message(r.net, id);
+    CHECK(m && !m->refused && m->delivered == 1 && m->finished);
+    /* Once from its source, once from each node between, and the acknowledgement back. */
+    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 1);
+    for (uint32_t i = 1; i < 5; i++) {
+        CHECK_EQ_U64(frames(&r, i, TSIM_PURPOSE_RELAY), 1);
+    }
+    CHECK_EQ_U64(frames(&r, 5, TSIM_PURPOSE_RELAY), 0);
+    rig_close(&r);
+}
+
+/* Message numbers start at 1 in every network: two running at once must not take each other's
+ * senders for their own, or an acknowledgement goes to the wrong node. */
+static void two_networks_at_once_keep_their_messages_apart(void) {
+    struct rig a, b;
+    line(&a, 6, 3, NULL);
+    line(&b, 6, 4, NULL);
+    run(&a, TSIM_S(600));
+    run(&b, TSIM_S(600));
+    uint64_t one = message(&a, 0, 5);
+    uint64_t two = message(&b, 4, 1); /* the same number, from another node */
+    CHECK(one == two);
+    run(&a, TSIM_S(660));
+    run(&b, TSIM_S(660));
+    const struct tsim_message_record *m = tsim_net_message(a.net, one);
+    CHECK(m && m->delivered == 1 && m->finished);
+    m = tsim_net_message(b.net, two);
+    CHECK(m && m->delivered == 1 && m->finished);
+    /* Acknowledged at the first try, each of them: sent once from its source. */
+    CHECK_EQ_U64(frames(&a, 0, TSIM_PURPOSE_DATA), 1);
+    CHECK_EQ_U64(frames(&b, 4, TSIM_PURPOSE_DATA), 1);
+    rig_close(&a);
+    rig_close(&b);
+}
+
+/* The core has no broadcast, and the plugin must say so, not seem to. */
+static void a_broadcast_is_refused(void) {
     struct rig r;
     line(&r, 3, 3, NULL);
     run(&r, TSIM_S(600));
-    uint64_t id = tsim_net_originate(r.net, 0, 2, 16);
+    uint64_t id = message(&r, 0, TSIM_BROADCAST);
     CHECK(id != 0);
     run(&r, TSIM_S(700));
     const struct tsim_message_record *m = tsim_net_message(r.net, id);
     CHECK(m && m->refused);
     CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 0);
+    rig_close(&r);
+}
+
+/* A node between goes down: the message is tried again, and given up, and the source is told. */
+static void a_message_that_cannot_arrive_is_given_up(void) {
+    struct rig r;
+    line(&r, 4, 4, NULL);
+    run(&r, TSIM_S(600));
+    CHECK(tsim_net_power(r.net, 2, false));
+    uint64_t id = message(&r, 0, 3);
+    run(&r, TSIM_S(900));
+    const struct tsim_message_record *m = tsim_net_message(r.net, id);
+    CHECK(m && m->delivered == 0 && m->finished);
+    CHECK(frames(&r, 0, TSIM_PURPOSE_DATA) >= 4);
+    CHECK(frames(&r, 1, TSIM_PURPOSE_RELAY) >= 3);
     rig_close(&r);
 }
 
@@ -204,8 +265,11 @@ static void a_config_out_of_range_is_refused(void) {
 
 int main(void) {
     RUN(a_line_learns_every_route);
-    RUN(its_frames_are_announces_and_requests_and_nothing_else);
-    RUN(a_message_is_refused);
+    RUN(without_messages_its_frames_are_announces_and_requests);
+    RUN(a_message_goes_hop_by_hop_and_is_acknowledged);
+    RUN(two_networks_at_once_keep_their_messages_apart);
+    RUN(a_broadcast_is_refused);
+    RUN(a_message_that_cannot_arrive_is_given_up);
     RUN(a_grid_never_loops_while_it_settles);
     RUN(a_node_that_restarts_is_routed_to_again);
     RUN(only_relays_pass_routes_on);

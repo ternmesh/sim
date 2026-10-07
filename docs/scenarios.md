@@ -234,6 +234,7 @@ default.
 | `routing.tx_min_dbm` (`core`) | -9 | the least a node sends at; its most is `radio.tx_dbm`. Both are rounded to a whole dBm, as a radio takes them |
 | `routing.neighbours` (`core`) | 255 | how many neighbours a node has room for, 1 to 255, the most the core takes. A board has what its memory allows, and a neighbour past the end of the table is one it does not know |
 | `routing.destinations` (`core`) | 0 | how many destinations a node has room for, or 0 for one each for every node |
+| `routing.frames`, `routing.salvage` (`core`) | 16, 1 | frames a node has in hand at once, its own and those it passes on, 1 to 255; and other neighbours a frame given up on is tried at, 0 to 4 |
 
 Every other parameter of `core` is the specification's, as the firmware has it, and is not a
 setting here: a scenario measures the firmware, not a variant of it.
