@@ -73,8 +73,6 @@ def main():
     words = [int(w, 16) for w in args.words.split(",")]
     powers = [int(p) for p in args.powers.split(",")]
     boards = [Board("A", args.port_a), Board("B", args.port_b)]
-    for b in boards:
-        b.ask("bench on", r"bench on")
 
     out = csv.writer(sys.stdout)
     out.writerow(["sender", "listener", "tx_sync", "rx_sync", "power_dbm", "sent", "preambles",
@@ -92,6 +90,8 @@ def main():
         sys.stdout.flush()
 
     try:
+        for b in boards:
+            b.ask("bench on", r"bench on")
         # What each listener counts with nobody sending, for as long as a run takes.
         for rx in boards:
             for r in words:
