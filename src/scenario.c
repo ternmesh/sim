@@ -11,6 +11,9 @@
 
 #include "tsim/baseline.h"
 #include "tsim/distvec.h"
+#ifdef TSIM_HAVE_CORE
+#include "tsim/core.h"
+#endif
 #include "tsim/meshcore.h"
 #include "tsim/meshtastic.h"
 #include "tsim/nodeset.h"
@@ -278,6 +281,12 @@ static struct picked picked_of(const struct tsim_routing *routing, void *config)
         struct tsim_meshtastic_config *c = config;
         return (struct picked){&c->relay_pick, &c->relay_count, &c->relay_set};
     }
+#ifdef TSIM_HAVE_CORE
+    if (routing == &tsim_core) {
+        struct tsim_core_config *c = config;
+        return (struct picked){&c->relay_pick, &c->relay_count, &c->relay_set};
+    }
+#endif
     return (struct picked){0};
 }
 
@@ -896,6 +905,42 @@ static const char *distvec_set(void *config, const char *key, const char *value)
 
 static const char *distvec_check(const void *config) { return tsim_distvec_check(config); }
 
+#ifdef TSIM_HAVE_CORE
+static void core_defaults(void *config, const struct tsim_radio *radio) {
+    *(struct tsim_core_config *)config =
+        tsim_core_default(radio->channel, &radio->lora, radio->tx_dbm);
+}
+
+static const char *core_set(void *config, const char *key, const char *value) {
+    struct tsim_core_config *c = config;
+    uint64_t v;
+    const char *why = relay_pick_set(key, value, &c->relay_pick, &c->relay_count);
+    if (why) {
+        return *why ? why : NULL;
+    }
+    if (strcmp(key, "tx_min_dbm") == 0) {
+        return parse_double(value, &c->tx_min_dbm) ? NULL : "expected a power in dBm";
+    }
+    if (strcmp(key, "neighbours") == 0) {
+        return parse_u64(value, 255, &v) && v > 0 ? (c->neighbours = (uint32_t)v, NULL)
+                                                  : "expected a count from 1 to 255";
+    }
+    if (strcmp(key, "destinations") == 0) {
+        return parse_u64(value, UINT32_MAX, &v) ? (c->destinations = (uint32_t)v, NULL)
+                                                : "expected a count, or 0 for every node";
+    }
+    return "is not a setting of core";
+}
+
+static const char *core_check(const void *config) {
+    const struct tsim_core_config *c = config;
+    const char *why = tsim_core_check(c);
+    return why ? why : relay_pick_check(c->relay_pick, c->relay_count);
+}
+
+_Static_assert(sizeof(struct tsim_core_config) <= TSIM_PLUGIN_CONFIG_MAX, "core config");
+#endif
+
 _Static_assert(sizeof(struct tsim_flood_config) <= TSIM_PLUGIN_CONFIG_MAX, "flood config");
 _Static_assert(sizeof(struct tsim_aloha_config) <= TSIM_PLUGIN_CONFIG_MAX, "aloha config");
 _Static_assert(sizeof(struct tsim_meshtastic_config) <= TSIM_PLUGIN_CONFIG_MAX,
@@ -920,6 +965,10 @@ static const struct tsim_plugin plugins[] = {
      meshcore_mac_defaults, meshcore_mac_set, NULL},
     {"distvec", &tsim_distvec, NULL, sizeof(struct tsim_distvec_config), distvec_defaults,
      distvec_set, distvec_check},
+#ifdef TSIM_HAVE_CORE
+    {"core", &tsim_core, NULL, sizeof(struct tsim_core_config), core_defaults, core_set,
+     core_check},
+#endif
 };
 
 static const struct tsim_plugin *find_plugin(const char *name, bool routing) {
@@ -2112,6 +2161,10 @@ static bool of_kind(const struct tsim_scenario *s, const void *rc, uint8_t kinds
     } else if (s->routing->routing == &tsim_meshtastic) {
         const struct tsim_meshtastic_config *mt = rc;
         relay = !mt->relay_pick || mt->relay_set[node];
+#ifdef TSIM_HAVE_CORE
+    } else if (s->routing->routing == &tsim_core) {
+        relay = tsim_core_relay(rc, node);
+#endif
     }
     return relay == (kinds == TSIM_CHURN_RELAYS);
 }

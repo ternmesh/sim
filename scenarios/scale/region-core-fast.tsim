@@ -1,0 +1,25 @@
+# The firmware's core (tsim/core.h) on the fast preset, over the 200 sites every fast scenario
+# shares, as region-distvec-fast.tsim. No traffic: see scenarios/core/town.tsim.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf       = 7
+radio.bw       = 125000
+radio.cr       = 1
+radio.preamble = 16
+radio.tx_dbm   = 20
+
+routing             = core
+mac                 = meshcore
+routing.relay_pick  = cds
+routing.relay_count = 200
+sites.sf            = 7
+sites.bw            = 125000
+
+duty_cycle = 10%
+
+traffic.interval  = none
+
+warmup       = 6 h
+duration     = 1 h

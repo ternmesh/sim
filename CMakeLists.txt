@@ -46,6 +46,33 @@ target_include_directories(ternsim PUBLIC include)
 target_link_libraries(ternsim PUBLIC m)
 target_compile_options(ternsim PRIVATE ${TSIM_WARNINGS})
 
+# The firmware's protocol core (ternmesh/firmware), which the `core` routing runs: the code a
+# device runs, measured on the scenarios the design was. It is built from the firmware's source,
+# from a checkout beside this one unless TSIM_FIRMWARE_DIR names another. Without one the simulator
+# builds as before, and has no `core` routing.
+set(TSIM_FIRMWARE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../firmware" CACHE PATH
+    "A checkout of ternmesh/firmware, for the core routing")
+option(TSIM_REQUIRE_CORE "Fail if the firmware's source is not there to build the core from" OFF)
+if(EXISTS "${TSIM_FIRMWARE_DIR}/src/route.c")
+    add_library(terncore STATIC
+        ${TSIM_FIRMWARE_DIR}/src/lora.c
+        ${TSIM_FIRMWARE_DIR}/src/route.c
+        ${TSIM_FIRMWARE_DIR}/src/sha256.c
+        ${TSIM_FIRMWARE_DIR}/src/hkdf.c
+    )
+    target_include_directories(terncore PUBLIC ${TSIM_FIRMWARE_DIR}/include)
+    target_compile_options(terncore PRIVATE ${TSIM_WARNINGS})
+    target_sources(ternsim PRIVATE src/core.c)
+    target_link_libraries(ternsim PUBLIC terncore)
+    target_compile_definitions(ternsim PUBLIC TSIM_HAVE_CORE)
+    set(TSIM_HAVE_CORE ON)
+    message(STATUS "Core routing: from ${TSIM_FIRMWARE_DIR}")
+elseif(TSIM_REQUIRE_CORE)
+    message(FATAL_ERROR "No firmware source at ${TSIM_FIRMWARE_DIR}")
+else()
+    message(STATUS "Core routing: none, no firmware source at ${TSIM_FIRMWARE_DIR}")
+endif()
+
 add_executable(tsim tools/tsim.c tools/json.c)
 target_link_libraries(tsim PRIVATE ternsim)
 target_compile_options(tsim PRIVATE ${TSIM_WARNINGS})
@@ -60,6 +87,19 @@ if(BUILD_TESTING)
         target_compile_options(test_${t} PRIVATE ${TSIM_WARNINGS} -Wno-missing-prototypes)
         add_test(NAME ${t} COMMAND test_${t})
     endforeach()
+
+    if(TSIM_HAVE_CORE)
+        add_executable(test_core tests/core.c)
+        target_link_libraries(test_core PRIVATE ternsim)
+        target_compile_options(test_core PRIVATE ${TSIM_WARNINGS} -Wno-missing-prototypes)
+        add_test(NAME core COMMAND test_core)
+        file(GLOB TSIM_CORE_SCENARIOS CONFIGURE_DEPENDS
+            ${CMAKE_CURRENT_SOURCE_DIR}/scenarios/core/*.tsim)
+        foreach(s ${TSIM_CORE_SCENARIOS})
+            get_filename_component(name ${s} NAME_WE)
+            add_test(NAME scenario_core_${name} COMMAND tsim ${s})
+        endforeach()
+    endif()
 
     # The tool's JSON writer, which is not the library's.
     add_executable(test_json tests/json.c tools/json.c)
@@ -88,5 +128,11 @@ if(BUILD_TESTING)
         add_test(NAME meshbench
             COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/tools/meshbench.py check
                 --tsim $<TARGET_FILE:tsim>)
+        # The firmware's core on the town: the routes it holds, and that it keeps to its cap.
+        if(TSIM_HAVE_CORE)
+            add_test(NAME core_town
+                COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/tools/core.py check
+                    --tsim $<TARGET_FILE:tsim>)
+        endif()
     endif()
 endif()

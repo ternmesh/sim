@@ -51,7 +51,7 @@ misleading.
 | Setting | Default | Meaning |
 |---|---|---|
 | `nodes` | required | number of nodes, 1 to 1048576 |
-| `routing` | required | routing plugin: `flood`, `meshtastic`, `meshcore` or `distvec` |
+| `routing` | required | routing plugin: `flood`, `meshtastic`, `meshcore`, `distvec`, or `core`, the firmware's own routing, in a build that has it (`tsim/core.h`) |
 | `mac` | required | MAC plugin: `aloha`, `meshtastic` or `meshcore` |
 | `seed` | 1 | the seed for every random draw in the run: positions, shadowing, traffic, message content, plugins |
 | `placement` | `uniform` | `uniform`, `grid`, `line`, or `file` to read them from `positions` |
@@ -97,7 +97,7 @@ misleading.
 | `traffic.reply_delay` | `2 min` | mean time from a unicast to its answer, exponentially distributed |
 | `traffic.lead` | `0 s` | how long before the warmup ends the traffic process starts, at most the warmup. Its messages load the network but are not counted, only those made after the warmup are; the airtime spent on them after it is, since airtime is not told apart by message |
 | `churn.share` | 0 | churn (MSH-59): the share of the nodes `churn.nodes` names that go down and come back up, over the whole run, each for times drawn from exponentials of means `churn.up` and `churn.down`. Down is a power cycle: the radio hears and sends nothing, and the node's routing and MAC are destroyed - timers, queue, every message it held, those it originated finished - then made and started afresh when it comes back up, from the same seeds. 0 is none |
-| `churn.nodes` | `all` | which nodes churn may take: `all`; `relays`, the routing's - `distvec`'s infrastructure, `meshcore`'s repeaters, every node for routing without tiers; or `leaves`, the rest |
+| `churn.nodes` | `all` | which nodes churn may take: `all`; `relays`, the routing's - `distvec`'s infrastructure, `meshcore`'s repeaters, `core`'s relays, every node for routing without tiers; or `leaves`, the rest |
 | `churn.up` | 2 h | mean time a churning node stays up |
 | `churn.down` | 15 min | mean time a churning node stays down |
 | `move.share` | 0 | movement (MSH-59): the share of the nodes `move.nodes` names that move over the whole run, by random waypoint - in a straight line to a point drawn uniformly over the map, at a speed drawn uniformly from `move.speed_min` to `move.speed_max`, then a stay drawn from an exponential of mean `move.pause`, then the next. The map is `area` for uniform placement, otherwise the smallest box that holds every node. Every `move.step`, each node that moved has its links' losses set again from the channel model: the shared shadowing follows it over the ground, its links' own part stays. Not with `links`, nor with `distvec`'s oracle (`routing.oracle`, `routing.links` oracle), whose routes are built from where the nodes start; relay picking and the links `progress` is judged against are from there too. 0 is none |
@@ -230,6 +230,13 @@ default.
 | `routing.here_window` (`distvec`) | 16 | with `routing.reattach`: the airtimes of its answer a relay not asked after waits at most before answering a solicit |
 | `routing.here_cancel` (`distvec`) | 3 | with `routing.reattach`: answers to the same solicit a relay not asked after hears that cancel its own; 0 never |
 | `routing.oracle_margin` (`distvec`) | 3 | dB above the floor, at `radio.tx_dbm` by the mean loss, that both ends of a link the oracle uses must have, 0 to 60; for `routing.links` oracle too |
+| `routing.relay_pick`, `routing.relay_count` (`core`) | `list`, 0 | relays picked as `distvec`'s infrastructure is (above), so both run over the same sites; `list` makes every node a relay. The core has nothing that chooses relays, and `elect` is not offered |
+| `routing.tx_min_dbm` (`core`) | -9 | the least a node sends at; its most is `radio.tx_dbm`. Both are rounded to a whole dBm, as a radio takes them |
+| `routing.neighbours` (`core`) | 255 | how many neighbours a node has room for, 1 to 255, the most the core takes. A board has what its memory allows, and a neighbour past the end of the table is one it does not know |
+| `routing.destinations` (`core`) | 0 | how many destinations a node has room for, or 0 for one each for every node |
+
+Every other parameter of `core` is the specification's, as the firmware has it, and is not a
+setting here: a scenario measures the firmware, not a variant of it.
 
 The routing and the MAC each keep their own copy of the window: the routing sizes its
 acknowledgement wait by it. Settings that bound each other, such as `cw_min` and `cw_max`, are

@@ -1,0 +1,17 @@
+# The region scenario under the firmware's core (tsim/core.h), every node a relay, as
+# region-distvec.tsim. No traffic: see scenarios/core/town.tsim.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf     = 9
+radio.bw     = 125000
+radio.tx_dbm = 20
+
+routing = core
+mac     = meshcore
+
+traffic.interval  = none
+
+warmup       = 6 h
+duration     = 1 h
