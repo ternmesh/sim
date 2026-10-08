@@ -1,0 +1,6 @@
+sender,listener,tx_sync,rx_sync,power_dbm,sent,preambles,headers,header_errors,crc_errors,frames,false_preambles
+none,meshtastic,,0x2B,,0,,,,0,1,2
+meshtastic,tern,0x2B,0x5E,22,100,107,0,0,0,0,
+tern,meshtastic,0x5E,0x2B,22,100,,,,0,0,0
+meshtastic,tern,0x2B,0x67,22,101,109,0,0,0,0,
+tern,meshtastic,0x67,0x2B,22,100,,,,0,0,1
