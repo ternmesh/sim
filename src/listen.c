@@ -40,10 +40,12 @@ static void look(struct listen *l) {
 static void listen_fire(void *ctx) {
     struct listen *l = ctx;
     if (l->turning) {
+        /* Sent, and its end kicks again; or not, and what held it kicks when it may go: the
+         * duty cycle, when the hour allows, or the routing, for the frame behind one it withdrew.
+         * Looking again here would ask every turnaround until then. */
         l->turning = false;
-        if (tsim_node_transmit(l->node) || tsim_node_sending(l->node)) {
-            return; /* its end kicks again */
-        }
+        tsim_node_transmit(l->node);
+        return;
     }
     look(l);
 }

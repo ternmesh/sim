@@ -162,6 +162,29 @@ static void two_that_waited_for_one_frame_start_together(void) {
     CHECK(apart > 10);
 }
 
+/* A frame the duty cycle holds goes when the hour allows, and the MAC does not ask every
+ * turnaround until then: the network kicks it. */
+static void a_frame_the_duty_cycle_holds_is_not_asked_for_again(void) {
+    struct tsim_net_params p = tsim_net_defaults(1);
+    struct tsim_flood_config fc = {.lora = tsim_lora_default(9, 500000), .tx_dbm = 14.0, .hops = 0};
+    struct tsim_listen_config lc = {.detect = DETECT, .turnaround = 0, .slot = SLOT};
+    struct rig r = {.sched = tsim_sched_create(), .lora = fc.lora};
+    p.listen = fc.lora;
+    /* Room for one frame in the hour, and not for two. */
+    p.duty_cycle = 1.5 * (double)airtime(&r) / (double)TSIM_S(3600);
+    r.net = tsim_net_create(r.sched, &p, NODES, &tsim_flood, &fc, &tsim_listen, &lc);
+    tsim_net_start(r.net);
+    struct send first = {&r, 0}, second = {&r, 0};
+    tsim_sched_at(r.sched, 0, send, &first);
+    tsim_sched_at(r.sched, TSIM_S(1), send, &second);
+    size_t events = tsim_sched_run_until(r.sched, TSIM_S(3000));
+    CHECK_EQ_U64(tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_DATA], 1);
+    events += tsim_sched_run_until(r.sched, TSIM_S(3700));
+    CHECK_EQ_U64(tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_DATA], 2);
+    CHECK(events < 100);
+    rig_close(&r);
+}
+
 int main(void) {
     RUN(a_node_waits_out_the_frame_it_is_receiving);
     RUN(a_frame_that_has_just_begun_is_not_noticed);
@@ -169,5 +192,6 @@ int main(void) {
     RUN(it_does_not_look_again_once_it_has_decided);
     RUN(a_window_adds_whole_slots_after_the_frame);
     RUN(two_that_waited_for_one_frame_start_together);
+    RUN(a_frame_the_duty_cycle_holds_is_not_asked_for_again);
     return CHECK_DONE();
 }
