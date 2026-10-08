@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "tsim/baseline.h"
 #include "tsim/meshcore.h"
 #include "tsim/net.h"
 #include "tsim/phy.h"
@@ -250,6 +251,39 @@ static void only_relays_pass_routes_on(void) {
     rig_close(&r);
 }
 
+/* Two nodes that send as soon as they have a frame, as a board with no listen-before-talk does,
+ * each sending the other a message at the same instant. Their frames meet. With every wait fixed
+ * they meet again at every try, and neither message arrives; with the firmware's wait before a
+ * frame is sent again, both do. */
+static uint32_t delivered_together(uint32_t retry_jitter, uint64_t seed) {
+    struct tsim_lora l = tsim_lora_default(7, 125000);
+    struct tsim_net_params p = tsim_net_defaults(seed);
+    struct tsim_core_config rc = tsim_core_default(0, &l, 14.0);
+    struct tsim_aloha_config ac = {.max_delay = 0};
+    struct tsim_sched *sched = tsim_sched_create();
+    p.queue_limit = 0;
+    rc.retry_jitter = retry_jitter;
+    struct tsim_net *net = tsim_net_create(sched, &p, 2, &tsim_core, &rc, &tsim_aloha, &ac);
+    tsim_phy_set_loss(tsim_net_phy(net), 0, 1, LOSS_LOUD);
+    tsim_net_start(net);
+    tsim_sched_run_until(sched, TSIM_S(600));
+    uint64_t a = tsim_net_originate(net, 0, 1, 16), b = tsim_net_originate(net, 1, 0, 16);
+    tsim_sched_run_until(sched, TSIM_S(720));
+    uint32_t n = tsim_net_message(net, a)->delivered + tsim_net_message(net, b)->delivered;
+    tsim_net_destroy(net);
+    tsim_sched_destroy(sched);
+    return n;
+}
+
+static void frames_that_met_do_not_meet_at_every_try(void) {
+    struct tsim_lora l = tsim_lora_default(7, 125000);
+    CHECK_EQ_U64(tsim_core_default(0, &l, 14.0).retry_jitter, 4);
+    for (uint64_t seed = 1; seed <= 20; seed++) {
+        CHECK_EQ_U64(delivered_together(0, seed), 0);
+        CHECK_EQ_U64(delivered_together(4, seed), 2);
+    }
+}
+
 static void a_config_out_of_range_is_refused(void) {
     struct tsim_lora l = tsim_lora_default(7, 125000);
     struct tsim_core_config c = tsim_core_default(0, &l, 14.0);
@@ -260,6 +294,12 @@ static void a_config_out_of_range_is_refused(void) {
     CHECK(tsim_core_check(&c) != NULL);
     c = tsim_core_default(0, &l, 14.0);
     c.tx_min_dbm = 15;
+    CHECK(tsim_core_check(&c) != NULL);
+    /* The firmware holds the wait in a byte: 256 would be taken for none. */
+    c = tsim_core_default(0, &l, 14.0);
+    c.retry_jitter = 255;
+    CHECK(tsim_core_check(&c) == NULL);
+    c.retry_jitter = 256;
     CHECK(tsim_core_check(&c) != NULL);
 }
 
@@ -273,6 +313,7 @@ int main(void) {
     RUN(a_grid_never_loops_while_it_settles);
     RUN(a_node_that_restarts_is_routed_to_again);
     RUN(only_relays_pass_routes_on);
+    RUN(frames_that_met_do_not_meet_at_every_try);
     RUN(a_config_out_of_range_is_refused);
     return CHECK_DONE();
 }

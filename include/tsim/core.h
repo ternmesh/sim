@@ -115,6 +115,10 @@ struct tsim_core_config {
      * dropped. */
     uint32_t frames;
     uint32_t salvage; /* other neighbours a frame given up on is tried at: 0..4 */
+    /* Airtimes of itself a frame sent again waits, at most: 0..255, and the firmware's own by
+     * default. With 0, two nodes whose frames met meet again at every try (scenarios/core/
+     * together.tsim). */
+    uint32_t retry_jitter;
 };
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,
