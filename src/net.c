@@ -815,6 +815,14 @@ bool tsim_node_receiving(const struct tsim_node *nd) {
     return tsim_phy_receiving(nd->net->phy, nd->index);
 }
 
+tsim_time tsim_node_received_for(const struct tsim_node *nd) {
+    return tsim_phy_received_for(nd->net->phy, nd->index);
+}
+
+tsim_time tsim_node_receiving_until(const struct tsim_node *nd) {
+    return tsim_phy_receiving_until(nd->net->phy, nd->index);
+}
+
 bool tsim_node_carrier(struct tsim_node *nd) { return tsim_phy_carrier(nd->net->phy, nd->index); }
 
 void tsim_node_hold_header(struct tsim_node *nd, tsim_time hold) {

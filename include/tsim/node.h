@@ -244,6 +244,12 @@ bool tsim_node_cad(const struct tsim_node *node);
 /* Whether the radio is part-way through receiving a frame. */
 bool tsim_node_receiving(const struct tsim_node *node);
 
+/* How long it has been on that frame, or -1 if it is on none. */
+tsim_time tsim_node_received_for(const struct tsim_node *node);
+
+/* When that frame ends, or -1 if it is on none. */
+tsim_time tsim_node_receiving_until(const struct tsim_node *node);
+
 /* Whether the radio's carrier flags are up, and holding its header flag; see tsim_phy_carrier()
  * and tsim_phy_hold_header(). */
 bool tsim_node_carrier(struct tsim_node *node);

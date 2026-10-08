@@ -232,6 +232,12 @@ bool tsim_phy_transmitting(const struct tsim_phy *phy, uint32_t node);
 /* Whether the node is part-way through receiving a frame. */
 bool tsim_phy_receiving(const struct tsim_phy *phy, uint32_t node);
 
+/* How long the node has been on the frame it is receiving, or -1 if it is on none. */
+tsim_time tsim_phy_received_for(const struct tsim_phy *phy, uint32_t node);
+
+/* When the frame it is receiving ends, or -1 if it is on none. */
+tsim_time tsim_phy_receiving_until(struct tsim_phy *phy, uint32_t node);
+
 /* Whether the radio's carrier flags are up, which is how an SX126x driver tells that the channel is
  * busy: preamble detected, from the start of a reception, then header valid, from when the frame's
  * header is demodulated. A driver clears both on reading the packet, so this is

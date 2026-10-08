@@ -903,6 +903,17 @@ bool tsim_phy_receiving(const struct tsim_phy *phy, uint32_t node) {
     return phy->nodes[node].state == RECEIVE;
 }
 
+tsim_time tsim_phy_received_for(const struct tsim_phy *phy, uint32_t node) {
+    const struct node *nd = &phy->nodes[node];
+    return nd->state == RECEIVE ? tsim_sched_now(phy->sched) - nd->since : -1;
+}
+
+tsim_time tsim_phy_receiving_until(struct tsim_phy *phy, uint32_t node) {
+    const struct node *nd = &phy->nodes[node];
+    const struct air *a = nd->state == RECEIVE ? find(phy, nd->frame) : NULL;
+    return a ? a->f.end : -1;
+}
+
 void tsim_phy_hold_header(struct tsim_phy *phy, uint32_t node, tsim_time hold) {
     struct node *nd = &phy->nodes[node];
     nd->header_hold = hold > 0 ? hold : 0;

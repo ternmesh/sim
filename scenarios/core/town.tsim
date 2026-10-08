@@ -11,7 +11,7 @@ radio.bw     = 125000
 radio.tx_dbm = 20
 
 routing = core
-mac     = meshcore
+mac     = listen
 
 traffic.interval  = none
 

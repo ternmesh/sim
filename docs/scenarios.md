@@ -52,7 +52,7 @@ misleading.
 |---|---|---|
 | `nodes` | required | number of nodes, 1 to 1048576 |
 | `routing` | required | routing plugin: `flood`, `meshtastic`, `meshcore`, `distvec`, or `core`, the firmware's own routing, in a build that has it (`tsim/core.h`) |
-| `mac` | required | MAC plugin: `aloha`, `meshtastic` or `meshcore` |
+| `mac` | required | MAC plugin: `aloha`, `listen`, `meshtastic` or `meshcore` |
 | `seed` | 1 | the seed for every random draw in the run: positions, shadowing, traffic, message content, plugins |
 | `placement` | `uniform` | `uniform`, `grid`, `line`, or `file` to read them from `positions` |
 | `positions` | none | for `file`: a file with one node per line, as `x y` in metres, in node order; `#` starts a comment. `tsim` reads a relative path from the scenario file's directory |
@@ -120,6 +120,9 @@ default.
 |---|---|---|
 | `routing.hops` (`flood`) | 3 | how many times a message can be rebroadcast along any path |
 | `mac.max_delay` (`aloha`) | `1 s` | longest random wait before sending |
+| `mac.detect` (`listen`) | 5 symbols and `1 ms` | how long the radio must have been on a frame before the node knows the channel is in use: it then waits for that frame's end. A frame that began more recently, or that the radio is not receiving, goes unnoticed |
+| `mac.turnaround` (`listen`) | `1 ms` | from looking at the radio to the frame being on the air, in which nothing is heard and nothing is looked at again |
+| `mac.window`, `mac.slot` (`listen`) | 0, `mac.detect` and `1 ms` | after the frame it waited for ends, a node waits 0 to `mac.window` slots more, drawn evenly, and looks again; 0 sends as the frame ends |
 | `routing.relay_pick`, `routing.relay_count` (`meshtastic`) | `list`, 0 | routers picked as `distvec`'s infrastructure is (below), over links at `radio.tx_dbm` with 3 dB to spare; the picked nodes are `router`s and the rest take `routing.role`. `list` picks none |
 | `routing.role` (`meshtastic`) | `client` | `client`, `client_mute` (never rebroadcasts) or `router` (waits less to rebroadcast, and cancels on the third copy heard, not the second) |
 | `routing.hop_limit` (`meshtastic`) | 3 | rebroadcasts a packet may have, 0 to 7 |
