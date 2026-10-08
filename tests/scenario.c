@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "tsim/baseline.h"
+#include "tsim/listen.h"
 #include "tsim/meshcore.h"
 #include "tsim/meshtastic.h"
 
@@ -90,6 +91,31 @@ static void plugin_settings_may_come_first(void) {
     CHECK(flood_of(&s)->hops == 7);
     CHECK(flood_of(&s)->lora.sf == 10 && flood_of(&s)->tx_dbm == 22);
     CHECK_EQ_I64(aloha_of(&s)->max_delay, TSIM_S(3));
+}
+
+/* The listening MAC takes its times from the modulation: five symbols and a millisecond to notice
+ * a frame, at SF9 and 500 kHz 6.12 ms, and a slot a millisecond longer. */
+static void the_listening_mac_follows_the_radio(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 2\nrouting = flood\nmac = listen\nradio.sf = 9\nradio.bw = 500000\n"));
+    const struct tsim_listen_config *l = (const struct tsim_listen_config *)s.mac_config;
+    CHECK(strcmp(tsim_scenario_mac_name(&s), "listen") == 0);
+    CHECK_EQ_I64(l->detect, 6120000);
+    CHECK_EQ_I64(l->turnaround, TSIM_MS(1));
+    CHECK_EQ_I64(l->slot, 7120000);
+    CHECK(l->window == 0);
+
+    CHECK(parse(&s, "nodes = 2\nrouting = flood\nmac = listen\nmac.detect = 0 s\n"
+                    "mac.turnaround = 5 ms\nmac.slot = 20 ms\nmac.window = 15\n"));
+    l = (const struct tsim_listen_config *)s.mac_config;
+    CHECK_EQ_I64(l->detect, 0);
+    CHECK_EQ_I64(l->turnaround, TSIM_MS(5));
+    CHECK_EQ_I64(l->slot, TSIM_MS(20));
+    CHECK(l->window == 15);
+
+    struct tsim_scenario_error err;
+    CHECK(!tsim_scenario_parse(
+        &s, "nodes = 2\nrouting = flood\nmac = listen\nmac.max_delay = 1 s\n", &err));
 }
 
 /* What the command line's -s relies on. */
@@ -914,6 +940,7 @@ int main(void) {
     RUN(the_documented_example_parses);
     RUN(every_value_kind_reads);
     RUN(plugin_settings_may_come_first);
+    RUN(the_listening_mac_follows_the_radio);
     RUN(a_later_setting_wins);
     RUN(unset_settings_take_their_defaults);
     RUN(problems_say_where_they_are);

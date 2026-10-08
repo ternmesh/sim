@@ -11,6 +11,7 @@
 
 #include "tsim/baseline.h"
 #include "tsim/distvec.h"
+#include "tsim/listen.h"
 #ifdef TSIM_HAVE_CORE
 #include "tsim/core.h"
 #endif
@@ -195,6 +196,29 @@ static const char *aloha_set(void *config, const char *key, const char *value) {
         return parse_time(value, &c->max_delay) ? NULL : "expected a time, such as 2 s";
     }
     return "is not a setting of aloha";
+}
+
+static void listen_defaults(void *config, const struct tsim_radio *radio) {
+    *(struct tsim_listen_config *)config = tsim_listen_default(&radio->lora);
+}
+
+static const char *listen_set(void *config, const char *key, const char *value) {
+    struct tsim_listen_config *c = config;
+    uint64_t v;
+    if (strcmp(key, "detect") == 0) {
+        return parse_time(value, &c->detect) ? NULL : "expected a time, such as 6 ms";
+    }
+    if (strcmp(key, "turnaround") == 0) {
+        return parse_time(value, &c->turnaround) ? NULL : "expected a time, such as 1 ms";
+    }
+    if (strcmp(key, "slot") == 0) {
+        return parse_time(value, &c->slot) ? NULL : "expected a time, such as 8 ms";
+    }
+    if (strcmp(key, "window") == 0) {
+        return parse_u64(value, UINT32_MAX, &v) ? (c->window = (uint32_t)v, NULL)
+                                                : "expected a count";
+    }
+    return "is not a setting of listen";
 }
 
 static bool parse_yes_no(const char *v, bool *out) {
@@ -955,6 +979,7 @@ _Static_assert(sizeof(struct tsim_core_config) <= TSIM_PLUGIN_CONFIG_MAX, "core 
 
 _Static_assert(sizeof(struct tsim_flood_config) <= TSIM_PLUGIN_CONFIG_MAX, "flood config");
 _Static_assert(sizeof(struct tsim_aloha_config) <= TSIM_PLUGIN_CONFIG_MAX, "aloha config");
+_Static_assert(sizeof(struct tsim_listen_config) <= TSIM_PLUGIN_CONFIG_MAX, "listen config");
 _Static_assert(sizeof(struct tsim_meshtastic_config) <= TSIM_PLUGIN_CONFIG_MAX,
                "meshtastic config");
 _Static_assert(sizeof(struct tsim_meshtastic_mac_config) <= TSIM_PLUGIN_CONFIG_MAX,
@@ -967,6 +992,8 @@ _Static_assert(sizeof(struct tsim_distvec_config) <= TSIM_PLUGIN_CONFIG_MAX, "di
 static const struct tsim_plugin plugins[] = {
     {"flood", &tsim_flood, NULL, sizeof(struct tsim_flood_config), flood_defaults, flood_set, NULL},
     {"aloha", NULL, &tsim_aloha, sizeof(struct tsim_aloha_config), aloha_defaults, aloha_set, NULL},
+    {"listen", NULL, &tsim_listen, sizeof(struct tsim_listen_config), listen_defaults, listen_set,
+     NULL},
     {"meshtastic", &tsim_meshtastic, NULL, sizeof(struct tsim_meshtastic_config),
      meshtastic_defaults, meshtastic_set, meshtastic_check},
     {"meshtastic", NULL, &tsim_meshtastic_mac, sizeof(struct tsim_meshtastic_mac_config),

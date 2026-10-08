@@ -11,7 +11,7 @@ radio.preamble = 16
 radio.tx_dbm   = 20
 
 routing             = core
-mac                 = meshcore
+mac                 = listen
 routing.relay_pick  = cds
 routing.relay_count = 200
 sites.sf            = 7

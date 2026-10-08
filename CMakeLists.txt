@@ -29,6 +29,7 @@ add_library(ternsim
     src/baseline.c
     src/channel.c
     src/distvec.c
+    src/listen.c
     src/lora.c
     src/meshcore.c
     src/meshtastic.c
@@ -80,7 +81,7 @@ target_compile_options(tsim PRIVATE ${TSIM_WARNINGS})
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(t baseline channel distvec lora meshcore meshtastic metrics net phy place rng scenario sched traffic)
+    foreach(t baseline channel distvec listen lora meshcore meshtastic metrics net phy place rng scenario sched traffic)
         add_executable(test_${t} tests/${t}.c)
         target_link_libraries(test_${t} PRIVATE ternsim)
         # The test files define their cases as static functions, so the prototype warning is
