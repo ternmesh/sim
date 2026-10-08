@@ -295,6 +295,12 @@ static void a_config_out_of_range_is_refused(void) {
     c = tsim_core_default(0, &l, 14.0);
     c.tx_min_dbm = 15;
     CHECK(tsim_core_check(&c) != NULL);
+    /* The firmware holds the wait in a byte: 256 would be taken for none. */
+    c = tsim_core_default(0, &l, 14.0);
+    c.retry_jitter = 255;
+    CHECK(tsim_core_check(&c) == NULL);
+    c.retry_jitter = 256;
+    CHECK(tsim_core_check(&c) != NULL);
 }
 
 int main(void) {

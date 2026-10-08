@@ -160,6 +160,9 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
     if (c->frames < 1 || c->frames > 255 || c->salvage > TERN_FORWARD_SALVAGE_MAX) {
         return "frames must be 1 to 255, and salvage 0 to 4";
     }
+    if (c->retry_jitter > UINT8_MAX) {
+        return "retry_jitter must be 0 to 255"; /* the firmware holds it in a byte */
+    }
     return NULL;
 }
 
