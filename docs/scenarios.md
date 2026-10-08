@@ -235,6 +235,7 @@ default.
 | `routing.neighbours` (`core`) | 255 | how many neighbours a node has room for, 1 to 255, the most the core takes. A board has what its memory allows, and a neighbour past the end of the table is one it does not know |
 | `routing.destinations` (`core`) | 0 | how many destinations a node has room for, or 0 for one each for every node |
 | `routing.frames`, `routing.salvage` (`core`) | 16, 1 | frames a node has in hand at once, its own and those it passes on, 1 to 255; and other neighbours a frame given up on is tried at, 0 to 4 |
+| `routing.retry_jitter` (`core`) | 4 | the longest a frame sent again waits first, in its own airtimes, 0 to 255: the specification's `RETRY_JITTER`. With 0, two nodes whose frames met send again together at every try (`scenarios/core/together.tsim`) |
 
 Every other parameter of `core` is the specification's, as the firmware has it, and is not a
 setting here: a scenario measures the firmware, not a variant of it.

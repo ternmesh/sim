@@ -145,6 +145,7 @@ struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lo
         .neighbours = 255,
         .frames = 16,
         .salvage = 1,
+        .retry_jitter = tern_forward_defaults().retry_jitter,
     };
 }
 
@@ -436,6 +437,7 @@ static void *router_create(struct tsim_node *node, const void *config) {
                     tsim_rng_next(&rng), tsim_node_now(node));
     struct tern_forward_config fc = tern_forward_defaults();
     fc.salvage = (uint8_t)c->salvage;
+    fc.retry_jitter = (uint8_t)c->retry_jitter;
     tern_forward_init(&r->forward, &fc, &r->route, r->slots, c->frames, tsim_rng_next(&rng));
     return r;
 }
