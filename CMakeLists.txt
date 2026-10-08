@@ -56,6 +56,7 @@ set(TSIM_FIRMWARE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../firmware" CACHE PATH
 option(TSIM_REQUIRE_CORE "Fail if the firmware's source is not there to build the core from" OFF)
 if(EXISTS "${TSIM_FIRMWARE_DIR}/src/forward.c")
     add_library(terncore STATIC
+        ${TSIM_FIRMWARE_DIR}/src/flood.c
         ${TSIM_FIRMWARE_DIR}/src/forward.c
         ${TSIM_FIRMWARE_DIR}/src/lora.c
         ${TSIM_FIRMWARE_DIR}/src/route.c

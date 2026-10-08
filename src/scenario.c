@@ -5,6 +5,7 @@
 #include <inttypes.h>
 #include <math.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -964,6 +965,28 @@ static const char *core_set(void *config, const char *key, const char *value) {
     if (strcmp(key, "retry_jitter") == 0) {
         return parse_u64(value, 255, &v) ? (c->retry_jitter = (uint32_t)v, NULL)
                                          : "expected a count from 0 to 255";
+    }
+    static const struct {
+        const char *key;
+        size_t at;
+        uint64_t least, most;
+    } floods[] = {
+        {"flood_frames", offsetof(struct tsim_core_config, flood_frames), 1, 255},
+        {"flood_hops", offsetof(struct tsim_core_config, flood_hops), 1, 255},
+        {"flood_sparse", offsetof(struct tsim_core_config, flood_sparse), 0, 255},
+        {"flood_wait", offsetof(struct tsim_core_config, flood_wait), 0, 255},
+        {"flood_copies", offsetof(struct tsim_core_config, flood_copies), 0, 255},
+        {"flood_own_ppm", offsetof(struct tsim_core_config, flood_own_ppm), 1, 1000000},
+        {"flood_relay_ppm", offsetof(struct tsim_core_config, flood_relay_ppm), 1, 1000000},
+    };
+    for (size_t i = 0; i < sizeof floods / sizeof floods[0]; i++) {
+        if (strcmp(key, floods[i].key) == 0) {
+            if (!parse_u64(value, floods[i].most, &v) || v < floods[i].least) {
+                return "is out of range for that setting of core's flood";
+            }
+            *(uint32_t *)((char *)c + floods[i].at) = (uint32_t)v;
+            return NULL;
+        }
     }
     return "is not a setting of core";
 }
