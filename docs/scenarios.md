@@ -238,6 +238,9 @@ default.
 | `routing.neighbours` (`core`) | 255 | how many neighbours a node has room for, 1 to 255, the most the core takes. A board has what its memory allows, and a neighbour past the end of the table is one it does not know |
 | `routing.destinations` (`core`) | 0 | how many destinations a node has room for, or 0 for one each for every node |
 | `routing.frames`, `routing.salvage` (`core`) | 16, 1 | frames a node has in hand at once, its own and those it passes on, 1 to 255; and other neighbours a frame given up on is tried at, 0 to 4 |
+| `routing.flood_frames` (`core`) | 16 | flooded frames a node has in hand at once, its own and those it passes on, 1 to 255 |
+| `routing.flood_hops`, `routing.flood_sparse`, `routing.flood_wait`, `routing.flood_copies` (`core`) | 5, 8, 8, 2 | the firmware's flood, as the specification's `FLOOD_HOPS`, `FLOOD_SPARSE`, `FLOOD_WAIT` and `FLOOD_COPIES`: what a broadcast starts with, the relay neighbours at most of a relay that spends no hop, the airtimes a relay waits at most, and the copies heard, the first included, that drop a frame still waiting (0 never) |
+| `routing.flood_own_ppm`, `routing.flood_relay_ppm` (`core`) | 5000, 30000 | the two allowances, in millionths of a node's time: for its own broadcasts, and for those it passes on. 1000000 is none |
 | `routing.retry_jitter` (`core`) | 4 | the longest a frame sent again waits first, in its own airtimes, 0 to 255: the specification's `RETRY_JITTER`. With 0, two nodes whose frames met send again together at every try (`scenarios/core/together.tsim`) |
 
 Every other parameter of `core` is the specification's, as the firmware has it, and is not a

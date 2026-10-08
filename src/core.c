@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "tern/flood.h"
 #include "tern/forward.h"
 #include "tern/route.h"
 #include "tsim/rng.h"
@@ -23,6 +24,14 @@
 #define AT_TAG TERN_FORWARD_HEAD
 #define AT_CONTENT (TERN_FORWARD_HEAD + TERN_FORWARD_TAG)
 #define CHECK_LEN 8
+
+/* A broadcast's frame, as a group's would be: the flood's head, eight bytes no other frame has -
+ * a group frame's nonce, here who sent it and the message's number - four where its tag would
+ * be, four where the writer's id is sealed with the content, the content, and eight where the
+ * check would be. */
+#define AT_FLOOD_SRC TERN_FLOOD_HEAD
+#define AT_FLOOD_ID (TERN_FLOOD_HEAD + 4)
+#define AT_FLOOD_CONTENT (TERN_FLOOD_HEAD + 8 + 4 + 4)
 
 /* How soon a frame the queue refused is offered again. */
 #define RETRY TSIM_S(1)
@@ -48,6 +57,14 @@ struct router {
     uint8_t refused_slot;
     bool has_refused;
     struct sessions *sessions;
+    /* And for frames for every node. */
+    struct tern_flood flood;
+    struct tern_flood_slot *flood_slots;
+    uint8_t (*flood_seen)[TERN_FLOOD_ID];
+    uint64_t *flhandles; /* [slot] in the node's queue, or 0 */
+    struct tsim_tx flood_refused;
+    uint8_t flood_refused_slot;
+    bool has_flood_refused;
 };
 
 /* Who sent each message of one network, by its number. A frame does not say where it came from:
@@ -146,6 +163,13 @@ struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lo
         .frames = 16,
         .salvage = 1,
         .retry_jitter = tern_forward_defaults().retry_jitter,
+        .flood_frames = 16,
+        .flood_hops = tern_flood_defaults().hops,
+        .flood_sparse = tern_flood_defaults().sparse,
+        .flood_wait = tern_flood_defaults().wait,
+        .flood_copies = tern_flood_defaults().copies,
+        .flood_own_ppm = tern_flood_defaults().own_ppm,
+        .flood_relay_ppm = tern_flood_defaults().relay_ppm,
     };
 }
 
@@ -162,6 +186,15 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
     }
     if (c->retry_jitter > UINT8_MAX) {
         return "retry_jitter must be 0 to 255"; /* the firmware holds it in a byte */
+    }
+    if (c->flood_frames < 1 || c->flood_frames > 255 || c->flood_hops < 1 || c->flood_hops > 255 ||
+        c->flood_sparse > 255 || c->flood_wait > 255 || c->flood_copies > 255) {
+        return "flood_frames and flood_hops must be 1 to 255, and flood_sparse, flood_wait and "
+               "flood_copies 0 to 255";
+    }
+    if (c->flood_own_ppm < 1 || c->flood_own_ppm > 1000000 || c->flood_relay_ppm < 1 ||
+        c->flood_relay_ppm > 1000000) {
+        return "flood_own_ppm and flood_relay_ppm must be 1 to 1000000";
     }
     return NULL;
 }
@@ -263,19 +296,59 @@ static void service_frames(struct router *r, tsim_time now) {
     }
 }
 
+/* And for frames for every node: what the flooder has ready goes to the queue. One of this
+ * node's own that the flooder holds back for its allowance is not ready, and is asked for again
+ * when the flooder says it is due. */
+static void service_floods(struct router *r, tsim_time now) {
+    for (;;) {
+        struct tsim_tx *tx = &r->flood_refused;
+        uint8_t slot = r->flood_refused_slot;
+        if (!r->has_flood_refused) {
+            uint8_t frame[TERN_FLOOD_FRAME_MAX];
+            enum tern_flood_kind kind;
+            int8_t dbm;
+            size_t len = tern_flood_poll(&r->flood, now, frame, &dbm, &kind, &slot);
+            if (len == 0) {
+                return;
+            }
+            *tx = (struct tsim_tx){
+                .channel = r->config.channel,
+                .lora = r->config.lora,
+                .tx_dbm = dbm,
+                .purpose = kind == TERN_FLOOD_OWN ? TSIM_PURPOSE_DATA : TSIM_PURPOSE_RELAY,
+                .priority = kind == TERN_FLOOD_OWN ? PRIORITY_OWN : PRIORITY_RELAY,
+                .carries = tag_get(frame + AT_FLOOD_ID),
+                .carries_at = AT_FLOOD_CONTENT,
+                .len = (uint32_t)len,
+            };
+            memcpy(tx->bytes, frame, len);
+        }
+        r->flhandles[slot] = tsim_node_send(r->node, tx);
+        r->has_flood_refused = r->flhandles[slot] == 0;
+        r->flood_refused_slot = slot;
+        if (r->has_flood_refused) {
+            return;
+        }
+    }
+}
+
 /* Offers the queue what the core has to send, and sets the timer for when it next has something
  * to do. */
 static void service(struct router *r) {
     tsim_time now = tsim_node_now(r->node), due, wait;
     service_routes(r, now);
     service_frames(r, now);
-    if ((r->len != 0 && r->handle == 0) || r->has_refused) {
+    service_floods(r, now);
+    if ((r->len != 0 && r->handle == 0) || r->has_refused || r->has_flood_refused) {
         tsim_timer_start(r->timer, RETRY); /* the queue refused one: offered again */
         return;
     }
     due = r->handle != 0 ? INT64_MAX : tern_route_due(&r->route);
     if (tern_forward_due(&r->forward) < due) {
         due = tern_forward_due(&r->forward);
+    }
+    if (tern_flood_due(&r->flood) < due) {
+        due = tern_flood_due(&r->flood);
     }
     if (due == INT64_MAX) {
         return; /* nothing but frames in the queue, whose end comes back here */
@@ -320,10 +393,24 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
         tern_route_heard(&r->route, tsim_node_now(r->node), rx->bytes, rx->len, snr_q);
     } else if (tern_forward_frame(rx->bytes, rx->len)) {
         frame_rx(r, rx, snr_q);
+    } else if (tern_flood_frame(rx->bytes, rx->len)) {
+        /* Heard for the first time, it is delivered, as to a member of its group; the flooder
+         * passes it on if this node is a relay that should. */
+        if (tern_flood_heard(&r->flood, tsim_node_now(r->node), rx->bytes, rx->len)) {
+            tsim_node_deliver(r->node, tag_get(rx->bytes + AT_FLOOD_ID));
+        }
     } else {
         return;
     }
     service(r);
+}
+
+/* The flooder's slot of a frame in the queue, or `flood_frames` if it is none of its. */
+static uint32_t flood_slot(const struct router *r, uint64_t handle) {
+    uint32_t i = 0;
+    for (; i < r->config.flood_frames && r->flhandles[i] != handle; i++) {
+    }
+    return i;
 }
 
 /* The slot of a frame in the queue, or `frames` if it is none of this node's. */
@@ -344,12 +431,16 @@ static void router_tx_done(void *self, uint64_t handle) {
         r->handle = 0;
         r->len = 0;
     } else {
-        uint32_t slot = frame_slot(r, handle);
-        if (slot == r->config.frames) {
+        uint32_t slot = frame_slot(r, handle), fl = flood_slot(r, handle);
+        if (slot != r->config.frames) {
+            tern_forward_sent(&r->forward, tsim_node_now(r->node), (uint8_t)slot);
+            r->fhandles[slot] = 0;
+        } else if (fl != r->config.flood_frames) {
+            tern_flood_sent(&r->flood, tsim_node_now(r->node), (uint8_t)fl);
+            r->flhandles[fl] = 0;
+        } else {
             return;
         }
-        tern_forward_sent(&r->forward, tsim_node_now(r->node), (uint8_t)slot);
-        r->fhandles[slot] = 0;
     }
     service(r);
 }
@@ -359,6 +450,17 @@ static void router_tx_done(void *self, uint64_t handle) {
 static bool router_sending(void *self, uint64_t handle) {
     struct router *r = self;
     uint32_t slot = handle ? frame_slot(r, handle) : r->config.frames;
+    uint32_t fl = handle ? flood_slot(r, handle) : r->config.flood_frames;
+    if (fl != r->config.flood_frames) {
+        /* A flooded frame of which enough copies have been heard since is taken back too. */
+        if (tern_flood_wanted(&r->flood, (uint8_t)fl)) {
+            return true;
+        }
+        tern_flood_withdrawn(&r->flood, tsim_node_now(r->node), (uint8_t)fl);
+        r->flhandles[fl] = 0;
+        tsim_timer_start(r->timer, TSIM_MS(1));
+        return false;
+    }
     if (slot == r->config.frames || tern_forward_wanted(&r->forward, (uint8_t)slot)) {
         return true;
     }
@@ -368,13 +470,35 @@ static bool router_sending(void *self, uint64_t handle) {
     return false;
 }
 
+/* A broadcast goes as a group's frame would, flooded. Its sender is done with it once the
+ * flooder has it: it is sent once, when the node's allowance can pay, and nothing answers it. */
+static bool originate_flood(struct router *r, const struct tsim_message *msg) {
+    uint8_t frame[TERN_FLOOD_FRAME_MAX] = {TERN_HDR_GROUP};
+    size_t len = AT_FLOOD_CONTENT + msg->len + CHECK_LEN;
+    if (len > sizeof frame || msg->id > UINT32_MAX) {
+        return false;
+    }
+    tag_put(frame + AT_FLOOD_SRC, msg->src + 1);
+    tag_put(frame + AT_FLOOD_ID, (uint32_t)msg->id);
+    memcpy(frame + AT_FLOOD_CONTENT, msg->content, msg->len);
+    if (!tern_flood_send(&r->flood, tsim_node_now(r->node), frame, len)) {
+        tsim_node_drop(r->node, msg->id, TSIM_DROP_QUEUE, TSIM_BROADCAST);
+    }
+    tsim_node_finished(r->node, msg->id);
+    service(r);
+    return true;
+}
+
 /* A message goes as the secured unicast frame would: the head, its tag, its content and its
- * check. The core has no broadcast, and a broadcast is refused. */
+ * check. */
 static bool router_originate(void *self, const struct tsim_message *msg) {
     struct router *r = self;
     uint8_t frame[TERN_FORWARD_FRAME_MAX] = {TERN_HDR_MESSAGE};
     size_t len = AT_CONTENT + msg->len + CHECK_LEN;
-    if (msg->dst == TSIM_BROADCAST || len > sizeof frame || msg->id > UINT32_MAX) {
+    if (msg->dst == TSIM_BROADCAST) {
+        return originate_flood(r, msg);
+    }
+    if (len > sizeof frame || msg->id > UINT32_MAX) {
         return false;
     }
     sender_note(r->sessions, msg->id, msg->src);
@@ -402,6 +526,9 @@ static void router_destroy(void *self) {
     free(r->dests);
     free(r->slots);
     free(r->fhandles);
+    free(r->flood_slots);
+    free(r->flood_seen);
+    free(r->flhandles);
     sessions_release(r->sessions);
     free(r);
 }
@@ -423,9 +550,13 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->dests = calloc(dests, sizeof *r->dests);
     r->slots = calloc(c->frames, sizeof *r->slots);
     r->fhandles = calloc(c->frames, sizeof *r->fhandles);
+    r->flood_slots = calloc(c->flood_frames, sizeof *r->flood_slots);
+    r->flood_seen = calloc(TERN_FLOOD_SEEN, sizeof *r->flood_seen);
+    r->flhandles = calloc(c->flood_frames, sizeof *r->flhandles);
     r->sessions = sessions_take(config);
     r->timer = tsim_timer_create(node, router_fire, r);
-    if (!r->neighbours || !r->dests || !r->slots || !r->fhandles || !r->sessions || !r->timer) {
+    if (!r->neighbours || !r->dests || !r->slots || !r->fhandles || !r->flood_slots ||
+        !r->flood_seen || !r->flhandles || !r->sessions || !r->timer) {
         router_destroy(r);
         return NULL;
     }
@@ -442,6 +573,15 @@ static void *router_create(struct tsim_node *node, const void *config) {
     fc.salvage = (uint8_t)c->salvage;
     fc.retry_jitter = (uint8_t)c->retry_jitter;
     tern_forward_init(&r->forward, &fc, &r->route, r->slots, c->frames, tsim_rng_next(&rng));
+    struct tern_flood_config flc = tern_flood_defaults();
+    flc.hops = (uint8_t)c->flood_hops;
+    flc.sparse = (uint8_t)c->flood_sparse;
+    flc.wait = (uint8_t)c->flood_wait;
+    flc.copies = (uint8_t)c->flood_copies;
+    flc.own_ppm = c->flood_own_ppm;
+    flc.relay_ppm = c->flood_relay_ppm;
+    tern_flood_init(&r->flood, &flc, &r->route, r->flood_slots, c->flood_frames, r->flood_seen,
+                    TERN_FLOOD_SEEN, tsim_rng_next(&rng), tsim_node_now(node));
     return r;
 }
 

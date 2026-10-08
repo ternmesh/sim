@@ -23,10 +23,11 @@
  * and its source sends it again until it is acknowledged or given up. A frame does not say where
  * it came from, and on a device its destination knows from the session: here it looks the
  * message's number up in a table the nodes of one network share, which stands for those sessions
- * and nothing else. What the core does not have, the plugin does not make up: there is no
- * broadcast, so a broadcast is refused, and scenarios that compare delivery are run with
- * traffic.broadcast = 0. Nor does anything choose relays; `relay_pick` names them as it does for
- * candidate 3, and with none picked every node is one.
+ * and nothing else. A broadcast goes as a group's frame would (tern/group.h), 27 bytes longer
+ * than its content, flooded by the firmware's flooder (tern/flood.h): every node that hears it
+ * for the first time is delivered it, as a member of the group would be, and every relay passes
+ * it on or not as the flooder says, within the two allowances it keeps. Nothing chooses relays;
+ * `relay_pick` names them as it does for candidate 3, and with none picked every node is one.
  *
  * The radio gives the core what an SX1262 would: a signal-to-noise ratio in quarters of a decibel,
  * from -32 to 31.75.
@@ -96,7 +97,46 @@
  * over both there is re-attachment and rescue. On the deployed preset, where the channel is full
  * and most of what is sent is lost, the core is 5 points short of candidate 3 plain, which is not
  * explained, and both are ahead of candidate 3 as it is, whose rescue floods cost more there than
- * they bring. */
+ * they bring.
+ *
+ * Broadcast, measured with tools/density.py --candidates 3,core --quick (3 seeds, a message from
+ * every node every 30 minutes, a quarter of them broadcasts): unicasts on time and broadcast
+ * destinations reached on time, at -5, 0, 5, 10 and 20 dBm.
+ *
+ *                     unicast                          broadcast
+ *   fast (SF7, 200 relays)
+ *     candidate 3     60.6 91.2 97.5 98.1 98.6         39.9 66.9 77.5 87.1 90.2
+ *     core            60.8 92.0 98.9 98.0 96.1         39.1 65.8 78.0 83.2 84.8
+ *   deployed (SF8 at 62.5 kHz, 200 relays)
+ *     candidate 3     22.5 23.4 19.9 16.8 11.9         20.8 23.3 26.3 22.5  5.7
+ *     core            21.1 23.2 20.0 17.7 21.1         20.2 27.5 32.1 31.7 17.9
+ *   every node a relay (SF9)
+ *     candidate 3     41.3 37.6 32.1 26.8 19.9         27.2 31.8 35.2 34.5 25.7
+ *     core            38.2 40.5 36.8 38.7 34.6         27.3 33.6 38.4 42.5 45.3
+ *
+ * The core's scenarios run its own MAC, which listens first (mac = listen), and candidate 3's run
+ * MeshCore's dispatcher. That is the 4 to 5 points of broadcast the core is short on the fast
+ * preset at 10 and 20 dBm: under candidate 3's MAC (-s mac=meshcore) it reaches 88.4% and 89.5%
+ * there, against candidate 3's 87.1% and 90.2%, and 88.4% for candidate 3 without re-attachment
+ * at 20 dBm. Why listening first costs a flood reach where the channel is quiet and nodes are
+ * many is not explained. Where the channel is full it is the core that reaches more.
+ *
+ * The flooder's settings, each alone, fast preset, broadcast at 10 and 20 dBm against the
+ * defaults' 83.2% and 84.8%, with on-time deliveries per second of airtime against 56.7 and 50.0:
+ * never cancelling (flood_copies = 0) 78.8% and 79.7%, at 33.6 and 31.4; cancelling on the third
+ * copy 81.0% and 80.9%, at 40.1 and 35.1; a wait of 3 airtimes 75.0% and 78.0%; 8 hops 84.7% and
+ * 85.1%, at 48.6 and 43.7; flood_sparse 16, 85.6% and 85.6%, at 52.3 and 45.1; 64 frames in hand,
+ * no change. So hearing one more copy and staying silent reaches more, on less.
+ *
+ * The allowance. At that traffic it changes nothing: with both set to 1000000, every figure of the
+ * fast preset is the same to the digit, and the other two are within a seed's spread. With a
+ * message from every node every 5 minutes, three quarters of them broadcasts, it is the relays'
+ * allowance that binds, and only where relays are few: on the fast preset at 0 dBm, unicast on
+ * time 28.0% with it and 16.6% without, and broadcast 14.2% against 16.5%; at 10 and 20 dBm, and
+ * on the deployed preset at any power, nothing either way. That load is more than the channel
+ * holds with or without: unicast on time falls from 92.0%, 98.0% and 96.1% to 28.0%, 23.6% and
+ * 39.2%. A thousand nodes each well inside an allowance of their own are together several
+ * channels' worth, which no allowance kept node by node can see. */
 struct tsim_core_config {
     uint16_t channel;
     struct tsim_lora lora;
@@ -119,6 +159,17 @@ struct tsim_core_config {
      * default. With 0, two nodes whose frames met meet again at every try (scenarios/core/
      * together.tsim). */
     uint32_t retry_jitter;
+    /* Broadcasts, flooded as the firmware floods a group's frame (tern/flood.h). Each of these is
+     * the firmware's own by default. `flood_frames` is how many a node has in hand at once, its
+     * own and those it passes on. The two allowances are millionths of a node's time, for its
+     * own floods and for those it passes on, and 1000000 is no allowance at all. */
+    uint32_t flood_frames;    /* 1..255 */
+    uint32_t flood_hops;      /* what a flood starts with: 1..255 */
+    uint32_t flood_sparse;    /* relay neighbours, at most, of a relay that spends no hop */
+    uint32_t flood_wait;      /* airtimes a relay waits, at most: 0..255 */
+    uint32_t flood_copies;    /* copies heard that drop a frame still waiting; 0 never */
+    uint32_t flood_own_ppm;   /* 1..1000000 */
+    uint32_t flood_relay_ppm; /* 1..1000000 */
 };
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,

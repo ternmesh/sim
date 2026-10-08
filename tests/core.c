@@ -171,17 +171,22 @@ static void two_networks_at_once_keep_their_messages_apart(void) {
     rig_close(&b);
 }
 
-/* The core has no broadcast, and the plugin must say so, not seem to. */
-static void a_broadcast_is_refused(void) {
+/* A broadcast is flooded as the firmware floods a group's frame: along a line, where every relay
+ * is a bridge, each node sends it once and each other node is delivered it once. */
+static void a_broadcast_goes_the_length_of_a_line(void) {
     struct rig r;
-    line(&r, 3, 3, NULL);
+    line(&r, 6, 3, NULL);
     run(&r, TSIM_S(600));
-    uint64_t id = message(&r, 0, TSIM_BROADCAST);
+    uint64_t id = message(&r, 2, TSIM_BROADCAST);
     CHECK(id != 0);
     run(&r, TSIM_S(700));
     const struct tsim_message_record *m = tsim_net_message(r.net, id);
-    CHECK(m && m->refused);
-    CHECK_EQ_U64(frames(&r, 0, TSIM_PURPOSE_DATA), 0);
+    CHECK(m && !m->refused && m->finished);
+    CHECK_EQ_U64(m->delivered, 5);
+    CHECK_EQ_U64(frames(&r, 2, TSIM_PURPOSE_DATA), 1);
+    for (uint32_t i = 0; i < 6; i++) {
+        CHECK_EQ_U64(frames(&r, i, TSIM_PURPOSE_RELAY), i != 2);
+    }
     rig_close(&r);
 }
 
@@ -308,7 +313,7 @@ int main(void) {
     RUN(without_messages_its_frames_are_announces_and_requests);
     RUN(a_message_goes_hop_by_hop_and_is_acknowledged);
     RUN(two_networks_at_once_keep_their_messages_apart);
-    RUN(a_broadcast_is_refused);
+    RUN(a_broadcast_goes_the_length_of_a_line);
     RUN(a_message_that_cannot_arrive_is_given_up);
     RUN(a_grid_never_loops_while_it_settles);
     RUN(a_node_that_restarts_is_routed_to_again);

@@ -77,7 +77,15 @@ CANDIDATES = [
     ("1 meshtastic", "region-meshtastic.tsim"),
     ("2 meshcore", "region-meshcore.tsim"),
     ("3 distvec", "region-distvec.tsim"),
+    ("core", "region-core.tsim"),
 ]
+# The firmware's core is not run by default: it is not a candidate but what candidate 3 became,
+# and its scenarios carry no traffic, being the ones its routes are checked on (tools/core.py).
+# Asked for, it is given the traffic the candidates' scenarios have.
+EXTRA = {
+    "core": ["traffic.interval=30 min", "traffic.len=16..64", "traffic.broadcast=0.25",
+             "traffic.lead=3 h", "deadline=60 s"],
+}
 DEPLOYED = {s: s.replace(".tsim", "-deployed.tsim") for _, s in CANDIDATES}
 FAST = {s: s.replace(".tsim", "-fast.tsim") for _, s in CANDIDATES}
 METRICS = ["unicast", "bcast", "p50", "p95", "per_s", "duty", "churn", "move", "links", "reach"]
@@ -156,7 +164,8 @@ def main():
                         help="transmit powers in dBm, comma-separated, quietest (sparsest) first; "
                         "--power=-5,0 for a list starting below zero")
     parser.add_argument("--candidates", default="flood,1,2,3",
-                        help="which to run, comma-separated: flood, 1, 2 and 3")
+                        help="which to run, comma-separated: flood, 1, 2 and 3, and core for "
+                        "the firmware's own code, in a build that has it")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="runs at once")
     parser.add_argument("--json", metavar="PATH", help="also write every run's figures here")
     parser.add_argument("-s", dest="set", action="append", default=[], metavar="KEY=VALUE",
@@ -189,7 +198,7 @@ def main():
     chosen = [(name, family[scenario] if family else scenario)
               for name, scenario in CANDIDATES if name.split()[0] in wanted]
     if len(chosen) != len(set(wanted)):
-        parser.error("--candidates takes flood, 1, 2 and 3, comma-separated")
+        parser.error("--candidates takes flood, 1, 2, 3 and core, comma-separated")
 
     stresses = [] if args.quick else list(STRESS)
     cases = [(name, scenario, power, seed, stress) for name, scenario in chosen
@@ -199,7 +208,7 @@ def main():
     def one(c):
         name, scenario, power, seed, stress = c
         extra = stress_sets(name, family is not None, stress, args.set) if stress else []
-        return run(args.tsim, scenario, power, seed, extra + sets)
+        return run(args.tsim, scenario, power, seed, EXTRA.get(name, []) + extra + sets)
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         results = list(pool.map(one, cases))
