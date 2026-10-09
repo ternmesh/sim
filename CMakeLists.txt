@@ -54,9 +54,19 @@ target_compile_options(ternsim PRIVATE ${TSIM_WARNINGS})
 set(TSIM_FIRMWARE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../firmware" CACHE PATH
     "A checkout of ternmesh/firmware, for the core routing")
 option(TSIM_REQUIRE_CORE "Fail if the firmware's source is not there to build the core from" OFF)
-# A checkout from before the firmware had a flooder (v0.1.0-alpha.4) cannot build the core as it
-# is here, and is as good as none.
-if(EXISTS "${TSIM_FIRMWARE_DIR}/src/forward.c" AND EXISTS "${TSIM_FIRMWARE_DIR}/src/flood.c")
+# A checkout from before the firmware's flooder was told how busy its radio is
+# (ternmesh/firmware#45, after v0.1.0-alpha.4) cannot build the core as it is here, and is as good
+# as none.
+set(TSIM_FIRMWARE_NEW_ENOUGH OFF)
+if(EXISTS "${TSIM_FIRMWARE_DIR}/src/forward.c" AND
+   EXISTS "${TSIM_FIRMWARE_DIR}/include/tern/flood.h")
+    file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/flood.h" TSIM_FLOOD_RADIO
+         REGEX "tern_flood_radio")
+    if(TSIM_FLOOD_RADIO)
+        set(TSIM_FIRMWARE_NEW_ENOUGH ON)
+    endif()
+endif()
+if(TSIM_FIRMWARE_NEW_ENOUGH)
     add_library(terncore STATIC
         ${TSIM_FIRMWARE_DIR}/src/flood.c
         ${TSIM_FIRMWARE_DIR}/src/forward.c
@@ -74,10 +84,10 @@ if(EXISTS "${TSIM_FIRMWARE_DIR}/src/forward.c" AND EXISTS "${TSIM_FIRMWARE_DIR}/
     message(STATUS "Core routing: from ${TSIM_FIRMWARE_DIR}")
 elseif(TSIM_REQUIRE_CORE)
     message(FATAL_ERROR "No firmware source at ${TSIM_FIRMWARE_DIR}, or one from before "
-        "v0.1.0-alpha.4, which has no src/flood.c")
+        "ternmesh/firmware#45, which has no tern_flood_radio()")
 else()
     message(STATUS "Core routing: none, no firmware source at ${TSIM_FIRMWARE_DIR}, or one from "
-        "before v0.1.0-alpha.4")
+        "before ternmesh/firmware#45")
 endif()
 
 add_executable(tsim tools/tsim.c tools/json.c)
