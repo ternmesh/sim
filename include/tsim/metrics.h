@@ -183,6 +183,9 @@ struct tsim_report {
     tsim_time warmup; /* the run before the window: see tsim_metrics_begin() */
     struct tsim_delivery unicast;
     struct tsim_delivery broadcast;
+    /* Presence cards (tsim/traffic.h), apart from the broadcasts: a card is not a message, so it
+     * is not in the headline either, and the airtime it took is. */
+    struct tsim_delivery card;
 
     uint64_t frames[TSIM_PURPOSE_COUNT];
     /* Seconds of airtime, every node, by purpose, over the window: a frame still on the air counts

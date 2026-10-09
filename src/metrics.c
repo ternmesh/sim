@@ -31,6 +31,7 @@ struct tsim_metrics {
     tsim_time deadline;
     struct latencies unicast;
     struct latencies broadcast;
+    struct latencies card;
     tsim_time begun;   /* when the window began: 0 for the whole run */
     uint64_t first;    /* the first message id of the window: 1 for the whole run */
     struct base *base; /* per node, or NULL with no window begun */
@@ -135,7 +136,9 @@ static void delivered(void *ctx, const struct tsim_message_record *rec, uint32_t
     if (rec->msg.id < m->first) {
         return; /* made before the window: not the window's to count */
     }
-    struct latencies *l = rec->msg.dst == TSIM_BROADCAST ? &m->broadcast : &m->unicast;
+    struct latencies *l = rec->msg.card                    ? &m->card
+                          : rec->msg.dst == TSIM_BROADCAST ? &m->broadcast
+                                                           : &m->unicast;
     tsim_time latency = tsim_sched_now(tsim_net_sched(m->net)) - rec->msg.created;
     l->count[bucket_of(latency)]++;
     l->total++;
@@ -410,6 +413,7 @@ void tsim_metrics_begin(struct tsim_metrics *m) {
     /* Every delivery so far was of a message made before the window. */
     m->unicast = (struct latencies){0};
     m->broadcast = (struct latencies){0};
+    m->card = (struct latencies){0};
     memset(m->hops, 0, sizeof m->hops);
     memset(m->rivals, 0, sizeof m->rivals);
     memset(m->progress, 0, sizeof m->progress);
@@ -475,7 +479,9 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
     uint64_t late_sent = 0;
     for (uint64_t id = m->first; id <= count; id++) {
         const struct tsim_message_record *rec = tsim_net_message(net, id);
-        struct tsim_delivery *d = rec->msg.dst == TSIM_BROADCAST ? &r->broadcast : &r->unicast;
+        struct tsim_delivery *d = rec->msg.card                    ? &r->card
+                                  : rec->msg.dst == TSIM_BROADCAST ? &r->broadcast
+                                                                   : &r->unicast;
         d->messages++;
         d->refused += rec->refused;
         d->wanted += rec->wanted;
@@ -517,6 +523,7 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
     memcpy(r->losses.progress, m->progress, sizeof m->progress);
     finish(&r->unicast, &m->unicast);
     finish(&r->broadcast, &m->broadcast);
+    finish(&r->card, &m->card);
 
     uint32_t n = tsim_net_nodes(net);
     const struct tsim_phy *phy = tsim_net_phy(net);
