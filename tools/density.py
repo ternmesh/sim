@@ -13,6 +13,7 @@ of the scorecard every comparison reports (MSH-66), in this order:
   unicast  unicasts delivered on time, as a share of those sent
   bcast    broadcast destinations reached on time, as a share of those wanted
   p50 p95  the median and 95th-percentile delay of the unicasts delivered, in seconds
+  b50 b95  the same of the broadcasts, over every destination one reached
   per_s    on-time deliveries, unicast and broadcast, per second of airtime after the warmup
   duty     the busiest node's share of the measured hour spent sending
   churn    unicast on time with nodes going down and coming back up: a quarter of the 200 sites
@@ -88,7 +89,8 @@ EXTRA = {
 }
 DEPLOYED = {s: s.replace(".tsim", "-deployed.tsim") for _, s in CANDIDATES}
 FAST = {s: s.replace(".tsim", "-fast.tsim") for _, s in CANDIDATES}
-METRICS = ["unicast", "bcast", "p50", "p95", "per_s", "duty", "churn", "move", "links", "reach"]
+METRICS = ["unicast", "bcast", "p50", "p95", "b50", "b95", "per_s", "duty", "churn", "move",
+           "links", "reach"]
 
 # The stresses the scorecard's churn and move columns are measured under: over the sites where
 # there are sites, and the same number of nodes from all of them where there are none.
@@ -118,6 +120,8 @@ def run(tsim, scenario, power, seed, sets):
         "bcast": 100.0 * b["on_time"] / b["wanted"] if b["wanted"] else 0.0,
         "p50": u["latency_p50_s"],
         "p95": u["latency_p95_s"],
+        "b50": b["latency_p50_s"],
+        "b95": b["latency_p95_s"],
         "per_s": r["on_time_per_airtime_s"],
         "duty": 100.0 * r["duty_max"],
         "reach": 100.0 * r["warmup"]["reach"],
@@ -140,7 +144,7 @@ def cell(rows, metric):
     sd = statistics.stdev(values) if len(values) > 1 else 0.0
     if metric == "links":
         return "%.0f ±%.0f" % (m, sd)
-    if metric in ("p50", "p95"):
+    if metric in ("p50", "p95", "b50", "b95"):
         return "%.1f ±%.1f" % (m, sd)
     if metric == "per_s":
         return "%.2f ±%.2f" % (m, sd)
