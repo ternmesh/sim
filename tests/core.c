@@ -306,6 +306,20 @@ static void a_config_out_of_range_is_refused(void) {
     CHECK(tsim_core_check(&c) == NULL);
     c.retry_jitter = 256;
     CHECK(tsim_core_check(&c) != NULL);
+    /* The rules for a full channel: a share is no more than all of the radio's time. */
+    c = tsim_core_default(0, &l, 14.0);
+    c.flood_last = 1;
+    c.flood_busy_soft = 1;
+    c.flood_busy_ppm = 1000000;
+    CHECK(tsim_core_check(&c) == NULL);
+    c.flood_busy_ppm = 1000001;
+    CHECK(tsim_core_check(&c) != NULL);
+    c.flood_busy_ppm = 0;
+    c.flood_last = 2;
+    CHECK(tsim_core_check(&c) != NULL);
+    c.flood_last = 0;
+    c.flood_busy_soft = 2;
+    CHECK(tsim_core_check(&c) != NULL);
 }
 
 int main(void) {

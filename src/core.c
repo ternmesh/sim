@@ -203,6 +203,9 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
         c->flood_relay_ppm > 1000000) {
         return "flood_own_ppm and flood_relay_ppm must be 1 to 1000000";
     }
+    if (c->flood_last > 1 || c->flood_busy_soft > 1 || c->flood_busy_ppm > 1000000) {
+        return "flood_last and flood_busy_soft must be 0 or 1, and flood_busy_ppm 0 to 1000000";
+    }
     return NULL;
 }
 
@@ -600,6 +603,9 @@ static void *router_create(struct tsim_node *node, const void *config) {
     struct tsim_rng rng;
     tsim_node_rng(node, TSIM_STREAM_ROUTING, &rng);
     r->busy_rng = rng;
+    /* From now, not from the run's start: a node that comes back up has counters that kept on. */
+    r->busy_at[0] = r->busy_at[1] = tsim_node_now(node);
+    r->busy_air[0] = r->busy_air[1] = tsim_node_tx_airtime(node) + tsim_node_rx_airtime(node);
     /* A node that comes back from being powered down is made again, here: it has kept nothing, as
      * a board that kept no sequence number would not have. */
     tern_route_init(&r->route, &rc, self + 1, r->neighbours, c->neighbours, r->dests, dests, 0,
