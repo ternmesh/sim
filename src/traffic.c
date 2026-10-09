@@ -178,8 +178,11 @@ static void plan_card(struct source *s, tsim_time from, tsim_time after) {
 
 /* Half to one and a half intervals: uniform, so the gaps are as regular as a timer with jitter. */
 static tsim_time card_gap(struct source *s) {
-    double u = 0.5 + tsim_rng_unit(&s->card_rng);
-    return (tsim_time)(u * (double)s->traffic->params.card_interval + 0.5);
+    double g = (0.5 + tsim_rng_unit(&s->card_rng)) * (double)s->traffic->params.card_interval;
+    if (!(g < (double)INT64_MAX)) {
+        return INT64_MAX; /* past any window, as an exponential gap that long is */
+    }
+    return (tsim_time)(g + 0.5);
 }
 
 static void send_card(struct tsim_sched *sched, void *ctx) {

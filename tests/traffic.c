@@ -1,6 +1,7 @@
 #include "tsim/traffic.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "tsim/baseline.h"
 
@@ -636,7 +637,8 @@ static void cards_come_from_the_share_at_the_interval(void) {
     rig_close(&r);
 }
 
-/* Cards come from streams of their own: with them or without, the messages are the same. */
+/* Cards come from streams of their own: with them or without, the messages are the same, down to
+ * their content. */
 static void cards_move_none_of_the_message_draws(void) {
     struct tsim_traffic_params p = params();
     struct tsim_traffic_params q = p;
@@ -660,6 +662,7 @@ static void cards_move_none_of_the_message_draws(void) {
         const struct tsim_message *x = &tsim_net_message(a.net, at++)->msg;
         CHECK(x->src == y->src && x->dst == y->dst && x->len == y->len && !x->card);
         CHECK_EQ_I64(x->created, y->created);
+        CHECK(memcmp(x->content, y->content, x->len) == 0);
     }
     CHECK_EQ_U64(at - 1, tsim_net_message_count(a.net));
     rig_close(&a);

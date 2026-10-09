@@ -76,6 +76,7 @@ struct tsim_net {
     struct record *messages;
     size_t message_count;
     size_t message_cap;
+    uint64_t cards; /* of them, cards: each kind's content is drawn by its own count */
     bool started;
     tsim_net_delivered_fn observer;
     void *observer_ctx;
@@ -361,9 +362,14 @@ static uint64_t originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint
         return 0;
     }
     /* Random, so that no plugin can produce a message's content without having received it. Its
-     * own stream space, apart from every node's. */
+     * own stream space, apart from every node's. Messages and cards are counted apart, so that
+     * cards change no message's content. */
     struct tsim_rng rng;
-    tsim_rng_init(&rng, net->params.seed, UINT64_C(0xC0) << 56 | id);
+    if (card) {
+        tsim_rng_init(&rng, net->params.seed, UINT64_C(0xC5) << 56 | ++net->cards);
+    } else {
+        tsim_rng_init(&rng, net->params.seed, UINT64_C(0xC0) << 56 | (id - net->cards));
+    }
     for (uint32_t i = 0; i < len; i += 8) {
         uint64_t r = tsim_rng_next(&rng);
         for (uint32_t k = i; k < len && k < i + 8; k++) {
