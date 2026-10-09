@@ -18,7 +18,6 @@
 #define PRIORITY_RELAY 2
 #define PRIORITY_OWN 1
 #define PRIORITY_FLOOD_LAST 0
-#define BUSY_SPAN TSIM_S(30)
 
 /* A message's frame: the head, then four bytes that tell it from any other - the secured unicast
  * frame's destination tag, here the message's number - its content, and eight bytes where the
@@ -50,11 +49,6 @@ struct router {
     size_t len;
     int8_t dbm;
     uint64_t handle; /* in the node's queue, or 0 */
-    /* The radio's time on the air and on frames, as it was at two times past: the older is from
-     * BUSY_SPAN to twice that ago. */
-    tsim_time busy_at[2];
-    tsim_time busy_air[2];
-    struct tsim_rng busy_rng;
     /* And the same for the frames that follow routes. */
     struct tern_forward forward;
     struct tern_forward_slot *slots;
@@ -177,6 +171,7 @@ struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lo
         .flood_copies = tern_flood_defaults().copies,
         .flood_own_ppm = tern_flood_defaults().own_ppm,
         .flood_relay_ppm = tern_flood_defaults().relay_ppm,
+        .flood_busy_ppm = tern_flood_defaults().busy_ppm,
     };
 }
 
@@ -203,8 +198,8 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
         c->flood_relay_ppm > 1000000) {
         return "flood_own_ppm and flood_relay_ppm must be 1 to 1000000";
     }
-    if (c->flood_last > 1 || c->flood_busy_soft > 1 || c->flood_busy_ppm > 1000000) {
-        return "flood_last and flood_busy_soft must be 0 or 1, and flood_busy_ppm 0 to 1000000";
+    if (c->flood_last > 1 || c->flood_busy_ppm > 1000000) {
+        return "flood_last must be 0 or 1, and flood_busy_ppm 0 to 1000000";
     }
     return NULL;
 }
@@ -344,28 +339,12 @@ static void service_floods(struct router *r, tsim_time now) {
     }
 }
 
-/* The share of the last BUSY_SPAN or more, up to twice it, that the radio spent sending or
- * receiving, in millionths. */
-static uint32_t busy_ppm(struct router *r) {
-    tsim_time now = tsim_node_now(r->node);
-    tsim_time air = tsim_node_tx_airtime(r->node) + tsim_node_rx_airtime(r->node);
-    if (now - r->busy_at[1] >= BUSY_SPAN) {
-        r->busy_at[0] = r->busy_at[1];
-        r->busy_air[0] = r->busy_air[1];
-        r->busy_at[1] = now;
-        r->busy_air[1] = air;
-    }
-    tsim_time span = now - r->busy_at[0];
-    return span > 0 ? (uint32_t)((air - r->busy_air[0]) * 1000000 / span) : 0;
-}
-
 /* Offers the queue what the core has to send, and sets the timer for when it next has something
  * to do. */
 static void service(struct router *r) {
     tsim_time now = tsim_node_now(r->node), due, wait;
-    if (r->config.flood_busy_ppm) {
-        (void)busy_ppm(r); /* keeps its two times fresh */
-    }
+    /* How busy the radio has been, which a relay passes fewer flooded frames on by. */
+    tern_flood_radio(&r->flood, now, tsim_node_tx_airtime(r->node) + tsim_node_rx_airtime(r->node));
     service_routes(r, now);
     service_frames(r, now);
     service_floods(r, now);
@@ -483,14 +462,7 @@ static bool router_sending(void *self, uint64_t handle) {
     uint32_t fl = handle ? flood_slot(r, handle) : r->config.flood_frames;
     if (fl != r->config.flood_frames) {
         /* A flooded frame of which enough copies have been heard since is taken back too. */
-        bool busy = false;
-        if (r->config.flood_busy_ppm && !r->flood_slots[fl].own) {
-            uint32_t is = busy_ppm(r), at = r->config.flood_busy_ppm;
-            is = is > 1000000 ? 1000000 : is;
-            busy = is >= at && (!r->config.flood_busy_soft || at >= 1000000 ||
-                                tsim_rng_below(&r->busy_rng, 1000000 - at) >= 1000000 - is);
-        }
-        if (!busy && tern_flood_wanted(&r->flood, (uint8_t)fl)) {
+        if (tern_flood_wanted(&r->flood, (uint8_t)fl)) {
             return true;
         }
         tern_flood_withdrawn(&r->flood, tsim_node_now(r->node), (uint8_t)fl);
@@ -602,10 +574,6 @@ static void *router_create(struct tsim_node *node, const void *config) {
         &lora, (int8_t)round(c->tx_dbm), (int8_t)round(c->tx_min_dbm), tsim_core_relay(c, self));
     struct tsim_rng rng;
     tsim_node_rng(node, TSIM_STREAM_ROUTING, &rng);
-    r->busy_rng = rng;
-    /* From now, not from the run's start: a node that comes back up has counters that kept on. */
-    r->busy_at[0] = r->busy_at[1] = tsim_node_now(node);
-    r->busy_air[0] = r->busy_air[1] = tsim_node_tx_airtime(node) + tsim_node_rx_airtime(node);
     /* A node that comes back from being powered down is made again, here: it has kept nothing, as
      * a board that kept no sequence number would not have. */
     tern_route_init(&r->route, &rc, self + 1, r->neighbours, c->neighbours, r->dests, dests, 0,
@@ -621,6 +589,7 @@ static void *router_create(struct tsim_node *node, const void *config) {
     flc.copies = (uint8_t)c->flood_copies;
     flc.own_ppm = c->flood_own_ppm;
     flc.relay_ppm = c->flood_relay_ppm;
+    flc.busy_ppm = c->flood_busy_ppm;
     tern_flood_init(&r->flood, &flc, &r->route, r->flood_slots, c->flood_frames, r->flood_seen,
                     TERN_FLOOD_SEEN, tsim_rng_next(&rng), tsim_node_now(node));
     return r;
