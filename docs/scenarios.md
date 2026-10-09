@@ -96,6 +96,9 @@ misleading.
 | `traffic.reply` | 0 | fraction of the traffic process's unicasts answered, from the destination back to the source; a `traffic.send` is not, so script its answer too. Whether, when and how long are drawn with the message, and the answer goes whether or not the message arrived, so every candidate is offered the same messages. Answers are not answered. Not with `traffic.closed` |
 | `traffic.reply_delay` | `2 min` | mean time from a unicast to its answer, exponentially distributed |
 | `traffic.lead` | `0 s` | how long before the warmup ends the traffic process starts, at most the warmup. Its messages load the network but are not counted, only those made after the warmup are; the airtime spent on them after it is, since airtime is not told apart by message |
+| `cards.interval` | `none` | how often each card node sends a presence card - a broadcast saying who it is, for anyone browsing who is about - on average, each gap uniform between half and one and a half of it; or `none`. Cards come from streams of their own, so they move none of the messages' draws, and are reported as `card`, apart from `broadcast` and out of the headline: a card is not a message, but its airtime is counted |
+| `cards.len` | 96 | bytes in a card. A routing adds its own overhead: `core`'s 27 make 96 a 123-byte frame, an address, a signature and a short name |
+| `cards.share` | 1 | the fraction of nodes that send cards, drawn once each |
 | `churn.share` | 0 | churn (MSH-59): the share of the nodes `churn.nodes` names that go down and come back up, over the whole run, each for times drawn from exponentials of means `churn.up` and `churn.down`. Down is a power cycle: the radio hears and sends nothing, and the node's routing and MAC are destroyed - timers, queue, every message it held, those it originated finished - then made and started afresh when it comes back up, from the same seeds. 0 is none |
 | `churn.nodes` | `all` | which nodes churn may take: `all`; `relays`, the routing's - `distvec`'s infrastructure, `meshcore`'s repeaters, `core`'s relays, every node for routing without tiers; or `leaves`, the rest |
 | `churn.up` | 2 h | mean time a churning node stays up |
@@ -243,6 +246,7 @@ default.
 | `routing.flood_own_ppm`, `routing.flood_relay_ppm` (`core`) | 5000, 30000 | the two allowances, in millionths of a node's time: for its own broadcasts, and for those it passes on. 1000000 is none |
 | `routing.flood_busy_ppm` (`core`) | 200000 | the specification's `FLOOD_BUSY`, in millionths: the share of the last half minute to minute a relay's radio spent sending or receiving, past which it passes fewer broadcasts on, the fewer the busier it is. 1000000 is never fewer |
 | `routing.flood_last` (`core`) | 0 | a rule the specification does not have, kept as it was measured: 1 sends a node's flooded frames after every frame that follows a route |
+| `routing.card_hops` (`core`) | 0 | what a presence card's flood starts with, in place of `routing.flood_hops`, or 0 for the same. Not the firmware's: it has one hop count for every flood, and this stands in for one of a frame's own so that it can be measured |
 | `routing.retry_jitter` (`core`) | 4 | the longest a frame sent again waits first, in its own airtimes, 0 to 255: the specification's `RETRY_JITTER`. With 0, two nodes whose frames met send again together at every try (`scenarios/core/together.tsim`) |
 
 Every other parameter of `core` is the specification's, as the firmware has it, and is not a

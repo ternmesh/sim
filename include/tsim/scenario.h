@@ -119,7 +119,10 @@ struct tsim_scenario {
     uint32_t peers;
     double reply;
     tsim_time reply_delay;
-    tsim_time lead; /* traffic before the warmup ends, at most the warmup */
+    tsim_time lead;          /* traffic before the warmup ends, at most the warmup */
+    tsim_time card_interval; /* presence cards: see tsim/traffic.h; 0 for none */
+    uint32_t card_len;
+    double card_share;
 
     /* Churn (MSH-59): this share of the nodes `churn_nodes` names each go down and come back up
      * for the whole run, for times drawn from exponentials of these means, as tsim_net_power()

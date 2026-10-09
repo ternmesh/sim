@@ -259,6 +259,9 @@ struct tsim_core_config {
      * its radio spent sending or receiving, past which a relay passes fewer flooded frames on,
      * and none when it is never idle. 1000000 for never fewer. */
     uint32_t flood_busy_ppm;
+    /* What a presence card's flood starts with (tsim/traffic.h), 0 for flood_hops: a hop count of
+     * a frame's own, which the firmware does not have, stood in for here so it can be measured. */
+    uint32_t card_hops; /* 0..255 */
 };
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,

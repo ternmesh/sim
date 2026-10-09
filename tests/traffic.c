@@ -600,6 +600,88 @@ static void destroy_drops_the_answers_waiting(void) {
     rig_close(&r);
 }
 
+/* Half of 100 nodes, each a card about every 600 s for 36000 s: about 50 card nodes, each with 60
+ * cards give or take 2.2 - the jitter adds up - every one a broadcast of the card length, and no
+ * two of a node's further apart than one and a half intervals or closer than half. */
+static void cards_come_from_the_share_at_the_interval(void) {
+    struct tsim_traffic_params p = params();
+    p.interval = 0;
+    p.stop = TSIM_S(36000);
+    p.card_interval = TSIM_S(600);
+    p.card_len = 96;
+    p.card_share = 0.5;
+    struct rig r;
+    rig_open(&r, 100, &refuser, false, &p);
+    tsim_sched_run_until(r.sched, p.stop);
+    uint64_t count = tsim_net_message_count(r.net);
+    CHECK_EQ_U64(tsim_traffic_cards(r.traffic), count);
+    tsim_time last[100];
+    uint32_t cards[100] = {0};
+    for (uint64_t id = 1; id <= count; id++) {
+        const struct tsim_message *m = &tsim_net_message(r.net, id)->msg;
+        CHECK(m->card && m->dst == TSIM_BROADCAST && m->len == 96);
+        if (cards[m->src]) {
+            tsim_time g = m->created - last[m->src];
+            CHECK(g >= TSIM_S(300) && g <= TSIM_S(900));
+        }
+        last[m->src] = m->created;
+        cards[m->src]++;
+    }
+    uint32_t senders = 0;
+    for (uint32_t i = 0; i < 100; i++) {
+        senders += cards[i] > 0;
+        CHECK(cards[i] == 0 || (cards[i] >= 50 && cards[i] <= 70));
+    }
+    CHECK(senders > 35 && senders < 65);
+    rig_close(&r);
+}
+
+/* Cards come from streams of their own: with them or without, the messages are the same. */
+static void cards_move_none_of_the_message_draws(void) {
+    struct tsim_traffic_params p = params();
+    struct tsim_traffic_params q = p;
+    q.card_interval = TSIM_S(120);
+    q.card_len = 40;
+    q.card_share = 1.0;
+    struct rig a, b;
+    rig_open(&a, 10, &refuser, false, &p);
+    rig_open(&b, 10, &refuser, false, &q);
+    tsim_sched_run_until(a.sched, p.stop);
+    tsim_sched_run_until(b.sched, p.stop);
+    CHECK(tsim_traffic_cards(b.traffic) > 0);
+    CHECK_EQ_U64(tsim_traffic_made(b.traffic) - tsim_traffic_cards(b.traffic),
+                 tsim_traffic_made(a.traffic));
+    uint64_t at = 1;
+    for (uint64_t id = 1; id <= tsim_net_message_count(b.net); id++) {
+        const struct tsim_message *y = &tsim_net_message(b.net, id)->msg;
+        if (y->card) {
+            continue;
+        }
+        const struct tsim_message *x = &tsim_net_message(a.net, at++)->msg;
+        CHECK(x->src == y->src && x->dst == y->dst && x->len == y->len && !x->card);
+        CHECK_EQ_I64(x->created, y->created);
+    }
+    CHECK_EQ_U64(at - 1, tsim_net_message_count(a.net));
+    rig_close(&a);
+    rig_close(&b);
+}
+
+static void invalid_cards_are_refused(void) {
+    struct tsim_traffic_params p = params();
+    struct rig r;
+    rig_open(&r, 2, &refuser, false, &p);
+    struct tsim_traffic_params bad = p;
+    bad.card_interval = -1;
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    bad = p;
+    bad.card_share = 1.5;
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    bad = p;
+    bad.card_len = TSIM_FRAME_MAX + 1;
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    rig_close(&r);
+}
+
 int main(void) {
     RUN(messages_come_at_the_configured_rate);
     RUN(messages_are_made_only_inside_the_window);
@@ -621,5 +703,8 @@ int main(void) {
     RUN(an_answer_past_stop_is_not_sent);
     RUN(answers_do_not_depend_on_the_protocol);
     RUN(destroy_drops_the_answers_waiting);
+    RUN(cards_come_from_the_share_at_the_interval);
+    RUN(cards_move_none_of_the_message_draws);
+    RUN(invalid_cards_are_refused);
     return CHECK_DONE();
 }

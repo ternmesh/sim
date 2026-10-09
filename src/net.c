@@ -337,7 +337,8 @@ static bool finish(struct tsim_net *net, uint64_t msg) {
     return true;
 }
 
-uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len) {
+static uint64_t originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len,
+                          bool card) {
     if (src >= net->n || (dst >= net->n && dst != TSIM_BROADCAST) || dst == src ||
         len > TSIM_FRAME_MAX || net->nodes[src].off) {
         return 0;
@@ -377,6 +378,7 @@ uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, ui
         .len = len,
         .created = tsim_sched_now(net->sched),
         .content = content,
+        .card = card,
     };
     net->messages[net->message_count++] = (struct record){
         .r = {.msg = msg,
@@ -394,6 +396,14 @@ uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, ui
         finish(net, msg.id);
     }
     return msg.id;
+}
+
+uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len) {
+    return originate(net, src, dst, len, false);
+}
+
+uint64_t tsim_net_originate_card(struct tsim_net *net, uint32_t src, uint32_t len) {
+    return originate(net, src, TSIM_BROADCAST, len, true);
 }
 
 const struct tsim_ledger *tsim_net_ledger(const struct tsim_net *net, uint32_t node) {

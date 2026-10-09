@@ -13,6 +13,8 @@ struct source {
     struct tsim_event next;
     uint32_t *peers; /* into tsim_traffic.peer_list */
     uint32_t peer_count;
+    struct tsim_rng card_rng; /* when its cards fall, apart from its messages' draws */
+    struct tsim_event card;
 };
 
 /* An answer waiting to be sent. */
@@ -40,6 +42,7 @@ struct tsim_traffic {
     struct scripted *scripted;
     bool scripting; /* a set send is being originated, and may finish before its id is known */
     uint64_t made;
+    uint64_t cards;
     uint32_t *peer_list;
     struct reply *replies; /* waiting, newest first */
 };
@@ -159,6 +162,37 @@ static void send_next(struct tsim_sched *sched, void *ctx) {
     }
 }
 
+static void send_card(struct tsim_sched *sched, void *ctx);
+
+/* Schedules a card node's next card `after` from `from`, unless it would fall at or past stop. */
+static void plan_card(struct source *s, tsim_time from, tsim_time after) {
+    const struct tsim_traffic_params *p = &s->traffic->params;
+    s->card = (struct tsim_event){0};
+    if (after < 1) {
+        after = 1;
+    }
+    if (after < p->stop - from) {
+        s->card = tsim_sched_at(s->traffic->sched, from + after, send_card, s);
+    }
+}
+
+/* Half to one and a half intervals: uniform, so the gaps are as regular as a timer with jitter. */
+static tsim_time card_gap(struct source *s) {
+    double u = 0.5 + tsim_rng_unit(&s->card_rng);
+    return (tsim_time)(u * (double)s->traffic->params.card_interval + 0.5);
+}
+
+static void send_card(struct tsim_sched *sched, void *ctx) {
+    struct source *s = ctx;
+    struct tsim_traffic *t = s->traffic;
+    tsim_time now = tsim_sched_now(sched);
+    plan_card(s, now, card_gap(s));
+    if (t->n > 1 && tsim_net_originate_card(t->net, s->node, t->params.card_len)) {
+        t->made++;
+        t->cards++;
+    }
+}
+
 static void send_scripted(struct tsim_sched *sched, void *ctx) {
     (void)sched;
     struct scripted *sc = ctx;
@@ -175,8 +209,8 @@ static void send_scripted(struct tsim_sched *sched, void *ctx) {
  * was a set send, which no gap was waiting on. */
 static void on_finished(void *ctx, const struct tsim_message_record *record) {
     struct tsim_traffic *t = ctx;
-    if (t->scripting) {
-        return; /* a set send, finished as it was made */
+    if (t->scripting || record->msg.card) {
+        return; /* a set send, finished as it was made, or a card, which no gap waits on */
     }
     for (uint32_t i = 0; i < t->params.send_count; i++) {
         if (t->scripted[i].id == record->msg.id) {
@@ -268,7 +302,8 @@ struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
         !(p->broadcast >= 0.0 && p->broadcast <= 1.0) || p->stop < p->start ||
         (p->send_count > 0 && !p->sends) || p->peers > (n ? n - 1 : 0) ||
         !(p->reply >= 0.0 && p->reply <= 1.0) || (p->reply > 0 && p->closed) ||
-        p->reply_delay < 0) {
+        p->reply_delay < 0 || p->card_interval < 0 ||
+        !(p->card_share >= 0.0 && p->card_share <= 1.0) || p->card_len > TSIM_FRAME_MAX) {
         return NULL;
     }
     for (uint32_t i = 0; i < p->send_count; i++) {
@@ -312,6 +347,11 @@ struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
         if (p->interval > 0) {
             plan(s, from);
         }
+        /* Whether it sends cards, and when, from a stream of its own. */
+        tsim_rng_init(&s->card_rng, p->seed, UINT64_C(0xC4) << 56 | i);
+        if (p->card_interval > 0 && tsim_rng_unit(&s->card_rng) < p->card_share) {
+            plan_card(s, from, (tsim_time)(tsim_rng_unit(&s->card_rng) * (double)p->card_interval));
+        }
     }
     for (uint32_t i = 0; i < p->send_count; i++) {
         struct scripted *sc = &t->scripted[i];
@@ -339,6 +379,7 @@ void tsim_traffic_destroy(struct tsim_traffic *t) {
     }
     for (uint32_t i = 0; i < t->n; i++) {
         tsim_sched_cancel(t->sched, t->sources[i].next);
+        tsim_sched_cancel(t->sched, t->sources[i].card);
     }
     for (uint32_t i = 0; i < t->params.send_count; i++) {
         tsim_sched_cancel(t->sched, t->scripted[i].event);
@@ -356,3 +397,5 @@ void tsim_traffic_destroy(struct tsim_traffic *t) {
 }
 
 uint64_t tsim_traffic_made(const struct tsim_traffic *t) { return t->made; }
+
+uint64_t tsim_traffic_cards(const struct tsim_traffic *t) { return t->cards; }

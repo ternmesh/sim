@@ -95,6 +95,9 @@ struct tsim_message {
     uint32_t len;
     tsim_time created;
     const uint8_t *content; /* valid for the call it is passed to */
+    /* A presence card (tsim/traffic.h): a broadcast that says who its sender is, not a message to
+     * anyone. A routing carries it as any other broadcast; only the books keep it apart. */
+    bool card;
 };
 
 struct tsim_node;

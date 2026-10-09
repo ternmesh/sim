@@ -980,6 +980,7 @@ static const char *core_set(void *config, const char *key, const char *value) {
         {"flood_relay_ppm", offsetof(struct tsim_core_config, flood_relay_ppm), 1, 1000000},
         {"flood_last", offsetof(struct tsim_core_config, flood_last), 0, 1},
         {"flood_busy_ppm", offsetof(struct tsim_core_config, flood_busy_ppm), 0, 1000000},
+        {"card_hops", offsetof(struct tsim_core_config, card_hops), 0, 255},
     };
     for (size_t i = 0; i < sizeof floods / sizeof floods[0]; i++) {
         if (strcmp(key, floods[i].key) == 0) {
@@ -1065,6 +1066,8 @@ static void defaults(struct tsim_scenario *s) {
         .len_max = 32,
         .broadcast = 1.0,
         .reply_delay = TSIM_S(2 * 60),
+        .card_len = 96,
+        .card_share = 1.0,
         .churn_up = TSIM_S(2 * 3600),
         .churn_down = TSIM_S(15 * 60),
         .move_nodes = TSIM_CHURN_LEAVES,
@@ -1371,6 +1374,26 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     }
     if (strcmp(key, "traffic.reply_delay") == 0) {
         return parse_time(v, &s->reply_delay) ? NULL : "expected a time, such as 2 min";
+    }
+    if (strcmp(key, "cards.interval") == 0) {
+        if (strcmp(v, "none") == 0) {
+            s->card_interval = 0;
+            return NULL;
+        }
+        return parse_time(v, &s->card_interval) && s->card_interval > 0
+                   ? NULL
+                   : "expected a time above 0, or none";
+    }
+    if (strcmp(key, "cards.len") == 0) {
+        uint32_t lo, hi;
+        if (!parse_range(v, TSIM_FRAME_MAX, &lo, &hi) || lo != hi) {
+            return "expected bytes up to 255";
+        }
+        s->card_len = lo;
+        return NULL;
+    }
+    if (strcmp(key, "cards.share") == 0) {
+        return parse_fraction(v, &s->card_share) ? NULL : "expected a fraction from 0 to 1";
     }
     if (strcmp(key, "traffic.lead") == 0) {
         return parse_time(v, &s->lead) ? NULL : "expected a time, such as 3 h";
@@ -2549,6 +2572,9 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         .peers = s->peers,
         .reply = s->reply,
         .reply_delay = s->reply_delay,
+        .card_interval = s->card_interval,
+        .card_len = s->card_len,
+        .card_share = s->card_share,
         .sends = s->sends,
         .send_count = s->send_count,
     };

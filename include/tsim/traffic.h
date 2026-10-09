@@ -34,7 +34,16 @@
  * message arrived: a protocol that delivers more is not offered more. An answer is not answered,
  * and like any message it is sent only before stop. Neither touches the scripted sends, which take
  * no draws and so go to whom they name, unanswered: script the answer too. With both at 0 the
- * draws are exactly those of the plain process. */
+ * draws are exactly those of the plain process.
+ *
+ * Apart from the messages, a share of the nodes can each send a presence card every so often: a
+ * broadcast of `card_len` bytes that says who the node is, for anyone browsing who is about. Which
+ * nodes send them, and when, are drawn from streams of their own, so cards move none of the
+ * messages' draws: the same seed offers the same messages with cards or without. A card node's
+ * first card falls uniformly in the first `card_interval` after the start, and each next one
+ * between half and one and a half intervals after the last, so that cards neither bunch nor
+ * march in step. Cards are made in [start, stop) like messages, and never in the closed loop's
+ * wait. */
 
 /* A message sent at a set time, as well as or instead of the ones the process makes: to put one
  * flood through a network and count what it costs, say. It uses none of the process's draws. */
@@ -53,10 +62,13 @@ struct tsim_traffic_params {
     tsim_time start;  /* messages are made in [start, stop) */
     tsim_time stop;
     uint64_t seed;
-    bool closed;           /* each gap starts when the node's previous message is finished */
-    uint32_t peers;        /* each node's regular correspondents, at least; 0 for anyone */
-    double reply;          /* fraction of unicasts answered, 0..1; not with closed */
-    tsim_time reply_delay; /* mean time from a unicast to its answer */
+    bool closed;             /* each gap starts when the node's previous message is finished */
+    uint32_t peers;          /* each node's regular correspondents, at least; 0 for anyone */
+    double reply;            /* fraction of unicasts answered, 0..1; not with closed */
+    tsim_time reply_delay;   /* mean time from a unicast to its answer */
+    tsim_time card_interval; /* mean time between one card node's cards; 0 for no cards */
+    uint32_t card_len;       /* bytes in a card */
+    double card_share;       /* fraction of the nodes that send cards, 0..1 */
     const struct tsim_send *sends; /* copied: they need not outlive the call */
     uint32_t send_count;
 };
@@ -66,7 +78,8 @@ struct tsim_traffic;
 /* Starts traffic on every node of `net`, which must outlive it. Returns NULL for an invalid
  * parameter - a negative interval, len_min over len_max or over TSIM_FRAME_MAX, a broadcast
  * fraction outside 0..1, stop before start, more peers than other nodes, a
- * reply fraction outside 0..1 or with closed, a negative reply delay, a send from or to a node
+ * reply fraction outside 0..1 or with closed, a negative reply delay, a negative card interval, a
+ * card share outside 0..1, a card over TSIM_FRAME_MAX, a send from or to a node
  * that is not there, to its own node or over TSIM_FRAME_MAX - or when memory runs out. A send is
  * made whenever it falls, whatever start and stop say, and in the closed loop its finishing starts
  * no gap. */
@@ -76,7 +89,10 @@ struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
 /* Stops the traffic and frees it; the scheduler can go on running without it. */
 void tsim_traffic_destroy(struct tsim_traffic *traffic);
 
-/* Messages made so far, including any the routing refused. */
+/* Messages made so far, including any the routing refused, cards among them. */
 uint64_t tsim_traffic_made(const struct tsim_traffic *traffic);
+
+/* Cards made so far. */
+uint64_t tsim_traffic_cards(const struct tsim_traffic *traffic);
 
 #endif

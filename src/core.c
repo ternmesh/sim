@@ -198,8 +198,8 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
         c->flood_relay_ppm > 1000000) {
         return "flood_own_ppm and flood_relay_ppm must be 1 to 1000000";
     }
-    if (c->flood_last > 1 || c->flood_busy_ppm > 1000000) {
-        return "flood_last must be 0 or 1, and flood_busy_ppm 0 to 1000000";
+    if (c->flood_last > 1 || c->flood_busy_ppm > 1000000 || c->card_hops > 255) {
+        return "flood_last must be 0 or 1, flood_busy_ppm 0 to 1000000, and card_hops 0 to 255";
     }
     return NULL;
 }
@@ -490,7 +490,15 @@ static bool originate_flood(struct router *r, const struct tsim_message *msg) {
     tag_put(frame + AT_FLOOD_SRC, msg->src + 1);
     tag_put(frame + AT_FLOOD_ID, (uint32_t)msg->id);
     memcpy(frame + AT_FLOOD_CONTENT, msg->content, msg->len);
-    if (!tern_flood_send(&r->flood, tsim_node_now(r->node), frame, len)) {
+    /* A card may start with fewer hops than a group's frame: the flooder fills them in from its
+     * config, so the config is what is changed, for this one frame. */
+    uint8_t hops = r->flood.config.hops;
+    if (msg->card && r->config.card_hops) {
+        r->flood.config.hops = (uint8_t)r->config.card_hops;
+    }
+    bool sent = tern_flood_send(&r->flood, tsim_node_now(r->node), frame, len);
+    r->flood.config.hops = hops;
+    if (!sent) {
         tsim_node_drop(r->node, msg->id, TSIM_DROP_QUEUE, TSIM_BROADCAST);
     }
     tsim_node_finished(r->node, msg->id);

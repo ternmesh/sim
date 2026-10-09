@@ -80,6 +80,9 @@ bool tsim_net_on(const struct tsim_net *net, uint32_t node);
  * protocol that cannot carry a workload's messages is charged for them rather than excused. */
 uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len);
 
+/* The same for a presence card: a broadcast marked as one, so that the books count it apart. */
+uint64_t tsim_net_originate_card(struct tsim_net *net, uint32_t src, uint32_t len);
+
 /* The frame a node has on the air now, or NULL. */
 const struct tsim_tx *tsim_net_on_air(const struct tsim_net *net, uint32_t node);
 
