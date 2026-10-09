@@ -978,6 +978,9 @@ static const char *core_set(void *config, const char *key, const char *value) {
         {"flood_copies", offsetof(struct tsim_core_config, flood_copies), 0, 255},
         {"flood_own_ppm", offsetof(struct tsim_core_config, flood_own_ppm), 1, 1000000},
         {"flood_relay_ppm", offsetof(struct tsim_core_config, flood_relay_ppm), 1, 1000000},
+        {"flood_last", offsetof(struct tsim_core_config, flood_last), 0, 1},
+        {"flood_busy_ppm", offsetof(struct tsim_core_config, flood_busy_ppm), 0, 1000000},
+        {"flood_busy_soft", offsetof(struct tsim_core_config, flood_busy_soft), 0, 1},
     };
     for (size_t i = 0; i < sizeof floods / sizeof floods[0]; i++) {
         if (strcmp(key, floods[i].key) == 0) {
