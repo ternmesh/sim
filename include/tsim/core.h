@@ -175,7 +175,44 @@
  * on the deployed preset at any power, nothing either way. That load is more than the channel
  * holds with or without: unicast on time falls from 92.0%, 98.0% and 96.1% to 28.0%, 23.6% and
  * 39.2%. A thousand nodes each well inside an allowance of their own are together several
- * channels' worth, which no allowance kept node by node can see. */
+ * channels' worth, which no allowance kept node by node can see.
+ *
+ * Which goes first, and a relay that is busy. Two rules were tried against that, each a setting
+ * here and off by default, since neither is the specification's. Unicast and broadcast on time
+ * at 0, 10 and 20 dBm, and on-time deliveries per second of airtime (tools/density.py --quick
+ * --candidates core, 3 seeds, flood_wait 8):
+ *
+ *                             unicast           broadcast         per second
+ *   every node a relay (SF9)
+ *     as it is                40.5 38.7 34.6    33.6 42.5 45.3    3.3 4.0 4.3
+ *     flood_last              38.5 38.5 35.2    33.5 43.1 44.3    3.3 4.1 4.3
+ *     flood_busy_ppm 100000   67.2 75.6 75.7     3.1  4.3  6.6    0.6 0.9 1.5
+ *     flood_busy_ppm 400000   47.6 61.9 70.8    24.3 23.9 19.5    2.8 3.5 4.0
+ *     flood_busy_ppm 600000   41.1 51.0 55.9    31.0 35.6 35.4    3.2 4.2 5.6
+ *     200000, flood_busy_soft 42.6 48.3 47.9    30.0 40.7 43.7    3.2 4.8 6.3
+ *     400000, flood_busy_soft 41.1 45.9 45.9    32.0 40.6 43.6    3.3 4.5 5.8
+ *   deployed
+ *     as it is                23.2 17.7 21.1    27.5 31.7 17.9    4.5 5.4 3.4
+ *     flood_last              24.4 18.8 20.5    27.4 30.9 18.9    4.5 5.3 3.6
+ *     flood_busy_ppm 400000   37.1 34.8 29.3     6.3  2.5  1.7    1.3 0.6 0.5
+ *     200000, flood_busy_soft 30.9 31.8 27.5    18.8 13.6  4.2    3.5 3.1 1.1
+ *     400000, flood_busy_soft 27.7 28.7 28.9    22.5 17.3  4.8    4.0 3.8 1.2
+ *   fast
+ *     as it is                92.0 98.0 96.1    65.8 83.2 84.8    33.4 56.7 50.0
+ *     flood_last              91.8 97.9 96.1    64.7 82.9 84.6    30.7 52.6 47.4
+ *     flood_busy_ppm 400000   91.0 98.1 96.5    64.7 82.7 84.3    30.3 56.5 60.3
+ *     200000, flood_busy_soft 92.1 97.9 96.5    65.5 82.6 84.5    34.4 60.5 55.6
+ *
+ * Sending a node's routed frames before its flooded ones (flood_last) does nothing: a relay
+ * seldom holds both, and what they contend for is the air between nodes. A relay that passes no
+ * flooded frame on while its radio is busy does: it is the floods that cost unicast its
+ * deliveries, which reach 75% with them held back, against 35 to 40%. Cut off at a share of the
+ * radio's time, the floods go altogether where the channel is full. Passing fewer on the busier
+ * the radio is (flood_busy_soft) keeps most of them: with every node a relay, unicast gains 2 to
+ * 13 points for 2 to 4 of broadcast, and deliveries per second of airtime rise by up to 47%; on
+ * the fast preset, where the channel has room, nothing changes; on the deployed preset, which is
+ * full at any power, unicast gains 6 to 14 points and broadcast loses 9 to 18. A flood_wait of
+ * 16 with flood_busy_ppm set changes little: the share decides. */
 struct tsim_core_config {
     uint16_t channel;
     struct tsim_lora lora;
@@ -209,6 +246,13 @@ struct tsim_core_config {
     uint32_t flood_copies;    /* copies heard that drop a frame still waiting; 0 never */
     uint32_t flood_own_ppm;   /* 1..1000000 */
     uint32_t flood_relay_ppm; /* 1..1000000 */
+    uint32_t flood_last;      /* 1: a flooded frame waits for every frame that follows a route */
+    /* Millionths of the last half minute to minute its radio spent sending or receiving, at or
+     * past which a relay passes no flooded frame on; 0 for never. */
+    uint32_t flood_busy_ppm;
+    /* 1: past flood_busy_ppm a relay still passes some on, fewer the busier: all of them at
+     * flood_busy_ppm and none with the radio never idle, evenly between. */
+    uint32_t flood_busy_soft;
 };
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,

@@ -17,6 +17,8 @@
 #define PRIORITY_REPLY 3
 #define PRIORITY_RELAY 2
 #define PRIORITY_OWN 1
+#define PRIORITY_FLOOD_LAST 0
+#define BUSY_SPAN TSIM_S(30)
 
 /* A message's frame: the head, then four bytes that tell it from any other - the secured unicast
  * frame's destination tag, here the message's number - its content, and eight bytes where the
@@ -48,6 +50,11 @@ struct router {
     size_t len;
     int8_t dbm;
     uint64_t handle; /* in the node's queue, or 0 */
+    /* The radio's time on the air and on frames, as it was at two times past: the older is from
+     * BUSY_SPAN to twice that ago. */
+    tsim_time busy_at[2];
+    tsim_time busy_air[2];
+    struct tsim_rng busy_rng;
     /* And the same for the frames that follow routes. */
     struct tern_forward forward;
     struct tern_forward_slot *slots;
@@ -316,7 +323,9 @@ static void service_floods(struct router *r, tsim_time now) {
                 .lora = r->config.lora,
                 .tx_dbm = dbm,
                 .purpose = kind == TERN_FLOOD_OWN ? TSIM_PURPOSE_DATA : TSIM_PURPOSE_RELAY,
-                .priority = kind == TERN_FLOOD_OWN ? PRIORITY_OWN : PRIORITY_RELAY,
+                .priority = r->config.flood_last     ? PRIORITY_FLOOD_LAST
+                            : kind == TERN_FLOOD_OWN ? PRIORITY_OWN
+                                                     : PRIORITY_RELAY,
                 .carries = tag_get(frame + AT_FLOOD_ID),
                 .carries_at = AT_FLOOD_CONTENT,
                 .len = (uint32_t)len,
@@ -332,10 +341,28 @@ static void service_floods(struct router *r, tsim_time now) {
     }
 }
 
+/* The share of the last BUSY_SPAN or more, up to twice it, that the radio spent sending or
+ * receiving, in millionths. */
+static uint32_t busy_ppm(struct router *r) {
+    tsim_time now = tsim_node_now(r->node);
+    tsim_time air = tsim_node_tx_airtime(r->node) + tsim_node_rx_airtime(r->node);
+    if (now - r->busy_at[1] >= BUSY_SPAN) {
+        r->busy_at[0] = r->busy_at[1];
+        r->busy_air[0] = r->busy_air[1];
+        r->busy_at[1] = now;
+        r->busy_air[1] = air;
+    }
+    tsim_time span = now - r->busy_at[0];
+    return span > 0 ? (uint32_t)((air - r->busy_air[0]) * 1000000 / span) : 0;
+}
+
 /* Offers the queue what the core has to send, and sets the timer for when it next has something
  * to do. */
 static void service(struct router *r) {
     tsim_time now = tsim_node_now(r->node), due, wait;
+    if (r->config.flood_busy_ppm) {
+        (void)busy_ppm(r); /* keeps its two times fresh */
+    }
     service_routes(r, now);
     service_frames(r, now);
     service_floods(r, now);
@@ -453,7 +480,14 @@ static bool router_sending(void *self, uint64_t handle) {
     uint32_t fl = handle ? flood_slot(r, handle) : r->config.flood_frames;
     if (fl != r->config.flood_frames) {
         /* A flooded frame of which enough copies have been heard since is taken back too. */
-        if (tern_flood_wanted(&r->flood, (uint8_t)fl)) {
+        bool busy = false;
+        if (r->config.flood_busy_ppm && !r->flood_slots[fl].own) {
+            uint32_t is = busy_ppm(r), at = r->config.flood_busy_ppm;
+            is = is > 1000000 ? 1000000 : is;
+            busy = is >= at && (!r->config.flood_busy_soft || at >= 1000000 ||
+                                tsim_rng_below(&r->busy_rng, 1000000 - at) >= 1000000 - is);
+        }
+        if (!busy && tern_flood_wanted(&r->flood, (uint8_t)fl)) {
             return true;
         }
         tern_flood_withdrawn(&r->flood, tsim_node_now(r->node), (uint8_t)fl);
@@ -565,6 +599,7 @@ static void *router_create(struct tsim_node *node, const void *config) {
         &lora, (int8_t)round(c->tx_dbm), (int8_t)round(c->tx_min_dbm), tsim_core_relay(c, self));
     struct tsim_rng rng;
     tsim_node_rng(node, TSIM_STREAM_ROUTING, &rng);
+    r->busy_rng = rng;
     /* A node that comes back from being powered down is made again, here: it has kept nothing, as
      * a board that kept no sequence number would not have. */
     tern_route_init(&r->route, &rc, self + 1, r->neighbours, c->neighbours, r->dests, dests, 0,
