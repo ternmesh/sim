@@ -118,8 +118,47 @@
  * MeshCore's dispatcher. That is the 4 to 5 points of broadcast the core is short on the fast
  * preset at 10 and 20 dBm: under candidate 3's MAC (-s mac=meshcore) it reaches 88.4% and 89.5%
  * there, against candidate 3's 87.1% and 90.2%, and 88.4% for candidate 3 without re-attachment
- * at 20 dBm. Why listening first costs a flood reach where the channel is quiet and nodes are
- * many is not explained. Where the channel is full it is the core that reaches more.
+ * at 20 dBm. Where the channel is full it is the core that reaches more.
+ *
+ * It is not the listening. MeshCore's dispatcher holds a frame a random time of its own before it
+ * sends, and a relay held longer hears more copies and stays silent more often. The flooder's
+ * own wait does the same under mac = listen, on less airtime; a wait drawn after a busy channel
+ * (mac.window, in slots of 7 ms) does it too, and costs unicast its delay. Fast preset, broadcast
+ * at 10 and 20 dBm and on-time deliveries per second of airtime (tools/density.py --fast --quick
+ * --candidates core, 3 seeds):
+ *
+ *   flood_wait 8 (the default)     83.2% 84.8%    56.7 50.0
+ *   flood_wait 12                  86.4% 86.8%    63.8 55.0
+ *   flood_wait 16                  88.2% 88.7%    71.5 65.0
+ *   flood_wait 24                  88.3% 90.3%    84.2 71.3
+ *   mac.window 8                   83.5% 84.2%    57.7 49.2
+ *   mac.window 32                  86.4% 87.8%    63.8 59.3
+ *   mac.window 64                  86.7% 89.0%    63.4 61.0
+ *   mac.window 128                 87.6% 91.4%    52.7 61.0
+ *   mac = meshcore                 88.4% 89.5%    62.0 56.3
+ *
+ * A longer wait is not free where the channel is full. Unicast and broadcast on time, and the
+ * median and 95th-percentile delay of a broadcast in seconds, at -5, 0, 5, 10 and 20 dBm:
+ *
+ *                     unicast                     broadcast                   delay at 0 and 20 dBm
+ *   fast
+ *     wait 8          60.8 92.0 98.9 98.0 96.1    39.1 65.8 78.0 83.2 84.8    2.4  5.8    0.9  2.8
+ *     wait 16         60.7 90.5 98.2 97.9 96.1    39.2 66.8 78.7 88.2 88.7
+ *     wait 24         60.7 90.6 98.6 98.0 96.1    39.1 66.4 79.3 88.3 90.3    5.5 13.7    1.0  3.8
+ *   deployed
+ *     wait 8          21.1 23.2 20.0 17.7 21.1    20.2 27.5 32.1 31.7 17.9   12.0 26.0   12.9 30.3
+ *     wait 16         20.9 22.5 17.9 16.9 19.5    17.6 28.4 34.8 31.9 19.2   19.8 43.7   21.2 50.5
+ *     wait 24         20.1 22.1 18.1 17.3 19.5    14.2 27.4 32.3 30.3 18.2   27.3 62.1   28.8 69.4
+ *   every node a relay
+ *     wait 8          38.2 40.5 36.8 38.7 34.6    27.3 33.6 38.4 42.5 45.3    5.6 11.5    5.8 12.0
+ *     wait 16         35.4 34.3 30.1 29.3 23.8    28.7 37.5 44.7 49.0 49.7    8.4 18.4    8.8 19.3
+ *     wait 24         34.0 32.4 28.5 27.1 20.2    28.6 38.9 47.0 52.3 51.5   11.4 25.6   11.5 26.0
+ *
+ * So on the fast preset a wait of 16 reaches 4 to 5 points more where nodes are many and costs
+ * nothing but the delay. With every node a relay the floods that now get through take the
+ * channel from unicast, 3 to 11 points of it, though deliveries per second of airtime rise 8 to
+ * 27%. On the deployed preset a broadcast's delay nears the minute allowed, and where nodes are
+ * few it arrives late.
  *
  * The flooder's settings, each alone, fast preset, broadcast at 10 and 20 dBm against the
  * defaults' 83.2% and 84.8%, with on-time deliveries per second of airtime against 56.7 and 50.0:
