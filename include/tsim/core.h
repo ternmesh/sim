@@ -46,9 +46,7 @@
  * go by, is what it sent and the frames it received whole, as a board counts it; a frame lost
  * part-way is not counted.
  *
- * Every figure below up to "A board's tables" was measured before those three, with no announce
- * checked and nothing kept; the first table is measured again after them, as tools/core.py has
- * it.
+ * The first table below is measured with all three; see the note after it for the rest.
  *
  * Against candidate 3, measured with tools/core.py compare (3 seeds): the share of ordered pairs of
  * nodes that hold a route as the warmup ends, the share whose routes followed from node to node
@@ -56,31 +54,51 @@
  * without traffic, as the core is, and with and without its re-attachment, which neither the
  * specification nor the core has.
  *
+ * The core with unbounded tables (-s routing.neighbours=255 -s routing.destinations=0 -s
+ * routing.frames=16 -s routing.flood_frames=16), announces signed and checked, numbers kept;
+ * "before" is the core as it was measured until firmware#75, unsigned and nothing checked:
+ *
  *                               routes    reach    airtime
  *   town (town-distvec.tsim, SF9, every node a relay)
- *     candidate 3               99.99%   99.97%     2662 s
- *     without re-attachment     99.99%   99.97%     2612 s
- *     core                      99.99%   99.98%     2316 s
+ *     candidate 3              100.00%  100.00%     2544 s
+ *     without re-attachment    100.00%  100.00%     2497 s
+ *     core                     100.00%  100.00%     2681 s
+ *     core, before              99.99%   99.98%     2316 s
  *   region (region-distvec.tsim, SF9, every node a relay)
- *     candidate 3              100.00%   99.97%    14448 s
- *     without re-attachment     99.99%   99.96%    14846 s
- *     core                     100.00%   99.96%    14825 s
- *   region, fast (region-distvec-fast.tsim, SF7, 200 relays)
+ *     candidate 3               99.99%   99.97%    14407 s
+ *     without re-attachment     99.99%   99.94%    14300 s
+ *     core                      99.62%   99.62%    13572 s
+ *     core, before             100.00%   99.96%    14825 s
+ *   region, fast (region-distvec-fast.tsim, SF7, 200 relays: EU868's settings)
  *     candidate 3               99.63%   99.57%      842 s
  *     without re-attachment     97.21%   97.21%      665 s
- *     core                      97.09%   97.09%      687 s
+ *     core                      96.98%   96.98%     1819 s
+ *     core, before              97.09%   97.09%      687 s
  *   region, deployed (region-distvec-deployed.tsim, SF8 at 62.5 kHz, 200 relays)
  *     candidate 3               92.68%   78.46%     5762 s
  *     without re-attachment     85.01%   85.01%     4280 s
- *     core                      92.07%   92.07%     4319 s
+ *     core                      49.89%   49.89%     8005 s
+ *     core, before              92.07%   92.07%     4319 s
+ *     core, warmup 12 h         94.07%   94.05%     5377 s
+ *   region, US915 (region-distvec-us915.tsim, SF9 at 500 kHz, 200 relays: what boards ship)
+ *     candidate 3               99.80%   99.77%      549 s
+ *     without re-attachment     97.34%   97.34%      466 s
+ *     core                      97.26%   97.26%      867 s
  *
- * So the core is candidate 3 without re-attachment, to a tenth of a point, on three of the four,
- * and what it lacks on the fast preset is re-attachment: with seed 1 there, 25 leaves and a relay
- * have heard relays and hold no link to one that is up, each relay's announces going only as loud
- * as its nearest eight neighbours need. On the deployed preset it holds 7 points more than
- * candidate 3 without re-attachment, which is not explained; candidate 3's neighbour_timeout is
- * not it. With seed 1, no route of the core's went round in any of the four: every route held
- * that did not arrive ended at a node with none.
+ * Signing is what moved them (firmware 991202a): a signature of 64 bytes on every announce, and
+ * an address of 32 on many, in frames that now hold 21 routes rather than 29, so that a table
+ * takes more frames, each longer, under the same cap. Where relays are few the core holds what
+ * candidate 3 without re-attachment does, on half again to two and a half times its airtime; part
+ * of that is a network still settling, and with a 12 h warmup the fast preset's settled hour costs
+ * (seed 1) 882 s against 488 s unsigned. On the deployed preset, where a full announce takes over 2
+ * s and the cap allows about six an hour, a 6 h warmup is not long enough: half the pairs hold a
+ * route as it ends, and 94% after 12 h. No route of the core's went round in any of these: every
+ * route held that did not arrive ended at a node with none.
+ *
+ * Until this table, routes and reach counted a leaf's default route as one held (tern_route_next()
+ * falls back to it); they count a selected route only now. The other figures below were measured
+ * before signing, with nothing checked and nothing kept, and with default routes counted where
+ * the firmware had them.
  *
  * A board has fewer places for neighbours than these runs gave it, 255, and on the last two of
  * these a node at full power is heard by 280 and 490 others. Routes held with `neighbours` 32 and
