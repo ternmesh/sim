@@ -217,6 +217,9 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
     if (c->flood_last > 1 || c->flood_busy_ppm > 1000000 || c->card_hops > 255) {
         return "flood_last must be 0 or 1, flood_busy_ppm 0 to 1000000, and card_hops 0 to 255";
     }
+    if (c->default_hops > 32 || c->leaf_destinations > 65535) {
+        return "default_hops must be 0 to 32, and leaf_destinations 0 to 65535";
+    }
     return NULL;
 }
 
