@@ -18,9 +18,14 @@ both with its re-attachment and without, which the core does not have.
             and does not arrive ends at a node with none, or goes round
   airtime   seconds on the air in the hour after the warmup, all nodes together
 
+The core is run twice: with the tables a board has (ports/node/node.c, the default), and without
+those limits, as candidate 3 has none.
+
 `check` runs scenarios/core/town.tsim and fails unless nearly every pair holds a route, nearly
 every route held arrives, and no node is on the air for more than its cap allows. It is what the
-firmware's CI runs against a change to the core. That routes never go round is not checked here
+firmware's CI runs against a change to the core. It runs the core without a board's tables: the
+town's 200 nodes are more than a board's 128 destinations, and what it checks is the routing, not
+the memory. That routes never go round is not checked here
 but in tests/core.c, which follows them while a network settles.
 """
 
@@ -49,6 +54,12 @@ ADRIFT_MAX = 0.001  # routes held that do not arrive: over three seeds the core 
 DUTY_MAX = 0.006
 
 
+# The core's tables are a board's by default (tsim/core.h). Candidate 3 has no such limits, so the
+# core is set free of them to be compared with it, and run as a board as well.
+UNBOUNDED = ["routing.neighbours=255", "routing.destinations=0", "routing.frames=16",
+             "routing.flood_frames=16"]
+
+
 def run(tsim, scenario, settings=()):
     cmd = [tsim]
     for s in settings:
@@ -75,7 +86,8 @@ def compare(args):
         rows = [
             ("candidate 3", distvec, quiet),
             ("candidate 3, no re-attachment", distvec, quiet + ["routing.reattach=no"]),
-            ("core", core, []),
+            ("core, unbounded", core, UNBOUNDED),
+            ("core, a board's tables", core, []),
         ]
         for label, scenario, settings in rows:
             m = mean(args.tsim, scenario, settings, args.seeds)
@@ -88,7 +100,7 @@ def compare(args):
 
 
 def check(args):
-    r = run(args.tsim, "core/town.tsim")
+    r = run(args.tsim, "core/town.tsim", UNBOUNDED)
     routes, reach = r["warmup"]["routes"], r["warmup"]["reach"]
     failed = []
     if routes < ROUTES_MIN:

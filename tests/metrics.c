@@ -147,6 +147,8 @@ static void airtime_and_duty_add_up_from_the_ledgers(void) {
     CHECK(rep.duty_mean == (double)(8 * a) / 4.0 / (double)TSIM_S(10));
     CHECK_EQ_U64(rep.broadcast.on_time, 6);
     CHECK(rep.on_time_per_airtime_s == 6.0 / ((double)(8 * a) / 1e9));
+    CHECK(rep.unicast_per_airtime_s == 0);
+    CHECK(rep.broadcast_per_airtime_s == rep.on_time_per_airtime_s);
     CHECK(rep.rx_ok >= 6);
     rig_close(&r);
 }

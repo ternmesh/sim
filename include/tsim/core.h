@@ -23,7 +23,7 @@
  * and its source sends it again until it is acknowledged or given up. A frame does not say where
  * it came from, and on a device its destination knows from the session: here it looks the
  * message's number up in a table the nodes of one network share, which stands for those sessions
- * and nothing else. A broadcast goes as a group's frame would (tern/group.h), 27 bytes longer
+ * and nothing else. A broadcast goes as a group's frame would (tern/group.h), 31 bytes longer
  * than its content, flooded by the firmware's flooder (tern/flood.h): every node that hears it
  * for the first time is delivered it, as a member of the group would be, and every relay passes
  * it on or not as the flooder says, within the two allowances it keeps. Nothing chooses relays;
@@ -220,7 +220,25 @@
  * 13 points for 2 to 4 of broadcast, and deliveries per second of airtime rise by up to 47%; on
  * the fast preset, where the channel has room, nothing changes; on the deployed preset, which is
  * full at any power, unicast gains 6 to 14 points and broadcast loses 9 to 18. A flood_wait of
- * 16 with flood_busy_ppm set changes little: the share decides. */
+ * 16 with flood_busy_ppm set changes little: the share decides.
+ *
+ * A board's tables. Every figure above gave each node 255 neighbours, a destination for every
+ * node and 16 frames of each kind. A board has 64, 128, 8 and 4 (ports/node/node.c), and by
+ * default the plugin now has what the board has. The neighbours cost little; the destinations
+ * are what a thousand nodes outgrow. A node holds a route only to a destination it has a place
+ * for, and a relay can pass a frame on only toward one it holds, so the share of pairs whose
+ * routes arrive falls with the table. Region, fast, seed 3, routes that arrive as the warmup
+ * ends:
+ *
+ *   destinations    every node   512      256      128
+ *   reach           96.5%        49.4%    24.6%    12.1%
+ *
+ * And with seed 1 and the traffic density.py offers (a quarter broadcast), unicast on time is
+ * 96.3% with a place for every node and 12.1% with 128; peers limited to four (traffic.peers=4)
+ * gives 12.8%, so the table does not keep the destinations a node sends to. Routing at the size of
+ * a network larger than its table is not specified yet. For the design without the board's limits:
+ * -s routing.neighbours=255 -s routing.destinations=0 -s routing.frames=16 -s
+ * routing.flood_frames=16. */
 struct tsim_core_config {
     uint16_t channel;
     struct tsim_lora lora;
@@ -232,7 +250,10 @@ struct tsim_core_config {
     uint32_t relay_count;
     const uint8_t *relay_set; /* [node] 1 for a relay, shared; set by the driver */
     /* The tables a node keeps. A board has what its memory allows, and a neighbour or a
-     * destination past the end of its table is one it does not know. */
+     * destination past the end of its table is one it does not know. By default these four are
+     * the board's own, read from the firmware's ports/node/node.c when the core is built; the
+     * figures above were measured with 255 neighbours, a destination for every node and 16
+     * frames of each kind, which a board does not have (see the end of this comment). */
     uint32_t neighbours;   /* 1..255 */
     uint32_t destinations; /* 0 for one each for every node */
     /* Frames a node has in hand at once, its own and those it passes on: 1..255. One more is
@@ -259,8 +280,10 @@ struct tsim_core_config {
      * its radio spent sending or receiving, past which a relay passes fewer flooded frames on,
      * and none when it is never idle. 1000000 for never fewer. */
     uint32_t flood_busy_ppm;
-    /* What a presence card's flood starts with (tsim/traffic.h), 0 for flood_hops: a hop count of
-     * a frame's own, which the firmware does not have, stood in for here so it can be measured. */
+    /* What a presence card's flood starts with (tsim/traffic.h), 0 for flood_hops. A card the
+     * length of one goes with the firmware's card header, and its flooder holds it to CARD_HOPS
+     * (2) whatever this says, so this can only lower it; one of another length is not a card the
+     * firmware sends, and goes as a group's frame with these hops. */
     uint32_t card_hops; /* 0..255 */
 };
 

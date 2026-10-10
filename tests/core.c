@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "tern/flood.h"
 #include "tsim/baseline.h"
 #include "tsim/meshcore.h"
 #include "tsim/net.h"
@@ -190,6 +191,40 @@ static void a_broadcast_goes_the_length_of_a_line(void) {
     rig_close(&r);
 }
 
+#ifdef TERN_HDR_CARD
+/* A card goes with the card header, so the firmware's flooder holds it to CARD_HOPS (2) at every
+ * relay, where a group's frame goes FLOOD_HOPS (5). Every relay here spends a hop
+ * (flood_sparse 0): along a line of six, a card from the end reaches two nodes and a broadcast
+ * all five. */
+static void a_card_goes_two_hops_and_a_broadcast_five(void) {
+    struct tsim_lora l = tsim_lora_default(7, 125000);
+    struct tsim_net_params p = tsim_net_defaults(5);
+    p.queue_limit = 0;
+    struct rig r = {.rc = tsim_core_default(0, &l, 14.0), .mc = tsim_meshcore_mac_default()};
+    r.rc.flood_sparse = 0;
+    r.nodes = 6;
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, r.nodes, &tsim_core, &r.rc, &tsim_meshcore_mac, &r.mc);
+    for (uint32_t i = 0; i + 1 < r.nodes; i++) {
+        link(&r, i, i + 1);
+    }
+    tsim_net_start(r.net);
+    run(&r, TSIM_S(600));
+    uint64_t card = tsim_net_originate_card(r.net, 0, 96);
+    CHECK(card != 0);
+    run(&r, TSIM_S(700));
+    const struct tsim_message_record *m = tsim_net_message(r.net, card);
+    CHECK(m && !m->refused && m->finished);
+    CHECK_EQ_U64(m->delivered, 2);
+    uint64_t id = message(&r, 0, TSIM_BROADCAST);
+    run(&r, TSIM_S(800));
+    m = tsim_net_message(r.net, id);
+    CHECK(m && !m->refused && m->finished);
+    CHECK_EQ_U64(m->delivered, 5);
+    rig_close(&r);
+}
+#endif
+
 /* A node between goes down: the message is tried again, and given up, and the source is told. */
 static void a_message_that_cannot_arrive_is_given_up(void) {
     struct rig r;
@@ -324,6 +359,9 @@ int main(void) {
     RUN(a_message_goes_hop_by_hop_and_is_acknowledged);
     RUN(two_networks_at_once_keep_their_messages_apart);
     RUN(a_broadcast_goes_the_length_of_a_line);
+#ifdef TERN_HDR_CARD
+    RUN(a_card_goes_two_hops_and_a_broadcast_five);
+#endif
     RUN(a_message_that_cannot_arrive_is_given_up);
     RUN(a_grid_never_loops_while_it_settles);
     RUN(a_node_that_restarts_is_routed_to_again);

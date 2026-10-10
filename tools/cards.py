@@ -8,16 +8,21 @@ nearby can find each other without a public channel. This runs scenarios/scale/r
 with the region's message load and, on top of it, each of:
 
   none            the load alone
-  signed 1h       every node, a 123-byte signed card an hour, flooded as far as a group's frame
-  unsigned 1h     the same at 59 bytes: an address and a name, no signature
+  signed 2h       every node, a 127-byte signed card every two hours, as the firmware sends them
+                  (CARD_EVERY): flooded with the card header, which the firmware's flooder holds
+                  to 2 hops (CARD_HOPS) at its source and at every relay
+  signed 2h, 1 hop  the same, starting with 1 hop (routing.card_hops)
+  signed 1h       one an hour
   signed 20m      three an hour
-  signed 1h, 2h   the signed card, starting with 2 hops (routing.card_hops) instead of 5
-  signed 1h, 1h   and with 1
-  signed 1h, 25%  a quarter of the nodes sending, the rest only listening
-  signed 2h, ...  one every two hours, starting with 2 hops, and with 1
-  1h, 2 hops, 25% a quarter of the nodes, hourly, 2 hops
-  room 2h         a public room instead: a 67-byte line from every node every 2 hours
+  signed 1h, 25%  a quarter of the nodes sending, hourly, the rest only listening
+  unsigned 1h     an hour, at 63 bytes: an address and a name, no signature. No card the firmware
+                  sends is that short, so it goes as a group's frame, 5 hops
+  room 2h         a public room instead: a 71-byte line from every node every 2 hours, as a
+                  group's frame
   room 15m        and every 15 minutes
+
+Built against a firmware from before cards had a header of their own (v0.3.0-alpha.1 and earlier),
+every card goes as a group's frame and starts with routing.card_hops, or 5.
 
 and prints, for each and each power, the mean over the seeds of:
 
@@ -43,16 +48,13 @@ SCENARIO = os.path.join(HERE, "..", "scenarios", "scale", "region-core-cards.tsi
 
 ARMS = [
     ("none", ["cards.interval=none"]),
-    ("signed 1h", []),
-    ("unsigned 1h", ["cards.len=32"]),
+    ("signed 2h", []),
+    ("signed 2h, 1 hop", ["routing.card_hops=1"]),
+    ("signed 1h", ["cards.interval=1 h"]),
     ("signed 20m", ["cards.interval=20 min"]),
-    ("signed 1h, 2 hops", ["routing.card_hops=2"]),
-    ("signed 1h, 1 hop", ["routing.card_hops=1"]),
-    ("signed 1h, 25%", ["cards.share=0.25"]),
-    ("signed 2h, 2 hops", ["cards.interval=2 h", "routing.card_hops=2"]),
-    ("signed 2h, 1 hop", ["cards.interval=2 h", "routing.card_hops=1"]),
-    ("1h, 2 hops, 25%", ["routing.card_hops=2", "cards.share=0.25"]),
-    ("room 2h", ["cards.interval=2 h", "cards.len=40"]),
+    ("signed 1h, 25%", ["cards.interval=1 h", "cards.share=0.25"]),
+    ("unsigned 1h", ["cards.interval=1 h", "cards.len=32"]),
+    ("room 2h", ["cards.len=40"]),
     ("room 15m", ["cards.interval=15 min", "cards.len=40"]),
 ]
 

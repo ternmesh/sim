@@ -571,5 +571,7 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
     if (total_ns > 0) {
         r->on_time_per_airtime_s =
             (double)(r->unicast.on_time + r->broadcast.on_time) / r->airtime_total_s;
+        r->unicast_per_airtime_s = (double)r->unicast.on_time / r->airtime_total_s;
+        r->broadcast_per_airtime_s = (double)r->broadcast.on_time / r->airtime_total_s;
     }
 }

@@ -209,6 +209,8 @@ static void print_report(const char *path, const struct tsim_scenario *s,
     }
     print_losses(&r->losses);
     printf("  \"on_time_per_airtime_s\": %.6g,\n", r->on_time_per_airtime_s);
+    printf("  \"unicast_per_airtime_s\": %.6g,\n", r->unicast_per_airtime_s);
+    printf("  \"broadcast_per_airtime_s\": %.6g,\n", r->broadcast_per_airtime_s);
     printf("  \"duty_max\": %.6g, \"duty_max_node\": %" PRIu32 ", \"duty_mean\": %.6g,\n",
            r->duty_max, r->duty_max_node, r->duty_mean);
     print_delivery("unicast", &r->unicast, ",");

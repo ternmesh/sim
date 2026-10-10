@@ -4,9 +4,11 @@ nodes     = 200
 placement = uniform
 area      = 8000 x 8000
 
-radio.sf     = 9
-radio.bw     = 125000
-radio.tx_dbm = 20
+radio.sf       = 9
+radio.bw       = 125000
+# The preamble Tern's frames have (the specification's draft/phy.md), as the firmware sends.
+radio.preamble = 16
+radio.tx_dbm   = 20
 
 routing = distvec
 mac     = meshcore
