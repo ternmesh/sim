@@ -251,6 +251,8 @@ default.
 | `routing.card_hops` (`core`) | 0 | what a presence card's flood starts with, in place of `routing.flood_hops`, or 0 for the same. A card-sized card goes with the firmware's card header, whose flooder holds it to `CARD_HOPS` (2) whatever this says, so this can only lower it |
 | `routing.retry_jitter` (`core`) | 4 | the longest a frame sent again waits first, in its own airtimes, 0 to 255: the specification's `RETRY_JITTER`. With 0, two nodes whose frames met send again together at every try (`scenarios/core/together.tsim`) |
 
+| `routing.announce_ppm`, `routing.address_after`, `routing.address_every` (`core`) | 0, 0, 0: the firmware's 3750, 3, 8 | the routing cap less the share for requests, in millionths of a node's time, and how many announces carry the address after a neighbour is found and at least one in how many does: the routing draft's `CAP`, `ADDRESS_AFTER` and `ADDRESS_EVERY`. 0 for the firmware's own; for measuring what signed announces cost |
+
 Every other parameter of `core` is the specification's, as the firmware has it, and is not a
 setting here: a scenario measures the firmware, not a variant of it.
 

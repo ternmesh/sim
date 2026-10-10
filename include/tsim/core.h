@@ -366,6 +366,16 @@ struct tsim_core_config {
      * (2) whatever this says, so this can only lower it; one of another length is not a card the
      * firmware sends, and goes as a group's frame with these hops. */
     uint32_t card_hops; /* 0..255 */
+    /* The routing cap and how often an announce carries the address (tern/route.h), each 0 for
+     * the firmware's own: the specification's CAP less its REQUEST_SHARE, in millionths of a
+     * node's time, and ADDRESS_AFTER and ADDRESS_EVERY. For measuring what signed announces cost,
+     * not for scenarios, which measure the firmware as it is. */
+    uint32_t announce_ppm;  /* 0..1000000 */
+    uint32_t address_after; /* 0..255 */
+    uint32_t address_every; /* 0..255 */
+    /* The second allowance only announces carrying changed routes spend (tern/route.h), in
+     * millionths: the firmware's own by default. Needs a firmware that has it. */
+    uint32_t learn_ppm; /* 0..1000000, 0 for none */
 };
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,
