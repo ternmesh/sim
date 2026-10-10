@@ -238,7 +238,45 @@
  * gives 12.8%, so the table does not keep the destinations a node sends to. Routing at the size of
  * a network larger than its table is not specified yet. For the design without the board's limits:
  * -s routing.neighbours=255 -s routing.destinations=0 -s routing.frames=16 -s
- * routing.flood_frames=16. */
+ * routing.flood_frames=16.
+ *
+ * An experiment (this branch, and the firmware's claude/leaf-default-route): relays with a place
+ * for every node, leaves with few, and leaves handing a frame they hold no route for to their
+ * nearest relay (default_hops 6). Region with the traffic density.py offers, 200 relays, seeds 1
+ * and 2: unicast on time, broadcast on time, and the routes that arrive as the warmup ends.
+ *
+ *                                              fast                   deployed
+ *   a board: 128 places everywhere             12.5%  85.2%  0.12     10.7%  54.0%  0.12
+ *   unbounded                                  96.4%  84.5%  0.97     28.5%   3.6%  0.67
+ *   1024 everywhere                            93.7%  81.9%  0.95     27.2%   3.6%  0.70
+ *   relays 1024, leaves 128                    29.9%  83.4%  0.30     21.1%  36.4%  0.27
+ *   relays 1024, leaves 128, default route     92.4%  81.5%  0.94     14.0%   0.6%  0.75
+ *   relays 1024, leaves 32, default route      93.0%  81.2%  0.94     12.5%   0.5%  0.75
+ *   relays 512, leaves 32, default route       49.3%  83.6%  0.50     -
+ *
+ * Where the channel has room, a relay's table is what decides: leaves need no more than 32
+ * places with the default route, and relays need one for every node. Where it is full (deployed),
+ * the default route costs a third more airtime, sending frames toward relays that hold no route
+ * on, and both unicast and broadcast fall: it wants a guard before it is worth specifying.
+ *
+ * The cause is the retries: leaves send 4.2 times the data frames (deployed, seed 1) and as many
+ * messages are given up, on a channel where the next hop is busy receiving. The guard: a leaf takes
+ * its default route only while its radio's busy share, the flooder's, is under default_busy_ppm.
+ * Relays 1024, leaves 32, seeds 1 and 2:
+ *
+ *                                 fast                  deployed
+ *   no default route              -                     15.5%  40.0%
+ *   default route, no guard       93.0%  81.2%          12.5%   0.5%
+ *   guard at 10%                  35.8%  84.8%          15.6%  38.2%
+ *   guard at 20%                  60.6%  82.1%          17.8%  33.9%
+ *   guard at 30%                  80.0%  81.6%          20.1%  29.2%
+ *   guard at 50%                  92.6%  80.0%          24.0%  14.5%
+ *
+ * Leaves on the fast preset are busy a fifth to a half of the time, so a guard much under a half
+ * costs them their routes. At a half it costs them nothing, and on the deployed preset it gets 84%
+ * of what unbounded tables deliver (28.5% unicast) with four times their broadcast (3.6%). Not
+ * salvaging a frame given up on to a second relay changes nothing: the waste is in the retries
+ * of messages that cannot arrive, not in the salvage. */
 struct tsim_core_config {
     uint16_t channel;
     struct tsim_lora lora;
@@ -256,6 +294,13 @@ struct tsim_core_config {
      * frames of each kind, which a board does not have (see the end of this comment). */
     uint32_t neighbours;   /* 1..255 */
     uint32_t destinations; /* 0 for one each for every node */
+    /* A leaf's destinations, 0 for `destinations`, and the firmware's default route
+     * (tern/route.h): a leaf with no route hands a frame to its nearest relay. default_hops and
+     * default_busy_ppm are the firmware's own by default, DEFAULT_HOPS and DEFAULT_BUSY of the
+     * specification's routing draft; default_hops 0 is no default route. */
+    uint32_t leaf_destinations;
+    uint32_t default_hops;
+    uint32_t default_busy_ppm; /* the busy share past which a leaf uses no default route */
     /* Frames a node has in hand at once, its own and those it passes on: 1..255. One more is
      * dropped. */
     uint32_t frames;
