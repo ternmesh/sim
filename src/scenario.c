@@ -983,6 +983,7 @@ static const char *core_set(void *config, const char *key, const char *value) {
         {"card_hops", offsetof(struct tsim_core_config, card_hops), 0, 255},
         {"leaf_destinations", offsetof(struct tsim_core_config, leaf_destinations), 0, 65535},
         {"default_hops", offsetof(struct tsim_core_config, default_hops), 0, 32},
+        {"default_busy_ppm", offsetof(struct tsim_core_config, default_busy_ppm), 0, 1000000},
     };
     for (size_t i = 0; i < sizeof floods / sizeof floods[0]; i++) {
         if (strcmp(key, floods[i].key) == 0) {

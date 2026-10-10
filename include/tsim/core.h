@@ -257,7 +257,26 @@
  * Where the channel has room, a relay's table is what decides: leaves need no more than 32
  * places with the default route, and relays need one for every node. Where it is full (deployed),
  * the default route costs a third more airtime, sending frames toward relays that hold no route
- * on, and both unicast and broadcast fall: it wants a guard before it is worth specifying. */
+ * on, and both unicast and broadcast fall: it wants a guard before it is worth specifying.
+ *
+ * The cause is the retries: leaves send 4.2 times the data frames (deployed, seed 1) and as many
+ * messages are given up, on a channel where the next hop is busy receiving. The guard: a leaf takes
+ * its default route only while its radio's busy share, the flooder's, is under default_busy_ppm.
+ * Relays 1024, leaves 32, seeds 1 and 2:
+ *
+ *                                 fast                  deployed
+ *   no default route              -                     15.5%  40.0%
+ *   default route, no guard       93.0%  81.2%          12.5%   0.5%
+ *   guard at 10%                  35.8%  84.8%          15.6%  38.2%
+ *   guard at 20%                  60.6%  82.1%          17.8%  33.9%
+ *   guard at 30%                  80.0%  81.6%          20.1%  29.2%
+ *   guard at 50%                  92.6%  80.0%          24.0%  14.5%
+ *
+ * Leaves on the fast preset are busy a fifth to a half of the time, so a guard much under a half
+ * costs them their routes. At a half it costs them nothing, and on the deployed preset it gets 84%
+ * of what unbounded tables deliver (28.5% unicast) with four times their broadcast (3.6%). Not
+ * salvaging a frame given up on to a second relay changes nothing: the waste is in the retries
+ * of messages that cannot arrive, not in the salvage. */
 struct tsim_core_config {
     uint16_t channel;
     struct tsim_lora lora;
@@ -280,6 +299,7 @@ struct tsim_core_config {
      * route hands a frame to its nearest relay. */
     uint32_t leaf_destinations;
     uint32_t default_hops;
+    uint32_t default_busy_ppm; /* the busy share past which a leaf uses no default route */
     /* Frames a node has in hand at once, its own and those it passes on: 1..255. One more is
      * dropped. */
     uint32_t frames;
