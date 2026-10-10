@@ -168,8 +168,13 @@ static void tag_put(uint8_t *b, uint32_t v) {
     b[3] = (uint8_t)v;
 }
 
+static struct tern_lora lora_of(const struct tsim_lora *l);
+
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,
                                           double tx_dbm) {
+    struct tern_lora tl = lora_of(lora);
+    /* The default route as the firmware's router has it by default. */
+    struct tern_route_config rd = tern_route_defaults(&tl, 0, 0, false);
     return (struct tsim_core_config){
         .channel = channel,
         .lora = *lora,
@@ -188,7 +193,8 @@ struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lo
         .flood_own_ppm = tern_flood_defaults().own_ppm,
         .flood_relay_ppm = tern_flood_defaults().relay_ppm,
         .flood_busy_ppm = tern_flood_defaults().busy_ppm,
-        .default_busy_ppm = 1000000,
+        .default_hops = rd.default_hops,
+        .default_busy_ppm = rd.default_busy_ppm,
     };
 }
 

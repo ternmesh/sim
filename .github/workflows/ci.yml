@@ -11,7 +11,7 @@ permissions:
 # The commit of ternmesh/firmware the `core` routing is built from (tsim/core.h). Moved on by hand,
 # so that a change to the firmware cannot fail a check here that it has not been run against.
 env:
-  FIRMWARE_REF: d2a13599bedd4bc83649fb50e1e2425cf4376899
+  FIRMWARE_REF: 40e515b4b7914f3081b72510ddaaddadec042d4b
 
 jobs:
   test:
