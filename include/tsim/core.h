@@ -34,10 +34,10 @@
  *
  * The firmware signs its announces (ternmesh/firmware#75, the specification's "Signed"). The plugin
  * gives the core no keys, so each announce goes as long as a signed one, with the address when the
- * core would carry it, but its signature is zeros and nothing is checked: the airtime is a device's,
- * the time to sign and check is not. A node's routing id is not made from an address here, which
- * nothing checks either. The tables below were measured before, with unsigned announces; the
- * specification's routing rationale has what signing cost on the region scenarios.
+ * core would carry it, but its signature is zeros and nothing is checked: the airtime is a
+ * device's, the time to sign and check is not. A node's routing id is not made from an address
+ * here, which nothing checks either. The tables below were measured before, with unsigned
+ * announces; the specification's routing rationale has what signing cost on the region scenarios.
  *
  * Against candidate 3, measured with tools/core.py compare (3 seeds): the share of ordered pairs of
  * nodes that hold a route as the warmup ends, the share whose routes followed from node to node
