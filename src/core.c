@@ -26,16 +26,31 @@
 #define AT_CONTENT (TERN_FORWARD_HEAD + TERN_FORWARD_TAG)
 #define CHECK_LEN 8
 
-/* A broadcast's frame, as a group's would be: the flood's head, eight bytes no other frame has -
- * a group frame's nonce, here who sent it and the message's number - four where its tag would
- * be, four where the writer's id is sealed with the content, the content, and eight where the
- * check would be. */
+/* A broadcast's frame, as a group's would be (tern/group.h): the flood's head, eight bytes no
+ * other frame has - a group frame's nonce, here who sent it and the message's number - four where
+ * its tag would be, four where the writer's id and four where the writer's count are sealed with
+ * the content, the content, and eight where the check would be: 31 bytes more than the content. */
 #define AT_FLOOD_SRC TERN_FLOOD_HEAD
 #define AT_FLOOD_ID (TERN_FLOOD_HEAD + 4)
-#define AT_FLOOD_CONTENT (TERN_FLOOD_HEAD + 8 + 4 + 4)
+#define AT_FLOOD_CONTENT (TERN_FLOOD_HEAD + 8 + 4 + 4 + 4)
 
 /* How soon a frame the queue refused is offered again. */
 #define RETRY TSIM_S(1)
+
+/* The tables a board keeps (ports/node/node.c), which CMakeLists.txt reads from the firmware's
+ * source. These are that file's sizes when this was written, for a checkout that has none. */
+#ifndef TSIM_BOARD_NEIGHBOURS
+#define TSIM_BOARD_NEIGHBOURS 64
+#endif
+#ifndef TSIM_BOARD_DESTINATIONS
+#define TSIM_BOARD_DESTINATIONS 128
+#endif
+#ifndef TSIM_BOARD_FRAMES
+#define TSIM_BOARD_FRAMES 8
+#endif
+#ifndef TSIM_BOARD_FLOOD_FRAMES
+#define TSIM_BOARD_FLOOD_FRAMES 4
+#endif
 
 struct router {
     struct tsim_node *node;
@@ -160,11 +175,12 @@ struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lo
         .lora = *lora,
         .tx_dbm = tx_dbm,
         .tx_min_dbm = -9,
-        .neighbours = 255,
-        .frames = 16,
+        .neighbours = TSIM_BOARD_NEIGHBOURS,
+        .destinations = TSIM_BOARD_DESTINATIONS,
+        .frames = TSIM_BOARD_FRAMES,
         .salvage = 1,
         .retry_jitter = tern_forward_defaults().retry_jitter,
-        .flood_frames = 16,
+        .flood_frames = TSIM_BOARD_FLOOD_FRAMES,
         .flood_hops = tern_flood_defaults().hops,
         .flood_sparse = tern_flood_defaults().sparse,
         .flood_wait = tern_flood_defaults().wait,
@@ -483,6 +499,15 @@ static bool router_sending(void *self, uint64_t handle) {
  * flooder has it: it is sent once, when the node's allowance can pay, and nothing answers it. */
 static bool originate_flood(struct router *r, const struct tsim_message *msg) {
     uint8_t frame[TERN_FLOOD_FRAME_MAX] = {TERN_HDR_GROUP};
+#ifdef TERN_HDR_CARD
+    /* A card goes as one, so that the flooder holds it to CARD_HOPS at its source and at every
+     * relay, as the firmware's does. One that is not a card's length is no card the firmware
+     * sends - tools/cards.py's unsigned cards and public room - and goes as a group's frame. */
+    size_t at = AT_FLOOD_CONTENT + msg->len + CHECK_LEN;
+    if (msg->card && at >= TERN_FLOOD_CARD_MIN && at <= TERN_FLOOD_CARD_MAX) {
+        frame[0] = TERN_HDR_CARD;
+    }
+#endif
     size_t len = AT_FLOOD_CONTENT + msg->len + CHECK_LEN;
     if (len > sizeof frame || msg->id > UINT32_MAX) {
         return false;
@@ -490,8 +515,8 @@ static bool originate_flood(struct router *r, const struct tsim_message *msg) {
     tag_put(frame + AT_FLOOD_SRC, msg->src + 1);
     tag_put(frame + AT_FLOOD_ID, (uint32_t)msg->id);
     memcpy(frame + AT_FLOOD_CONTENT, msg->content, msg->len);
-    /* A card may start with fewer hops than a group's frame: the flooder fills them in from its
-     * config, so the config is what is changed, for this one frame. */
+    /* A card may start with fewer hops than the flooder would give it (card_hops): the flooder
+     * fills them in from its config, so the config is what is changed, for this one frame. */
     uint8_t hops = r->flood.config.hops;
     if (msg->card && r->config.card_hops) {
         r->flood.config.hops = (uint8_t)r->config.card_hops;
