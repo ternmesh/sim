@@ -238,7 +238,26 @@
  * gives 12.8%, so the table does not keep the destinations a node sends to. Routing at the size of
  * a network larger than its table is not specified yet. For the design without the board's limits:
  * -s routing.neighbours=255 -s routing.destinations=0 -s routing.frames=16 -s
- * routing.flood_frames=16. */
+ * routing.flood_frames=16.
+ *
+ * An experiment (this branch, and the firmware's claude/leaf-default-route): relays with a place
+ * for every node, leaves with few, and leaves handing a frame they hold no route for to their
+ * nearest relay (default_hops 6). Region with the traffic density.py offers, 200 relays, seeds 1
+ * and 2: unicast on time, broadcast on time, and the routes that arrive as the warmup ends.
+ *
+ *                                              fast                   deployed
+ *   a board: 128 places everywhere             12.5%  85.2%  0.12     10.7%  54.0%  0.12
+ *   unbounded                                  96.4%  84.5%  0.97     28.5%   3.6%  0.67
+ *   1024 everywhere                            93.7%  81.9%  0.95     27.2%   3.6%  0.70
+ *   relays 1024, leaves 128                    29.9%  83.4%  0.30     21.1%  36.4%  0.27
+ *   relays 1024, leaves 128, default route     92.4%  81.5%  0.94     14.0%   0.6%  0.75
+ *   relays 1024, leaves 32, default route      93.0%  81.2%  0.94     12.5%   0.5%  0.75
+ *   relays 512, leaves 32, default route       49.3%  83.6%  0.50     -
+ *
+ * Where the channel has room, a relay's table is what decides: leaves need no more than 32
+ * places with the default route, and relays need one for every node. Where it is full (deployed),
+ * the default route costs a third more airtime, sending frames toward relays that hold no route
+ * on, and both unicast and broadcast fall: it wants a guard before it is worth specifying. */
 struct tsim_core_config {
     uint16_t channel;
     struct tsim_lora lora;
