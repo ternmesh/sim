@@ -195,8 +195,12 @@ struct tsim_report {
     double airtime_s[TSIM_PURPOSE_COUNT];
     double airtime_total_s;
 
-    /* On-time deliveries, unicast and broadcast, per second of total airtime; 0 with no airtime. */
+    /* On-time deliveries, unicast and broadcast, per second of total airtime; 0 with no airtime.
+     * A broadcast counts once for every node it reaches, so where broadcasts are a share of the
+     * traffic they are most of this: the two parts below, which sum to it, say which it is. */
     double on_time_per_airtime_s;
+    double unicast_per_airtime_s;   /* unicasts on time, per second of total airtime */
+    double broadcast_per_airtime_s; /* broadcast destinations reached on time, the same */
 
     double duty_max;        /* the busiest node's airtime in the window over elapsed */
     uint32_t duty_max_node; /* the lowest-numbered node with that duty cycle */

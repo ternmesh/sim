@@ -15,6 +15,8 @@ of the scorecard every comparison reports (MSH-66), in this order:
   p50 p95  the median and 95th-percentile delay of the unicasts delivered, in seconds
   b50 b95  the same of the broadcasts, over every destination one reached
   per_s    on-time deliveries, unicast and broadcast, per second of airtime after the warmup
+  uni_s    of them, the unicasts; and bc_s, the broadcast destinations. A broadcast counts once
+  bc_s     for each node it reaches, so it is most of per_s: read these two apart
   duty     the busiest node's share of the measured hour spent sending
   churn    unicast on time with nodes going down and coming back up: a quarter of the 200 sites
            (churn.nodes = relays, churn.share = 0.25), each down 30 minutes on average after two
@@ -89,8 +91,8 @@ EXTRA = {
 }
 DEPLOYED = {s: s.replace(".tsim", "-deployed.tsim") for _, s in CANDIDATES}
 FAST = {s: s.replace(".tsim", "-fast.tsim") for _, s in CANDIDATES}
-METRICS = ["unicast", "bcast", "p50", "p95", "b50", "b95", "per_s", "duty", "churn", "move",
-           "links", "reach"]
+METRICS = ["unicast", "bcast", "p50", "p95", "b50", "b95", "per_s", "uni_s", "bc_s", "duty",
+           "churn", "move", "links", "reach"]
 
 # The stresses the scorecard's churn and move columns are measured under: over the sites where
 # there are sites, and the same number of nodes from all of them where there are none.
@@ -123,6 +125,8 @@ def run(tsim, scenario, power, seed, sets):
         "b50": b["latency_p50_s"],
         "b95": b["latency_p95_s"],
         "per_s": r["on_time_per_airtime_s"],
+        "uni_s": r.get("unicast_per_airtime_s"),
+        "bc_s": r.get("broadcast_per_airtime_s"),
         "duty": 100.0 * r["duty_max"],
         "reach": 100.0 * r["warmup"]["reach"],
     }
@@ -146,7 +150,7 @@ def cell(rows, metric):
         return "%.0f ±%.0f" % (m, sd)
     if metric in ("p50", "p95", "b50", "b95"):
         return "%.1f ±%.1f" % (m, sd)
-    if metric == "per_s":
+    if metric in ("per_s", "uni_s", "bc_s"):
         return "%.2f ±%.2f" % (m, sd)
     return "%.1f%% ±%.1f" % (m, sd)
 
