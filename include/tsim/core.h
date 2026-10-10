@@ -18,16 +18,17 @@
  *
  * What the core has, the plugin runs: announces, links, routes and requests, and the frames that
  * follow routes (tern/forward.h), as the specification has them, in its frames. Each node has an
- * address made from its index, and the routing id the firmware makes from that address. A message goes as a secured unicast frame would, 23 bytes longer than
- * its content, with its number where the frame's tag is; its destination acknowledges every copy,
- * and its source sends it again until it is acknowledged or given up. A frame does not say where
- * it came from, and on a device its destination knows from the session: here it looks the
- * message's number up in a table the nodes of one network share, which stands for those sessions
- * and nothing else. A broadcast goes as a group's frame would (tern/group.h), 31 bytes longer
- * than its content, flooded by the firmware's flooder (tern/flood.h): every node that hears it
- * for the first time is delivered it, as a member of the group would be, and every relay passes
- * it on or not as the flooder says, within the two allowances it keeps. Nothing chooses relays;
- * `relay_pick` names them as it does for candidate 3, and with none picked every node is one.
+ * address made from its index, and the routing id the firmware makes from that address. A message
+ * goes as a secured unicast frame would, 23 bytes longer than its content, with its number where
+ * the frame's tag is; its destination acknowledges every copy, and its source sends it again until
+ * it is acknowledged or given up. A frame does not say where it came from, and on a device its
+ * destination knows from the session: here it looks the message's number up in a table the nodes of
+ * one network share, which stands for those sessions and nothing else. A broadcast goes as a
+ * group's frame would (tern/group.h), 31 bytes longer than its content, flooded by the firmware's
+ * flooder (tern/flood.h): every node that hears it for the first time is delivered it, as a member
+ * of the group would be, and every relay passes it on or not as the flooder says, within the two
+ * allowances it keeps. Nothing chooses relays; `relay_pick` names them as it does for candidate 3,
+ * and with none picked every node is one.
  *
  * The radio gives the core what an SX1262 would: a signal-to-noise ratio in quarters of a decibel,
  * from -32 to 31.75.
