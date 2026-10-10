@@ -576,10 +576,15 @@ static void service(struct router *r) {
 #ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
     tern_route_busy(&r->route, r->flood.busy);
 #endif
-    service_routes(r, now);
+    /* In a board's order: the MAC is started by the first frame offered, so what goes first is
+     * offered first. A message of the node's given up on frees a place for one waiting, here or
+     * when the forwarder is asked for its next frame. */
+    failed(r);
     service_waiting(r, now);
     service_frames(r, now);
+    service_waiting(r, now);
     service_floods(r, now);
+    service_routes(r, now);
     if ((r->len != 0 && r->handle == 0) || r->has_refused || r->has_flood_refused) {
         tsim_timer_start(r->timer, RETRY); /* the queue refused one: offered again */
         return;
