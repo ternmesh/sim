@@ -984,6 +984,10 @@ static const char *core_set(void *config, const char *key, const char *value) {
         {"leaf_destinations", offsetof(struct tsim_core_config, leaf_destinations), 0, 65535},
         {"default_hops", offsetof(struct tsim_core_config, default_hops), 0, 32},
         {"default_busy_ppm", offsetof(struct tsim_core_config, default_busy_ppm), 0, 1000000},
+        {"announce_ppm", offsetof(struct tsim_core_config, announce_ppm), 0, 1000000},
+        {"address_after", offsetof(struct tsim_core_config, address_after), 0, 255},
+        {"address_every", offsetof(struct tsim_core_config, address_every), 0, 255},
+        {"learn_ppm", offsetof(struct tsim_core_config, learn_ppm), 0, 1000000},
     };
     for (size_t i = 0; i < sizeof floods / sizeof floods[0]; i++) {
         if (strcmp(key, floods[i].key) == 0) {

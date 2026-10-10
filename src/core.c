@@ -269,9 +269,9 @@ static struct tern_lora lora_of(const struct tsim_lora *l);
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,
                                           double tx_dbm) {
-#ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
+#if defined(TSIM_FIRMWARE_DEFAULT_ROUTE) || defined(TSIM_FIRMWARE_LEARNING)
     struct tern_lora tl = lora_of(lora);
-    /* The default route as the firmware's router has it by default. */
+    /* The default route and learning allowance as the firmware's router has them by default. */
     struct tern_route_config rd = tern_route_defaults(&tl, 0, 0, false);
 #endif
     return (struct tsim_core_config){
@@ -295,7 +295,11 @@ struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lo
 #ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
         .default_hops = rd.default_hops,
         .default_busy_ppm = rd.default_busy_ppm,
-#else
+#endif
+#ifdef TSIM_FIRMWARE_LEARNING
+        .learn_ppm = rd.learn_ppm,
+#endif
+#ifndef TSIM_FIRMWARE_DEFAULT_ROUTE
         .default_busy_ppm = 1000000,
 #endif
     };
@@ -332,6 +336,15 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
         return "default_hops needs a firmware with a leaf's default route";
     }
 #endif
+#ifndef TSIM_FIRMWARE_LEARNING
+    if (c->learn_ppm) {
+        return "learn_ppm needs a firmware with a learning allowance";
+    }
+#endif
+    if (c->announce_ppm > 1000000 || c->address_after > 255 || c->address_every > 255 ||
+        c->learn_ppm > 1000000) {
+        return "announce_ppm must be 0 to 1000000, and address_after and address_every 0 to 255";
+    }
     if (c->default_hops > 32 || c->leaf_destinations > 65535 || c->default_busy_ppm > 1000000) {
         return "default_hops must be 0 to 32, leaf_destinations 0 to 65535, and "
                "default_busy_ppm 0 to 1000000";
@@ -749,6 +762,18 @@ static void *router_create(struct tsim_node *node, const void *config) {
     struct tern_lora lora = lora_of(&c->lora);
     struct tern_route_config rc = tern_route_defaults(
         &lora, (int8_t)round(c->tx_dbm), (int8_t)round(c->tx_min_dbm), tsim_core_relay(c, self));
+    if (c->announce_ppm) {
+        rc.announce_ppm = c->announce_ppm;
+    }
+    if (c->address_after) {
+        rc.address_after = (uint8_t)c->address_after;
+    }
+    if (c->address_every) {
+        rc.address_every = (uint8_t)c->address_every;
+    }
+#ifdef TSIM_FIRMWARE_LEARNING
+    rc.learn_ppm = c->learn_ppm;
+#endif
 #ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
     rc.default_hops = (uint8_t)c->default_hops;
     rc.default_busy_ppm = c->default_busy_ppm;
