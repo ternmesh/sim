@@ -341,10 +341,15 @@ static void a_config_out_of_range_is_refused(void) {
     CHECK(tsim_core_check(&c) == NULL);
     c.retry_jitter = 256;
     CHECK(tsim_core_check(&c) != NULL);
-    /* The default route's hops go in a byte, and no further than a frame may. */
+    /* The default route's hops go in a byte, and no further than a frame may; a firmware without
+     * one takes none. */
     c = tsim_core_default(0, &l, 14.0);
     c.default_hops = 32;
+#ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
     CHECK(tsim_core_check(&c) == NULL);
+#else
+    CHECK(tsim_core_check(&c) != NULL);
+#endif
     c.default_hops = 256;
     CHECK(tsim_core_check(&c) != NULL);
     /* The rules for a full channel: a share is no more than all of the radio's time. */

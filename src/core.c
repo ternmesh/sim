@@ -172,9 +172,11 @@ static struct tern_lora lora_of(const struct tsim_lora *l);
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,
                                           double tx_dbm) {
+#ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
     struct tern_lora tl = lora_of(lora);
     /* The default route as the firmware's router has it by default. */
     struct tern_route_config rd = tern_route_defaults(&tl, 0, 0, false);
+#endif
     return (struct tsim_core_config){
         .channel = channel,
         .lora = *lora,
@@ -193,8 +195,12 @@ struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lo
         .flood_own_ppm = tern_flood_defaults().own_ppm,
         .flood_relay_ppm = tern_flood_defaults().relay_ppm,
         .flood_busy_ppm = tern_flood_defaults().busy_ppm,
+#ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
         .default_hops = rd.default_hops,
         .default_busy_ppm = rd.default_busy_ppm,
+#else
+        .default_busy_ppm = 1000000,
+#endif
     };
 }
 
@@ -224,6 +230,11 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
     if (c->flood_last > 1 || c->flood_busy_ppm > 1000000 || c->card_hops > 255) {
         return "flood_last must be 0 or 1, flood_busy_ppm 0 to 1000000, and card_hops 0 to 255";
     }
+#ifndef TSIM_FIRMWARE_DEFAULT_ROUTE
+    if (c->default_hops) {
+        return "default_hops needs a firmware with a leaf's default route";
+    }
+#endif
     if (c->default_hops > 32 || c->leaf_destinations > 65535 || c->default_busy_ppm > 1000000) {
         return "default_hops must be 0 to 32, leaf_destinations 0 to 65535, and "
                "default_busy_ppm 0 to 1000000";
@@ -372,7 +383,9 @@ static void service(struct router *r) {
     tsim_time now = tsim_node_now(r->node), due, wait;
     /* How busy the radio has been, which a relay passes fewer flooded frames on by. */
     tern_flood_radio(&r->flood, now, tsim_node_tx_airtime(r->node) + tsim_node_rx_airtime(r->node));
+#ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
     tern_route_busy(&r->route, r->flood.busy);
+#endif
     service_routes(r, now);
     service_frames(r, now);
     service_floods(r, now);
@@ -620,8 +633,10 @@ static void *router_create(struct tsim_node *node, const void *config) {
     struct tern_lora lora = lora_of(&c->lora);
     struct tern_route_config rc = tern_route_defaults(
         &lora, (int8_t)round(c->tx_dbm), (int8_t)round(c->tx_min_dbm), tsim_core_relay(c, self));
+#ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
     rc.default_hops = (uint8_t)c->default_hops;
     rc.default_busy_ppm = c->default_busy_ppm;
+#endif
     struct tsim_rng rng;
     tsim_node_rng(node, TSIM_STREAM_ROUTING, &rng);
     /* A node that comes back from being powered down is made again, here: it has kept nothing, as

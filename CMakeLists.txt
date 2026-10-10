@@ -98,6 +98,14 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
             endif()
         endif()
     endforeach()
+    # A firmware with a leaf's default route (ternmesh/spec routing draft, firmware#70) has its
+    # settings measured too; one from before has none, and default_hops is refused.
+    file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/route.h" TSIM_ROUTE_BUSY
+         REGEX "tern_route_busy")
+    if(TSIM_ROUTE_BUSY)
+        target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_DEFAULT_ROUTE)
+        message(STATUS "Core routing: with a leaf's default route")
+    endif()
     set(TSIM_HAVE_CORE ON)
     message(STATUS "Core routing: from ${TSIM_FIRMWARE_DIR}")
 elseif(TSIM_REQUIRE_CORE)
