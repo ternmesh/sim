@@ -1,7 +1,9 @@
 # Presence cards on the firmware's core (tsim/core.h), deployed preset, over the 200 shared sites,
 # as region-core-deployed.tsim, with the region's message load and every node sending a signed
-# card an hour (cards.len = 96 is a 123-byte frame). tools/cards.py sweeps it against the same
-# load without cards, and against a public room of the same shape: see the spec's draft/cards.md.
+# card every two hours, as the firmware does (CARD_EVERY; cards.len = 96 is a 127-byte frame, a
+# card with a 24-byte name, which the firmware's flooder holds to CARD_HOPS). tools/cards.py sweeps
+# it against the same load without cards, and against a public room of the same shape: see the
+# spec's draft/cards.md.
 nodes     = 1000
 placement = uniform
 area      = 18000 x 18000
@@ -25,7 +27,7 @@ traffic.interval  = 30 min
 traffic.len       = 16..64
 traffic.broadcast = 0.25
 
-cards.interval = 1 h
+cards.interval = 2 h
 cards.len      = 96
 
 warmup       = 6 h
