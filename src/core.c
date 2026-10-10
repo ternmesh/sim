@@ -10,14 +10,14 @@
 #include "tern/route.h"
 #include "tsim/rng.h"
 
-/* Announces go before requests wait, as candidate 3 has them. */
-#define PRIORITY_REQUEST 3
-#define PRIORITY_ANNOUNCE 2
-/* And frames that follow routes as candidate 3 has them: acknowledgements first, then what is
- * passed on, then a node's own. */
-#define PRIORITY_REPLY 3
-#define PRIORITY_RELAY 2
-#define PRIORITY_OWN 1
+/* In the order a board asks for them (the loop at the end of ports/node/node.c): frames that
+ * follow routes, then flooded frames, then routing frames. The forwarder and the router each have
+ * one in the queue at a time and choose it themselves, the forwarder acknowledgements first, then
+ * what it passes on, then the node's own; the flooder may have several, its own and those it
+ * passes on alike. */
+#define PRIORITY_FRAME 3
+#define PRIORITY_FLOOD 2
+#define PRIORITY_ROUTE 1
 #define PRIORITY_FLOOD_LAST 0
 
 /* A message's frame: the head, then four bytes that tell it from any other - the secured unicast
@@ -56,6 +56,20 @@
 #ifndef TSIM_BOARD_FLOOD_FRAMES
 #define TSIM_BOARD_FLOOD_FRAMES 4
 #endif
+#ifndef TSIM_BOARD_OWN
+#define TSIM_BOARD_OWN 4
+#endif
+/* The messages a phone hands a board that wait for the forwarder (LINK_MESSAGES in
+ * ports/node/link.h). */
+#define TSIM_BOARD_WAITING 32
+
+/* A node's own message waiting for the forwarder to take it: its frame, made already. */
+struct waiting {
+    uint64_t id;
+    uint32_t dst;
+    size_t len;
+    uint8_t frame[TERN_FORWARD_FRAME_MAX];
+};
 
 struct router {
     struct tsim_node *node;
@@ -77,6 +91,16 @@ struct router {
     struct tsim_tx refused;
     uint8_t refused_slot;
     bool has_refused;
+    /* The node's own messages the forwarder has, unacknowledged, and those waiting for it to have
+     * room, oldest first from `wait_head`; none is offered again before `wait_retry`. */
+    uint32_t own;
+    struct waiting *wait;
+    uint32_t wait_head, wait_count;
+    tsim_time wait_retry;
+    /* No frame of the forwarder's goes before `forward_retry`: it listens for the answer to the
+     * last one. `forward_air` is that one's airtime, while it is in the queue. */
+    tsim_time forward_retry;
+    tsim_time forward_air;
     struct network *net;
     /* And for frames for every node. */
     struct tern_flood flood;
@@ -283,6 +307,9 @@ struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lo
         .destinations = TSIM_BOARD_DESTINATIONS,
         .frames = TSIM_BOARD_FRAMES,
         .salvage = 1,
+        .own = TSIM_BOARD_OWN,
+        .waiting = TSIM_BOARD_WAITING,
+        .forward_quiet = 1,
         .retry_jitter = tern_forward_defaults().retry_jitter,
         .flood_frames = TSIM_BOARD_FLOOD_FRAMES,
         .flood_hops = tern_flood_defaults().hops,
@@ -315,6 +342,9 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
     }
     if (c->frames < 1 || c->frames > 255 || c->salvage > TERN_FORWARD_SALVAGE_MAX) {
         return "frames must be 1 to 255, and salvage 0 to 4";
+    }
+    if (c->own > 255 || c->waiting > 255 || c->forward_quiet > 1) {
+        return "own and waiting must be 0 to 255, and forward_quiet 0 or 1";
     }
     if (c->retry_jitter > UINT8_MAX) {
         return "retry_jitter must be 0 to 255"; /* the firmware holds it in a byte */
@@ -399,7 +429,7 @@ static void service_routes(struct router *r, tsim_time now) {
             .lora = r->config.lora,
             .tx_dbm = r->dbm,
             .purpose = announce ? TSIM_PURPOSE_ANNOUNCE : TSIM_PURPOSE_CONTROL,
-            .priority = announce ? PRIORITY_ANNOUNCE : PRIORITY_REQUEST,
+            .priority = PRIORITY_ROUTE,
             .len = (uint32_t)r->len,
         };
         memcpy(tx.bytes, r->frame, r->len);
@@ -412,17 +442,50 @@ static void failed(struct router *r) {
     uint8_t tag[TERN_FORWARD_TAG];
     while (tern_forward_failed(&r->forward, tag)) {
         uint64_t id = tag_get(tag);
+        r->own -= r->own > 0;
         tsim_node_drop(r->node, id, TSIM_DROP_RETRIES, TSIM_BROADCAST);
         tsim_node_finished(r->node, id);
     }
 }
 
-/* And the same for the frames that follow routes: every one the core has ready goes to the queue,
- * which sends them in the order of their priorities. */
+/* Hands the forwarder the node's waiting messages, oldest first, while it has room for them, as a
+ * board's poll_outgoing() does: one it cannot take now is offered again a second on. */
+static void service_waiting(struct router *r, tsim_time now) {
+    uint32_t own = r->config.own ? r->config.own : r->config.frames;
+    while (r->wait_count && r->own < own && now >= r->wait_retry) {
+        struct waiting *w = &r->wait[r->wait_head];
+        if (!tern_forward_send(&r->forward, now, r->net->id[w->dst], w->frame, w->len, true,
+                               INT8_MIN)) {
+            r->wait_retry = now + RETRY;
+            return;
+        }
+        r->own++;
+        r->wait_head = (r->wait_head + 1) % r->config.waiting;
+        r->wait_count--;
+    }
+}
+
+/* Whether a frame of the forwarder's is in the queue. */
+static bool frame_queued(const struct router *r) {
+    for (uint32_t i = 0; i < r->config.frames; i++) {
+        if (r->fhandles[i] != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* And the same for the frames that follow routes. A board has one on the air at a time, and once
+ * it has gone listens for the answer before the next (forward_quiet); with that off, every one the
+ * core has ready goes to the queue. */
 static void service_frames(struct router *r, tsim_time now) {
     for (;;) {
         struct tsim_tx *tx = &r->refused;
         uint8_t slot = r->refused_slot;
+        if (!r->has_refused && r->config.forward_quiet &&
+            (now < r->forward_retry || frame_queued(r))) {
+            return;
+        }
         if (!r->has_refused) {
             uint8_t frame[TERN_FORWARD_FRAME_MAX];
             struct tern_forward_head h;
@@ -441,9 +504,7 @@ static void service_frames(struct router *r, tsim_time now) {
                 .purpose = kind == TERN_FORWARD_OWN     ? TSIM_PURPOSE_DATA
                            : kind == TERN_FORWARD_RELAY ? TSIM_PURPOSE_RELAY
                                                         : TSIM_PURPOSE_CONTROL,
-                .priority = kind == TERN_FORWARD_OWN     ? PRIORITY_OWN
-                            : kind == TERN_FORWARD_RELAY ? PRIORITY_RELAY
-                                                         : PRIORITY_REPLY,
+                .priority = PRIORITY_FRAME,
                 .carries = message ? tag_get(frame + AT_TAG) : 0,
                 .carries_at = message ? AT_CONTENT : 0,
                 .len = (uint32_t)len,
@@ -460,6 +521,8 @@ static void service_frames(struct router *r, tsim_time now) {
         if (r->has_refused) {
             return;
         }
+        struct tern_lora lora = lora_of(&r->config.lora);
+        r->forward_air = (tsim_time)tern_lora_airtime(&lora, tx->len);
     }
 }
 
@@ -483,9 +546,7 @@ static void service_floods(struct router *r, tsim_time now) {
                 .lora = r->config.lora,
                 .tx_dbm = dbm,
                 .purpose = kind == TERN_FLOOD_OWN ? TSIM_PURPOSE_DATA : TSIM_PURPOSE_RELAY,
-                .priority = r->config.flood_last     ? PRIORITY_FLOOD_LAST
-                            : kind == TERN_FLOOD_OWN ? PRIORITY_OWN
-                                                     : PRIORITY_RELAY,
+                .priority = r->config.flood_last ? PRIORITY_FLOOD_LAST : PRIORITY_FLOOD,
                 .carries = tag_get(frame + AT_FLOOD_ID),
                 .carries_at = AT_FLOOD_CONTENT,
                 .len = (uint32_t)len,
@@ -515,16 +576,30 @@ static void service(struct router *r) {
 #ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
     tern_route_busy(&r->route, r->flood.busy);
 #endif
-    service_routes(r, now);
+    /* In a board's order: the MAC is started by the first frame offered, so what goes first is
+     * offered first. A message of the node's given up on frees a place for one waiting, here or
+     * when the forwarder is asked for its next frame. */
+    failed(r);
+    service_waiting(r, now);
     service_frames(r, now);
+    service_waiting(r, now);
     service_floods(r, now);
+    service_routes(r, now);
     if ((r->len != 0 && r->handle == 0) || r->has_refused || r->has_flood_refused) {
         tsim_timer_start(r->timer, RETRY); /* the queue refused one: offered again */
         return;
     }
     due = r->handle != 0 ? INT64_MAX : tern_route_due(&r->route);
-    if (tern_forward_due(&r->forward) < due) {
-        due = tern_forward_due(&r->forward);
+    tsim_time fdue = tern_forward_due(&r->forward);
+    if (r->config.forward_quiet && fdue != INT64_MAX) {
+        /* While one is in the queue its end comes back here; until the quiet is over, nothing. */
+        fdue = frame_queued(r) ? INT64_MAX : fdue > r->forward_retry ? fdue : r->forward_retry;
+    }
+    if (fdue < due) {
+        due = fdue;
+    }
+    if (r->wait_count && r->wait_retry > now && r->wait_retry < due) {
+        due = r->wait_retry;
     }
     if (tern_flood_due(&r->flood) < due) {
         due = tern_flood_due(&r->flood);
@@ -556,6 +631,7 @@ static void frame_rx(struct router *r, const struct tsim_rx *rx, int16_t snr_q) 
         }
     } else if (got.got == TERN_FORWARD_ACK) {
         if (tern_forward_acked(&r->forward, rx->bytes + AT_TAG)) {
+            r->own -= r->own > 0;
             tsim_node_finished(r->node, tag_get(rx->bytes + AT_TAG));
         }
     }
@@ -615,6 +691,9 @@ static void router_tx_done(void *self, uint64_t handle) {
         if (slot != r->config.frames) {
             tern_forward_sent(&r->forward, tsim_node_now(r->node), (uint8_t)slot);
             r->fhandles[slot] = 0;
+            /* The answer waits up to JITTER airtimes of the frame and then takes its own. */
+            r->forward_retry =
+                tsim_node_now(r->node) + (tsim_time)(r->forward.config.jitter + 1) * r->forward_air;
         } else if (fl != r->config.flood_frames) {
             tern_flood_sent(&r->flood, tsim_node_now(r->node), (uint8_t)fl);
             r->flhandles[fl] = 0;
@@ -701,12 +780,25 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
     sender_note(r->net, msg->id, msg->src);
     tag_put(frame + AT_TAG, (uint32_t)msg->id);
     memcpy(frame + AT_CONTENT, msg->content, msg->len);
-    if (!tern_forward_send(&r->forward, tsim_node_now(r->node), r->net->id[msg->dst], frame, len,
-                           true, INT8_MIN)) {
-        tsim_node_drop(r->node, msg->id, TSIM_DROP_QUEUE, TSIM_BROADCAST);
-        tsim_node_finished(r->node, msg->id);
+    /* It waits behind the node's others, as a board's do; with no room to wait, it is dropped. */
+    if (r->wait_count == r->config.waiting) {
+        uint32_t own = r->config.own ? r->config.own : r->config.frames;
+        tsim_time now = tsim_node_now(r->node);
+        if (r->wait_count || r->own >= own || now < r->wait_retry ||
+            !tern_forward_send(&r->forward, now, r->net->id[msg->dst], frame, len, true,
+                               INT8_MIN)) {
+            tsim_node_drop(r->node, msg->id, TSIM_DROP_QUEUE, TSIM_BROADCAST);
+            tsim_node_finished(r->node, msg->id);
+            return true;
+        }
+        r->own++;
+        service(r);
         return true;
     }
+    struct waiting *w = &r->wait[(r->wait_head + r->wait_count) % r->config.waiting];
+    *w = (struct waiting){.id = msg->id, .dst = msg->dst, .len = len};
+    memcpy(w->frame, frame, len);
+    r->wait_count++;
     service(r);
     return true;
 }
@@ -723,6 +815,7 @@ static void router_destroy(void *self) {
     free(r->dests);
     free(r->slots);
     free(r->fhandles);
+    free(r->wait);
     free(r->flood_slots);
     free(r->flood_seen);
     free(r->flhandles);
@@ -749,12 +842,13 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->dests = calloc(dests, sizeof *r->dests);
     r->slots = calloc(c->frames, sizeof *r->slots);
     r->fhandles = calloc(c->frames, sizeof *r->fhandles);
+    r->wait = calloc(c->waiting ? c->waiting : 1, sizeof *r->wait);
     r->flood_slots = calloc(c->flood_frames, sizeof *r->flood_slots);
     r->flood_seen = calloc(TERN_FLOOD_SEEN, sizeof *r->flood_seen);
     r->flhandles = calloc(c->flood_frames, sizeof *r->flhandles);
     r->net = network_take(node);
     r->timer = tsim_timer_create(node, router_fire, r);
-    if (!r->neighbours || !r->dests || !r->slots || !r->fhandles || !r->flood_slots ||
+    if (!r->neighbours || !r->dests || !r->slots || !r->fhandles || !r->wait || !r->flood_slots ||
         !r->flood_seen || !r->flhandles || !r->net || !r->timer) {
         router_destroy(r);
         return NULL;

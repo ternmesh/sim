@@ -376,6 +376,73 @@ static void frames_that_met_do_not_meet_at_every_try(void) {
     }
 }
 
+/* A line of `nodes`, settled, sending as soon as they have a frame, whose first node is handed
+ * `count` messages for its last at once, with the forwarder's own and waiting places and its quiet
+ * as given. Returns how many arrived within two minutes, and in `sent` how many frames of its own
+ * the first node sent. */
+static uint32_t burst(uint32_t nodes, uint32_t count, uint32_t own, uint32_t waiting,
+                      uint32_t quiet, uint64_t seed, uint64_t *sent) {
+    struct tsim_lora l = tsim_lora_default(7, 125000);
+    struct tsim_net_params p = tsim_net_defaults(seed);
+    struct tsim_core_config rc = tsim_core_default(0, &l, 14.0);
+    struct tsim_aloha_config ac = {.max_delay = 0};
+    struct tsim_sched *sched = tsim_sched_create();
+    p.queue_limit = 0;
+    rc.own = own;
+    rc.waiting = waiting;
+    rc.forward_quiet = quiet;
+    struct tsim_net *net = tsim_net_create(sched, &p, nodes, &tsim_core, &rc, &tsim_aloha, &ac);
+    for (uint32_t i = 0; i + 1 < nodes; i++) {
+        tsim_phy_set_loss(tsim_net_phy(net), i, i + 1, LOSS_LOUD);
+    }
+    tsim_net_start(net);
+    tsim_sched_run_until(sched, TSIM_S(600));
+    uint64_t first = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        uint64_t id = tsim_net_originate(net, 0, nodes - 1, 16);
+        first = first ? first : id;
+    }
+    tsim_sched_run_until(sched, TSIM_S(720));
+    uint32_t arrived = 0;
+    for (uint64_t id = first; id < first + count; id++) {
+        arrived += tsim_net_message(net, id)->delivered;
+    }
+    *sent = tsim_net_ledger(net, 0)->frames[TSIM_PURPOSE_DATA];
+    tsim_net_destroy(net);
+    tsim_sched_destroy(sched);
+    return arrived;
+}
+
+/* A board's forwarder holds four of its own messages at once (PENDING in ports/node/node.c), and
+ * the rest wait their turn rather than being dropped; with nowhere to wait, those past the four are
+ * dropped, and with no limit those past the forwarder's eight frames. */
+static void a_node_keeps_four_of_its_own_and_the_rest_wait(void) {
+    struct tsim_lora l = tsim_lora_default(7, 125000);
+    struct tsim_core_config c = tsim_core_default(0, &l, 14.0);
+    uint64_t sent;
+    CHECK_EQ_U64(c.own, 4);
+    CHECK_EQ_U64(c.waiting, 32);
+    CHECK_EQ_U64(burst(3, 12, 4, 32, 1, 1, &sent), 12);
+    CHECK_EQ_U64(burst(3, 12, 4, 0, 1, 1, &sent), 4);
+    CHECK_EQ_U64(burst(3, 12, 0, 0, 1, 1, &sent), c.frames);
+}
+
+/* Once a frame of the forwarder's has gone it listens for the answer before the next goes, as a
+ * board does: a node with several messages for its neighbour does not send the second over the
+ * acknowledgement of the first, and each goes once. Without the quiet some go again. */
+static void a_node_listens_for_the_answer_before_its_next_frame(void) {
+    uint64_t quiet = 0, loud = 0;
+    for (uint64_t seed = 1; seed <= 10; seed++) {
+        uint64_t sent;
+        CHECK_EQ_U64(burst(2, 4, 4, 32, 1, seed, &sent), 4);
+        quiet += sent;
+        burst(2, 4, 4, 32, 0, seed, &sent);
+        loud += sent;
+    }
+    CHECK_EQ_U64(quiet, 40);
+    CHECK(loud > quiet);
+}
+
 static void a_config_out_of_range_is_refused(void) {
     struct tsim_lora l = tsim_lora_default(7, 125000);
     struct tsim_core_config c = tsim_core_default(0, &l, 14.0);
@@ -392,6 +459,12 @@ static void a_config_out_of_range_is_refused(void) {
     c.retry_jitter = 255;
     CHECK(tsim_core_check(&c) == NULL);
     c.retry_jitter = 256;
+    CHECK(tsim_core_check(&c) != NULL);
+    c = tsim_core_default(0, &l, 14.0);
+    c.own = 256;
+    CHECK(tsim_core_check(&c) != NULL);
+    c = tsim_core_default(0, &l, 14.0);
+    c.forward_quiet = 2;
     CHECK(tsim_core_check(&c) != NULL);
     /* The default route's hops go in a byte, and no further than a frame may; a firmware without
      * one takes none. */
@@ -434,6 +507,8 @@ int main(void) {
 #endif
     RUN(only_relays_pass_routes_on);
     RUN(frames_that_met_do_not_meet_at_every_try);
+    RUN(a_node_keeps_four_of_its_own_and_the_rest_wait);
+    RUN(a_node_listens_for_the_answer_before_its_next_frame);
     RUN(a_config_out_of_range_is_refused);
     return CHECK_DONE();
 }

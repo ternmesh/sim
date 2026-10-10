@@ -30,6 +30,12 @@
  * allowances it keeps. Nothing chooses relays; `relay_pick` names them as it does for candidate 3,
  * and with none picked every node is one.
  *
+ * A node offers its frames as a board's loop asks for them (ports/node/node.c): the forwarder's
+ * first, then the flooder's, then the router's. The forwarder has one in the queue at a time, and
+ * once it has gone listens for the answer, JITTER + 1 of its airtimes, before its next. It holds
+ * four of the node's own messages at once, and the rest wait their turn, as on a board, where they
+ * wait in the phone's link; they are not dropped while there is room to wait.
+ *
  * The radio gives the core what an SX1262 would: a signal-to-noise ratio in quarters of a decibel,
  * from -32 to 31.75.
  *
@@ -375,6 +381,16 @@ struct tsim_core_config {
      * dropped. */
     uint32_t frames;
     uint32_t salvage; /* other neighbours a frame given up on is tried at: 0..4 */
+    /* A node's own messages the forwarder has at once, unacknowledged, as a board keeps them
+     * (PENDING in ports/node/node.c), 0 for as many as it has frames; and how many more wait
+     * their turn, as the messages a phone has handed a board do (LINK_MESSAGES in
+     * ports/node/link.h). One more than both is dropped. */
+    uint32_t own;     /* 0..255 */
+    uint32_t waiting; /* 0..255 */
+    /* Whether the forwarder listens once a frame of its has gone, for JITTER + 1 of that frame's
+     * airtimes, before its next goes (forward_quiet in ports/node/node.c): the answer to it, or
+     * the next hop passing it on, is not sent over. 1 as a board does, 0 for not at all. */
+    uint32_t forward_quiet;
     /* Airtimes of itself a frame sent again waits, at most: 0..255, and the firmware's own by
      * default. With 0, two nodes whose frames met meet again at every try (scenarios/core/
      * together.tsim). */

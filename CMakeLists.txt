@@ -85,7 +85,7 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
     # one, or without a size, leaves that size to tsim_core_default()'s own.
     set(TSIM_NODE_C "${TSIM_FIRMWARE_DIR}/ports/node/node.c")
     foreach(pair "NEIGHBOURS;NEIGHBOURS" "DESTINATIONS;DESTINATIONS" "FORWARD_SLOTS;FRAMES"
-                 "FLOOD_SLOTS;FLOOD_FRAMES")
+                 "FLOOD_SLOTS;FLOOD_FRAMES" "PENDING;OWN")
         list(GET pair 0 from)
         list(GET pair 1 to)
         if(EXISTS "${TSIM_NODE_C}")
