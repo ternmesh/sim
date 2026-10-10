@@ -256,6 +256,11 @@ struct tsim_core_config {
      * frames of each kind, which a board does not have (see the end of this comment). */
     uint32_t neighbours;   /* 1..255 */
     uint32_t destinations; /* 0 for one each for every node */
+    /* An experiment: a leaf's destinations, 0 for `destinations`, and the firmware's
+     * default_hops (tern/route.h, ternmesh/firmware claude/leaf-default-route): a leaf with no
+     * route hands a frame to its nearest relay. */
+    uint32_t leaf_destinations;
+    uint32_t default_hops;
     /* Frames a node has in hand at once, its own and those it passes on: 1..255. One more is
      * dropped. */
     uint32_t frames;

@@ -588,6 +588,9 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->config = *c;
     uint32_t self = tsim_node_index(node);
     size_t dests = c->destinations ? c->destinations : tsim_node_count(node);
+    if (c->leaf_destinations && !tsim_core_relay(c, self)) {
+        dests = c->leaf_destinations;
+    }
     r->neighbours = calloc(c->neighbours, sizeof *r->neighbours);
     r->dests = calloc(dests, sizeof *r->dests);
     r->slots = calloc(c->frames, sizeof *r->slots);
@@ -605,6 +608,7 @@ static void *router_create(struct tsim_node *node, const void *config) {
     struct tern_lora lora = lora_of(&c->lora);
     struct tern_route_config rc = tern_route_defaults(
         &lora, (int8_t)round(c->tx_dbm), (int8_t)round(c->tx_min_dbm), tsim_core_relay(c, self));
+    rc.default_hops = (uint8_t)c->default_hops;
     struct tsim_rng rng;
     tsim_node_rng(node, TSIM_STREAM_ROUTING, &rng);
     /* A node that comes back from being powered down is made again, here: it has kept nothing, as
