@@ -788,11 +788,24 @@ static void *router_create(struct tsim_node *node, const void *config) {
     return r;
 }
 
+/* For reports, the route a node holds: a route it selected, never a leaf's default route to its
+ * nearest relay, which tern_route_next() falls back to when it holds none and which says nothing
+ * of whether the relay holds one on. Counted, a default route made every leaf seem to hold a route
+ * to every node, and the share whose routes arrive fall short of it at the first hop. The router is
+ * asked with default_hops 0, which the firmware takes as no default route, and given it back. */
 static bool router_next_hop(const void *self, uint32_t dst, uint32_t *next) {
-    const struct router *r = self;
+    struct router *r = (struct router *)self; /* restored before returning */
     uint32_t id;
     uint16_t metric;
-    if (!tern_route_next(&r->route, r->net->id[dst], &id, &metric)) {
+#ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
+    uint8_t hops = r->route.config.default_hops;
+    r->route.config.default_hops = 0;
+#endif
+    bool held = tern_route_next(&r->route, r->net->id[dst], &id, &metric);
+#ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
+    r->route.config.default_hops = hops;
+#endif
+    if (!held) {
         return false;
     }
     *next = node_of(r->net, id);
