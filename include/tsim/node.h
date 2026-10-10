@@ -125,6 +125,9 @@ struct tsim_routing {
      * route to it. For a protocol that keeps routes before it has traffic to carry - what shows
      * whether a warmup was long enough for its tables to fill. */
     bool (*next_hop)(const void *self, uint32_t dst, uint32_t *next);
+    /* Optional: frees what its nodes left in tsim_node_routing_shared(), when the network is
+     * destroyed. */
+    void (*destroy_shared)(void *shared);
 };
 
 /* A MAC. kick() is called whenever the queue or the radio may have changed: a frame was queued or
@@ -145,6 +148,13 @@ uint32_t tsim_node_index(const struct tsim_node *node);
 /* How many nodes the network has, numbered from 0. What a protocol whose nodes know every other's
  * key - from adverts, or a contact list - can count on; never where they are or who hears whom. */
 uint32_t tsim_node_count(const struct tsim_node *node);
+
+/* A place the network keeps for its routing's nodes to share, NULL until one of them fills it: for
+ * what stands outside the air - a table standing for sessions both ends hold, what a board keeps in
+ * flash - never for what a node could only learn from a frame. It lasts as long as the network,
+ * through every node's being powered down, and is handed to the routing's destroy_shared() at the
+ * end. */
+void **tsim_node_routing_shared(struct tsim_node *node);
 
 /* The current simulated time. */
 tsim_time tsim_node_now(const struct tsim_node *node);
@@ -263,6 +273,9 @@ void tsim_node_hold_header(struct tsim_node *node, tsim_time hold);
  * tsim_phy_rx_airtime() for which receptions count. */
 tsim_time tsim_node_tx_airtime(const struct tsim_node *node);
 tsim_time tsim_node_rx_airtime(const struct tsim_node *node);
+/* And the airtime of the frames it has received whole, as a radio that reports only those - with
+ * their lengths - lets its node count (tsim_phy_stats' rx_whole_airtime). */
+tsim_time tsim_node_rx_whole_airtime(const struct tsim_node *node);
 
 /* Retunes the receiver; see tsim_phy_tune(). */
 bool tsim_node_tune(struct tsim_node *node, uint16_t channel, const struct tsim_lora *listen);

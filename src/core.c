@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "tern/crypto.h"
 #include "tern/flood.h"
 #include "tern/forward.h"
 #include "tern/route.h"
@@ -33,6 +34,10 @@
 #define AT_FLOOD_SRC TERN_FLOOD_HEAD
 #define AT_FLOOD_ID (TERN_FLOOD_HEAD + 4)
 #define AT_FLOOD_CONTENT (TERN_FLOOD_HEAD + 8 + 4 + 4 + 4)
+
+/* How far ahead a board stores its announce numbers: the specification's NUMBER_SAVE, as
+ * ports/node/node.c has it. */
+#define NUMBER_SAVE 256
 
 /* How soon a frame the queue refused is offered again. */
 #define RETRY TSIM_S(1)
@@ -72,7 +77,7 @@ struct router {
     struct tsim_tx refused;
     uint8_t refused_slot;
     bool has_refused;
-    struct sessions *sessions;
+    struct network *net;
     /* And for frames for every node. */
     struct tern_flood flood;
     struct tern_flood_slot *flood_slots;
@@ -81,55 +86,126 @@ struct router {
     struct tsim_tx flood_refused;
     uint8_t flood_refused_slot;
     bool has_flood_refused;
+    /* Whether a routing frame has gone on the air since the node started, as the firmware keeps
+     * it: until one has, announce numbers are stored ahead one at a time. */
+    bool route_on_air;
 };
 
-/* Who sent each message of one network, by its number. A frame does not say where it came from:
- * on a device its destination knows from the session the frame's tag belongs to, which both ends
- * hold. This table stands for those sessions, and is read only by a message's destination, to
- * acknowledge it. Message numbers start again in every network, so each has a table of its own:
- * the nodes of one are those made with one config, and the table lasts as long as any of them. */
-struct sessions {
-    const void *config; /* whose network it is */
-    uint32_t nodes;     /* routers that hold it */
-    uint32_t *sender;   /* [message number] */
+/* What the nodes of one network keep that is not on the air: who they are, what a board keeps
+ * across a restart, and who sent each message. It is the network's own
+ * (tsim_node_routing_shared()), and lasts as long as the network does, through every node's being
+ * powered down.
+ *
+ * Who they are. Each node has an address, 32 bytes made from its index, and the routing id the
+ * firmware makes from it (tern_route_id()); a frame names a node by that id, and the table maps
+ * it back to the node. An address is not a key here - nothing is signed - but the router is given
+ * a means to check, so that it discards what a device would: an announce from a neighbour whose
+ * address it does not hold and that does not carry it. The ids of one network are told apart: an
+ * address whose id another node has already is made again.
+ *
+ * What a board keeps across a restart (ports/node/node.c): its route's sequence number, and how
+ * far ahead its announces are numbered. A node made again after being powered down starts from
+ * them, as a board does from its flash.
+ *
+ * Who sent each message, by its number. A frame does not say where it came from: on a device its
+ * destination knows from the session the frame's tag belongs to, which both ends hold. This stands
+ * for those sessions, and is read only by a message's destination, to acknowledge it. */
+struct network {
+    uint32_t count;                       /* nodes in it */
+    uint8_t (*address)[TERN_ADDRESS_LEN]; /* [node] */
+    uint32_t *id;                         /* [node] its routing id */
+    struct by_id {
+        uint32_t id, node;
+    } *by_id;         /* sorted by id */
+    uint16_t *seq;    /* [node] as last kept */
+    uint16_t *number; /* [node] the announce number kept ahead, if has_number */
+    bool *has_number; /* [node] */
+    uint32_t *sender; /* [message number] */
     size_t cap;
-    struct sessions *next;
 };
 
-static struct sessions *networks;
+static int by_id_cmp(const void *a, const void *b) {
+    uint32_t x = ((const struct by_id *)a)->id, y = ((const struct by_id *)b)->id;
+    return x < y ? -1 : x > y;
+}
 
-static struct sessions *sessions_take(const void *config) {
-    struct sessions *s = networks;
-    for (; s && s->config != config; s = s->next) {
+static void network_free(void *shared) {
+    struct network *n = shared;
+    free(n->address);
+    free(n->id);
+    free(n->by_id);
+    free(n->seq);
+    free(n->number);
+    free(n->has_number);
+    free(n->sender);
+    free(n);
+}
+
+/* Gives every node of a new network its address and routing id. */
+static bool network_name(struct network *n) {
+    n->address = calloc(n->count, sizeof *n->address);
+    n->id = calloc(n->count, sizeof *n->id);
+    n->by_id = calloc(n->count, sizeof *n->by_id);
+    n->seq = calloc(n->count, sizeof *n->seq);
+    n->number = calloc(n->count, sizeof *n->number);
+    n->has_number = calloc(n->count, sizeof *n->has_number);
+    if (!n->address || !n->id || !n->by_id || !n->seq || !n->number || !n->has_number) {
+        return false;
     }
-    if (!s) {
-        s = calloc(1, sizeof *s);
-        if (!s) {
+    for (uint32_t i = 0; i < n->count; i++) {
+        for (uint32_t attempt = 0;; attempt++) {
+            static const uint8_t label[] = "tsim address";
+            uint8_t in[sizeof label - 1 + 8];
+            memcpy(in, label, sizeof label - 1);
+            for (int b = 0; b < 4; b++) {
+                in[sizeof label - 1 + b] = (uint8_t)(i >> (24 - 8 * b));
+                in[sizeof label + 3 + b] = (uint8_t)(attempt >> (24 - 8 * b));
+            }
+            struct tern_sha256 c;
+            tern_sha256_init(&c);
+            tern_sha256_update(&c, in, sizeof in);
+            tern_sha256_final(&c, n->address[i]);
+            n->id[i] = tern_route_id(n->address[i]);
+            bool taken = false;
+            for (uint32_t j = 0; j < i && !taken; j++) {
+                taken = n->id[j] == n->id[i];
+            }
+            if (!taken) {
+                break;
+            }
+        }
+        n->by_id[i] = (struct by_id){n->id[i], i};
+    }
+    qsort(n->by_id, n->count, sizeof *n->by_id, by_id_cmp);
+    return true;
+}
+
+/* The network's, made by the first of its nodes to start. */
+static struct network *network_take(struct tsim_node *node) {
+    void **shared = tsim_node_routing_shared(node);
+    if (!*shared) {
+        struct network *n = calloc(1, sizeof *n);
+        if (!n) {
             return NULL;
         }
-        s->config = config;
-        s->next = networks;
-        networks = s;
-    }
-    s->nodes++;
-    return s;
-}
-
-static void sessions_release(struct sessions *s) {
-    if (!s || --s->nodes) {
-        return;
-    }
-    for (struct sessions **p = &networks; *p; p = &(*p)->next) {
-        if (*p == s) {
-            *p = s->next;
-            break;
+        n->count = tsim_node_count(node);
+        if (!network_name(n)) {
+            network_free(n);
+            return NULL;
         }
+        *shared = n;
     }
-    free(s->sender);
-    free(s);
+    return *shared;
 }
 
-static void sender_note(struct sessions *s, uint64_t id, uint32_t src) {
+/* The node a routing id names, or UINT32_MAX for none of this network's. */
+static uint32_t node_of(const struct network *n, uint32_t id) {
+    struct by_id key = {id, 0};
+    const struct by_id *f = bsearch(&key, n->by_id, n->count, sizeof *n->by_id, by_id_cmp);
+    return f ? f->node : UINT32_MAX;
+}
+
+static void sender_note(struct network *s, uint64_t id, uint32_t src) {
     if (id >= s->cap) {
         size_t cap = s->cap ? s->cap : 1024;
         while (cap <= id) {
@@ -149,13 +225,34 @@ static void sender_note(struct sessions *s, uint64_t id, uint32_t src) {
     s->sender[id] = src;
 }
 
-static bool sender_of(const struct sessions *s, uint64_t id, uint32_t *src) {
+static bool sender_of(const struct network *s, uint64_t id, uint32_t *src) {
     if (id >= s->cap || s->sender[id] == UINT32_MAX) {
         return false;
     }
     *src = s->sender[id];
     return true;
 }
+
+#ifdef TSIM_FIRMWARE_SIGNED
+/* Announces are signed with zeros, and every signature is good: the router checks what it can of
+ * an announce without the arithmetic, and discards what a device would for want of an address. */
+static void sign_nothing(void *ctx, const uint8_t *m, size_t len, uint8_t sig[TERN_ANNOUNCE_SIG]) {
+    (void)ctx;
+    (void)m;
+    (void)len;
+    memset(sig, 0, TERN_ANNOUNCE_SIG);
+}
+
+static bool verify_anything(void *ctx, const uint8_t address[TERN_ADDRESS_LEN], const uint8_t *m,
+                            size_t len, const uint8_t sig[TERN_ANNOUNCE_SIG]) {
+    (void)ctx;
+    (void)address;
+    (void)m;
+    (void)len;
+    (void)sig;
+    return true;
+}
+#endif
 
 static uint32_t tag_get(const uint8_t *b) {
     return (uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 | (uint32_t)b[2] << 8 | b[3];
@@ -266,6 +363,20 @@ static void service_routes(struct router *r, tsim_time now) {
         return; /* its end comes back here */
     }
     if (r->len == 0) {
+#ifdef TSIM_FIRMWARE_NUMBERING
+        /* Announce numbers are stored ahead as the firmware's board stores them (poll_route() in
+         * ports/node/node.c): once something is due, NUMBER_SAVE ahead, and one at a time until
+         * a routing frame has gone on the air. */
+        uint32_t self = tsim_node_index(r->node);
+        if (now >= tern_route_due(&r->route) &&
+            (r->route_on_air ? tern_route_numbers_left(&r->route) < NUMBER_SAVE / 2
+                             : tern_route_numbers_left(&r->route) == 0)) {
+            uint16_t kept = (uint16_t)(r->route.number + (r->route_on_air ? NUMBER_SAVE : 1));
+            r->net->number[self] = kept;
+            r->net->has_number[self] = true;
+            tern_route_kept(&r->route, kept);
+        }
+#endif
         r->len = tern_route_poll(&r->route, now, r->frame, &r->dbm);
     }
     if (r->len != 0) {
@@ -325,8 +436,8 @@ static void service_frames(struct router *r, tsim_time now) {
                 .len = (uint32_t)len,
             };
             if (tern_forward_head_read(&h, frame, len)) {
-                tx->addressed = true;
-                tx->to = h.next - 1;
+                tx->to = node_of(r->net, h.next);
+                tx->addressed = tx->to != UINT32_MAX;
             }
             memcpy(tx->bytes, frame, len);
         }
@@ -382,7 +493,12 @@ static void service_floods(struct router *r, tsim_time now) {
 static void service(struct router *r) {
     tsim_time now = tsim_node_now(r->node), due, wait;
     /* How busy the radio has been, which a relay passes fewer flooded frames on by. */
-    tern_flood_radio(&r->flood, now, tsim_node_tx_airtime(r->node) + tsim_node_rx_airtime(r->node));
+    /* How busy the radio has been, as the firmware's board counts it: what it sent and what it
+     * received whole (ports/node/node.c). A frame lost part-way is not counted. */
+    tern_flood_radio(&r->flood, now,
+                     tsim_node_tx_airtime(r->node) + tsim_node_rx_whole_airtime(r->node));
+    /* The sequence number a board keeps, wherever it changed. */
+    r->net->seq[tsim_node_index(r->node)] = r->route.seq;
 #ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
     tern_route_busy(&r->route, r->flood.busy);
 #endif
@@ -421,9 +537,9 @@ static void frame_rx(struct router *r, const struct tsim_rx *rx, int16_t snr_q) 
         /* Every copy is acknowledged: the one before may have been lost on its way back. */
         tsim_node_deliver(r->node, id);
         uint32_t src;
-        if (sender_of(r->sessions, id, &src)) {
+        if (sender_of(r->net, id, &src)) {
             memcpy(ack + AT_TAG, rx->bytes + AT_TAG, TERN_FORWARD_TAG);
-            tern_forward_send(&r->forward, now, src + 1, ack, sizeof ack, false, got.back);
+            tern_forward_send(&r->forward, now, r->net->id[src], ack, sizeof ack, false, got.back);
         }
     } else if (got.got == TERN_FORWARD_ACK) {
         if (tern_forward_acked(&r->forward, rx->bytes + AT_TAG)) {
@@ -478,6 +594,7 @@ static void router_tx_done(void *self, uint64_t handle) {
     }
     if (handle == r->handle) {
         tern_route_sent(&r->route, tsim_node_now(r->node));
+        r->route_on_air = true;
         r->handle = 0;
         r->len = 0;
     } else {
@@ -568,11 +685,11 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
     if (len > sizeof frame || msg->id > UINT32_MAX) {
         return false;
     }
-    sender_note(r->sessions, msg->id, msg->src);
+    sender_note(r->net, msg->id, msg->src);
     tag_put(frame + AT_TAG, (uint32_t)msg->id);
     memcpy(frame + AT_CONTENT, msg->content, msg->len);
-    if (!tern_forward_send(&r->forward, tsim_node_now(r->node), msg->dst + 1, frame, len, true,
-                           INT8_MIN)) {
+    if (!tern_forward_send(&r->forward, tsim_node_now(r->node), r->net->id[msg->dst], frame, len,
+                           true, INT8_MIN)) {
         tsim_node_drop(r->node, msg->id, TSIM_DROP_QUEUE, TSIM_BROADCAST);
         tsim_node_finished(r->node, msg->id);
         return true;
@@ -596,7 +713,6 @@ static void router_destroy(void *self) {
     free(r->flood_slots);
     free(r->flood_seen);
     free(r->flhandles);
-    sessions_release(r->sessions);
     free(r);
 }
 
@@ -623,10 +739,10 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->flood_slots = calloc(c->flood_frames, sizeof *r->flood_slots);
     r->flood_seen = calloc(TERN_FLOOD_SEEN, sizeof *r->flood_seen);
     r->flhandles = calloc(c->flood_frames, sizeof *r->flhandles);
-    r->sessions = sessions_take(config);
+    r->net = network_take(node);
     r->timer = tsim_timer_create(node, router_fire, r);
     if (!r->neighbours || !r->dests || !r->slots || !r->fhandles || !r->flood_slots ||
-        !r->flood_seen || !r->flhandles || !r->sessions || !r->timer) {
+        !r->flood_seen || !r->flhandles || !r->net || !r->timer) {
         router_destroy(r);
         return NULL;
     }
@@ -639,10 +755,22 @@ static void *router_create(struct tsim_node *node, const void *config) {
 #endif
     struct tsim_rng rng;
     tsim_node_rng(node, TSIM_STREAM_ROUTING, &rng);
-    /* A node that comes back from being powered down is made again, here: it has kept nothing, as
-     * a board that kept no sequence number would not have. */
-    tern_route_init(&r->route, &rc, self + 1, r->neighbours, c->neighbours, r->dests, dests, 0,
-                    tsim_rng_next(&rng), tsim_node_now(node));
+    /* A node that comes back from being powered down is made again, here, and starts from what a
+     * board keeps in its flash: its sequence number and its announce numbers (struct network). */
+    uint64_t seed = tsim_rng_next(&rng);
+    tern_route_init(&r->route, &rc, r->net->id[self], r->neighbours, c->neighbours, r->dests, dests,
+                    r->net->seq[self], seed, tsim_node_now(node));
+#ifdef TSIM_FIRMWARE_NUMBERING
+    /* Its first announce number is the one it stored ahead last time, or any if it stored none;
+     * nothing is kept beyond it until something is due. */
+    uint16_t first = r->net->has_number[self] ? r->net->number[self] : (uint16_t)seed;
+    tern_route_numbering_from(&r->route, first, first);
+#endif
+#ifdef TSIM_FIRMWARE_SIGNED
+    tern_route_auth(&r->route, &(struct tern_route_auth){.address = r->net->address[self],
+                                                         .sign = sign_nothing,
+                                                         .verify = verify_anything});
+#endif
     struct tern_forward_config fc = tern_forward_defaults();
     fc.salvage = (uint8_t)c->salvage;
     fc.retry_jitter = (uint8_t)c->retry_jitter;
@@ -660,15 +788,28 @@ static void *router_create(struct tsim_node *node, const void *config) {
     return r;
 }
 
+/* For reports, the route a node holds: a route it selected, never a leaf's default route to its
+ * nearest relay, which tern_route_next() falls back to when it holds none and which says nothing
+ * of whether the relay holds one on. Counted, a default route made every leaf seem to hold a route
+ * to every node, and the share whose routes arrive fall short of it at the first hop. The router is
+ * asked with default_hops 0, which the firmware takes as no default route, and given it back. */
 static bool router_next_hop(const void *self, uint32_t dst, uint32_t *next) {
-    const struct router *r = self;
+    struct router *r = (struct router *)self; /* restored before returning */
     uint32_t id;
     uint16_t metric;
-    if (!tern_route_next(&r->route, dst + 1, &id, &metric)) {
+#ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
+    uint8_t hops = r->route.config.default_hops;
+    r->route.config.default_hops = 0;
+#endif
+    bool held = tern_route_next(&r->route, r->net->id[dst], &id, &metric);
+#ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
+    r->route.config.default_hops = hops;
+#endif
+    if (!held) {
         return false;
     }
-    *next = id - 1;
-    return true;
+    *next = node_of(r->net, id);
+    return *next != UINT32_MAX;
 }
 
 const struct tsim_routing tsim_core = {
@@ -682,4 +823,5 @@ const struct tsim_routing tsim_core = {
     .sending = router_sending,
     .reports_finished = true,
     .next_hop = router_next_hop,
+    .destroy_shared = network_free,
 };

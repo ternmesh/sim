@@ -69,6 +69,7 @@ struct tsim_net {
     const struct tsim_routing *routing;
     const struct tsim_mac *mac;
     const void *routing_config; /* the caller's, for nodes powered up again */
+    void *routing_shared;       /* tsim_node_routing_shared() */
     const void *mac_config;
     uint32_t n;
     struct tsim_node *nodes;
@@ -237,6 +238,9 @@ void tsim_net_destroy(struct tsim_net *net) {
         while (net->nodes[i].timers) {
             tsim_timer_destroy(net->nodes[i].timers);
         }
+    }
+    if (net->routing_shared && net->routing->destroy_shared) {
+        net->routing->destroy_shared(net->routing_shared);
     }
     tsim_phy_destroy(net->phy);
     for (size_t i = 0; i < net->message_count; i++) {
@@ -861,4 +865,10 @@ tsim_time tsim_node_tx_airtime(const struct tsim_node *nd) {
 
 tsim_time tsim_node_rx_airtime(const struct tsim_node *nd) {
     return tsim_phy_rx_airtime(nd->net->phy, nd->index);
+}
+
+void **tsim_node_routing_shared(struct tsim_node *nd) { return &nd->net->routing_shared; }
+
+tsim_time tsim_node_rx_whole_airtime(const struct tsim_node *nd) {
+    return tsim_phy_stats(nd->net->phy, nd->index)->rx_whole_airtime;
 }

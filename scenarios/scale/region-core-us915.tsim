@@ -1,0 +1,27 @@
+# The firmware's core (tsim/core.h) on the radio settings it ships for US915, AU915 and NZ915
+# (the specification's draft/phy.md, the firmware's src/region.c): SF9 at 500 kHz, coding rate
+# 4/5, a 16-symbol preamble, and no limit on transmitting. Every other scale scenario of the core's
+# runs a preset the firmware does not send on, but for the fast one, which is EU868's; this is the
+# one most boards are built for. Over 200 sites picked at the same settings, as
+# region-distvec-us915.tsim. No traffic: see scenarios/core/town.tsim.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf       = 9
+radio.bw       = 500000
+radio.cr       = 1
+radio.preamble = 16
+radio.tx_dbm   = 20
+
+routing             = core
+mac                 = listen
+routing.relay_pick  = cds
+routing.relay_count = 200
+sites.sf            = 9
+sites.bw            = 500000
+
+traffic.interval  = none
+
+warmup       = 6 h
+duration     = 1 h

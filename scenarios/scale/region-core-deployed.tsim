@@ -1,5 +1,10 @@
 # The firmware's core (tsim/core.h) on the deployed preset, over the 200 shared sites, as
 # region-distvec-deployed.tsim. No traffic: see scenarios/core/town.tsim.
+#
+# This is MeshCore's preset, so that every candidate is measured on one radio: not one the firmware
+# sends on. Tern's frames have coding rate 4/5 and a 16-symbol preamble (draft/phy.md), and these
+# 4/8 and 32 make each about 1.6 times as long. region-core-us915.tsim and region-core-fast.tsim
+# are the firmware's own settings.
 nodes     = 1000
 placement = uniform
 area      = 18000 x 18000
