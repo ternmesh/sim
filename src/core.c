@@ -92,8 +92,9 @@ struct router {
 };
 
 /* What the nodes of one network keep that is not on the air: who they are, what a board keeps
- * across a restart, and who sent each message. The nodes of one network are those made with one
- * config, and this lasts as long as any of them.
+ * across a restart, and who sent each message. It is the network's own
+ * (tsim_node_routing_shared()), and lasts as long as the network does, through every node's being
+ * powered down.
  *
  * Who they are. Each node has an address, 32 bytes made from its index, and the routing id the
  * firmware makes from it (tern_route_id()); a frame names a node by that id, and the table maps
@@ -110,8 +111,6 @@ struct router {
  * destination knows from the session the frame's tag belongs to, which both ends hold. This stands
  * for those sessions, and is read only by a message's destination, to acknowledge it. */
 struct network {
-    const void *config;                   /* whose network it is */
-    uint32_t nodes;                       /* routers that hold it */
     uint32_t count;                       /* nodes in it */
     uint8_t (*address)[TERN_ADDRESS_LEN]; /* [node] */
     uint32_t *id;                         /* [node] its routing id */
@@ -123,17 +122,15 @@ struct network {
     bool *has_number; /* [node] */
     uint32_t *sender; /* [message number] */
     size_t cap;
-    struct network *next;
 };
-
-static struct network *networks;
 
 static int by_id_cmp(const void *a, const void *b) {
     uint32_t x = ((const struct by_id *)a)->id, y = ((const struct by_id *)b)->id;
     return x < y ? -1 : x > y;
 }
 
-static void network_free(struct network *n) {
+static void network_free(void *shared) {
+    struct network *n = shared;
     free(n->address);
     free(n->id);
     free(n->by_id);
@@ -183,39 +180,22 @@ static bool network_name(struct network *n) {
     return true;
 }
 
-static struct network *network_take(const void *config, uint32_t count) {
-    struct network *n = networks;
-    for (; n && n->config != config; n = n->next) {
-    }
-    if (!n) {
-        n = calloc(1, sizeof *n);
+/* The network's, made by the first of its nodes to start. */
+static struct network *network_take(struct tsim_node *node) {
+    void **shared = tsim_node_routing_shared(node);
+    if (!*shared) {
+        struct network *n = calloc(1, sizeof *n);
         if (!n) {
             return NULL;
         }
-        n->config = config;
-        n->count = count;
+        n->count = tsim_node_count(node);
         if (!network_name(n)) {
             network_free(n);
             return NULL;
         }
-        n->next = networks;
-        networks = n;
+        *shared = n;
     }
-    n->nodes++;
-    return n;
-}
-
-static void network_release(struct network *n) {
-    if (!n || --n->nodes) {
-        return;
-    }
-    for (struct network **p = &networks; *p; p = &(*p)->next) {
-        if (*p == n) {
-            *p = n->next;
-            break;
-        }
-    }
-    network_free(n);
+    return *shared;
 }
 
 /* The node a routing id names, or UINT32_MAX for none of this network's. */
@@ -733,7 +713,6 @@ static void router_destroy(void *self) {
     free(r->flood_slots);
     free(r->flood_seen);
     free(r->flhandles);
-    network_release(r->net);
     free(r);
 }
 
@@ -760,7 +739,7 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->flood_slots = calloc(c->flood_frames, sizeof *r->flood_slots);
     r->flood_seen = calloc(TERN_FLOOD_SEEN, sizeof *r->flood_seen);
     r->flhandles = calloc(c->flood_frames, sizeof *r->flhandles);
-    r->net = network_take(config, tsim_node_count(node));
+    r->net = network_take(node);
     r->timer = tsim_timer_create(node, router_fire, r);
     if (!r->neighbours || !r->dests || !r->slots || !r->fhandles || !r->flood_slots ||
         !r->flood_seen || !r->flhandles || !r->net || !r->timer) {
@@ -831,4 +810,5 @@ const struct tsim_routing tsim_core = {
     .sending = router_sending,
     .reports_finished = true,
     .next_hop = router_next_hop,
+    .destroy_shared = network_free,
 };

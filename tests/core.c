@@ -172,6 +172,33 @@ static void two_networks_at_once_keep_their_messages_apart(void) {
     rig_close(&b);
 }
 
+/* And two at once made with one config, of different sizes, each keep their own: what the nodes of
+ * a network share is the network's, not the config's. */
+static void two_networks_on_one_config_keep_their_own(void) {
+    struct rig a, b;
+    line(&a, 4, 3, NULL);
+    struct tsim_net_params p = tsim_net_defaults(4);
+    p.queue_limit = 0;
+    b.nodes = 8;
+    b.sched = tsim_sched_create();
+    b.net = tsim_net_create(b.sched, &p, b.nodes, &tsim_core, &a.rc, &tsim_meshcore_mac, &a.mc);
+    for (uint32_t i = 0; i + 1 < b.nodes; i++) {
+        link(&b, i, i + 1);
+    }
+    tsim_net_start(b.net);
+    run(&a, TSIM_S(600));
+    run(&b, TSIM_S(600));
+    uint32_t held, reach, loops;
+    routes(&b, &held, &reach, &loops);
+    CHECK_EQ_U64(reach, 8 * 7);
+    uint64_t id = message(&b, 7, 0);
+    run(&b, TSIM_S(660));
+    const struct tsim_message_record *m = tsim_net_message(b.net, id);
+    CHECK(m && m->delivered == 1 && m->finished);
+    rig_close(&a);
+    rig_close(&b);
+}
+
 /* A broadcast is flooded as the firmware floods a group's frame: along a line, where every relay
  * is a bridge, each node sends it once and each other node is delivered it once. */
 static void a_broadcast_goes_the_length_of_a_line(void) {
@@ -394,6 +421,7 @@ int main(void) {
     RUN(without_messages_its_frames_are_announces_and_requests);
     RUN(a_message_goes_hop_by_hop_and_is_acknowledged);
     RUN(two_networks_at_once_keep_their_messages_apart);
+    RUN(two_networks_on_one_config_keep_their_own);
     RUN(a_broadcast_goes_the_length_of_a_line);
 #ifdef TERN_HDR_CARD
     RUN(a_card_goes_two_hops_and_a_broadcast_five);
