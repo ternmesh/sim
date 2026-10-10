@@ -962,6 +962,17 @@ static const char *core_set(void *config, const char *key, const char *value) {
         return parse_u64(value, 4, &v) ? (c->salvage = (uint32_t)v, NULL)
                                        : "expected a count from 0 to 4";
     }
+    if (strcmp(key, "own") == 0) {
+        return parse_u64(value, 255, &v) ? (c->own = (uint32_t)v, NULL)
+                                         : "expected a count from 0 to 255, 0 for `frames`";
+    }
+    if (strcmp(key, "waiting") == 0) {
+        return parse_u64(value, 255, &v) ? (c->waiting = (uint32_t)v, NULL)
+                                         : "expected a count from 0 to 255";
+    }
+    if (strcmp(key, "forward_quiet") == 0) {
+        return parse_u64(value, 1, &v) ? (c->forward_quiet = (uint32_t)v, NULL) : "expected 0 or 1";
+    }
     if (strcmp(key, "retry_jitter") == 0) {
         return parse_u64(value, 255, &v) ? (c->retry_jitter = (uint32_t)v, NULL)
                                          : "expected a count from 0 to 255";
