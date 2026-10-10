@@ -107,11 +107,13 @@
  *
  * The learning allowance (the specification's LEARN_SHARE, for LEARN_FOR after a node starts) is
  * what it is for on the deployed preset: 65% of pairs hold a route at 6 h rather than half, on
- * the same airtime, and 96% at 12 h. Elsewhere it buys a fraction of a point, for a fifth to a
- * third more airtime in the hour after the warmup. The town's hour after its 3 h warmup is inside
- * LEARN_FOR. The others' hour after 6 h is the hour after it, and the routes a relay learnt in its
- * last hours are still being told, on the cap alone; where relays are few it is over within two.
- * Seed 1, seconds on the air in each hour:
+ * the same airtime, and 96% at 12 h. Elsewhere it moves the routes held by less than a fifth of a
+ * point either way, and the routes that arrive by a tenth of a point or less, but for the region,
+ * where every node is a relay and they fall by nearly a point (98.68% against 99.62%); and it
+ * costs a fifth to a third more airtime in the hour after the warmup. The town's hour
+ * after its 3 h warmup is inside LEARN_FOR. The others' hour after 6 h is the hour after it, and
+ * the routes a relay learnt in its last hours are still being told, on the cap alone; where relays
+ * are few it is over within two. Seed 1, seconds on the air in each hour:
  *
  *                               6 to 7 h   7 to 8 h   8 to 9 h
  *   region, fast                  2273       1407       1022
