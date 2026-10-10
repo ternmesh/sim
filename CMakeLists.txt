@@ -106,6 +106,18 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
         target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_DEFAULT_ROUTE)
         message(STATUS "Core routing: with a leaf's default route")
     endif()
+    # A firmware that signs its announces (firmware#75) is given the means to check them, and one
+    # that keeps its announce numbers across a restart keeps them here too.
+    file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/route.h" TSIM_ROUTE_AUTH
+         REGEX "tern_route_auth\\(")
+    if(TSIM_ROUTE_AUTH)
+        target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_SIGNED)
+    endif()
+    file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/route.h" TSIM_ROUTE_NUMBERING
+         REGEX "tern_route_numbering_from")
+    if(TSIM_ROUTE_NUMBERING)
+        target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_NUMBERING)
+    endif()
     set(TSIM_HAVE_CORE ON)
     message(STATUS "Core routing: from ${TSIM_FIRMWARE_DIR}")
 elseif(TSIM_REQUIRE_CORE)

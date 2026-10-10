@@ -17,8 +17,8 @@
  * CMakeLists.txt), and TSIM_HAVE_CORE says whether it was.
  *
  * What the core has, the plugin runs: announces, links, routes and requests, and the frames that
- * follow routes (tern/forward.h), as the specification has them, in its frames. A node's routing
- * id is its index plus one. A message goes as a secured unicast frame would, 23 bytes longer than
+ * follow routes (tern/forward.h), as the specification has them, in its frames. Each node has an
+ * address made from its index, and the routing id the firmware makes from that address. A message goes as a secured unicast frame would, 23 bytes longer than
  * its content, with its number where the frame's tag is; its destination acknowledges every copy,
  * and its source sends it again until it is acknowledged or given up. A frame does not say where
  * it came from, and on a device its destination knows from the session: here it looks the
@@ -33,11 +33,21 @@
  * from -32 to 31.75.
  *
  * The firmware signs its announces (ternmesh/firmware#75, the specification's "Signed"). The plugin
- * gives the core no keys, so each announce goes as long as a signed one, with the address when the
- * core would carry it, but its signature is zeros and nothing is checked: the airtime is a
- * device's, the time to sign and check is not. A node's routing id is not made from an address
- * here, which nothing checks either. The tables below were measured before, with unsigned
- * announces; the specification's routing rationale has what signing cost on the region scenarios.
+ * gives the core no keys: each announce goes as long as a signed one, with the address when the
+ * core would carry it, and its signature is zeros. But the core is given a means to check that
+ * passes every signature, so it discards what a device would: an announce from a neighbour whose
+ * address it does not hold and that does not carry it, or whose address is not its routing id's.
+ * The airtime is a device's, and so is what it learns; the time to sign and check is not.
+ *
+ * And a node keeps what a board keeps in its flash (ports/node/node.c): its route's sequence
+ * number, and its announce numbers stored NUMBER_SAVE ahead, so that one made again after being
+ * powered down starts from them. Its radio's busy share, which the flooder and the default route
+ * go by, is what it sent and the frames it received whole, as a board counts it; a frame lost
+ * part-way is not counted.
+ *
+ * Every figure below up to "A board's tables" was measured before those three, with no announce
+ * checked and nothing kept; the first table is measured again after them, as tools/core.py has
+ * it.
  *
  * Against candidate 3, measured with tools/core.py compare (3 seeds): the share of ordered pairs of
  * nodes that hold a route as the warmup ends, the share whose routes followed from node to node

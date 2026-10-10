@@ -862,3 +862,7 @@ tsim_time tsim_node_tx_airtime(const struct tsim_node *nd) {
 tsim_time tsim_node_rx_airtime(const struct tsim_node *nd) {
     return tsim_phy_rx_airtime(nd->net->phy, nd->index);
 }
+
+tsim_time tsim_node_rx_whole_airtime(const struct tsim_node *nd) {
+    return tsim_phy_stats(nd->net->phy, nd->index)->rx_whole_airtime;
+}

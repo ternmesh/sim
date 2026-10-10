@@ -263,6 +263,9 @@ void tsim_node_hold_header(struct tsim_node *node, tsim_time hold);
  * tsim_phy_rx_airtime() for which receptions count. */
 tsim_time tsim_node_tx_airtime(const struct tsim_node *node);
 tsim_time tsim_node_rx_airtime(const struct tsim_node *node);
+/* And the airtime of the frames it has received whole, as a radio that reports only those - with
+ * their lengths - lets its node count (tsim_phy_stats' rx_whole_airtime). */
+tsim_time tsim_node_rx_whole_airtime(const struct tsim_node *node);
 
 /* Retunes the receiver; see tsim_phy_tune(). */
 bool tsim_node_tune(struct tsim_node *node, uint16_t channel, const struct tsim_lora *listen);

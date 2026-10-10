@@ -451,6 +451,7 @@ static void frame_end(struct tsim_sched *sched, void *ctx) {
         count_reception(nd);
         if (ok) {
             nd->stats.rx_ok++;
+            nd->stats.rx_whole_airtime += f.end - f.start;
         } else {
             nd->stats.rx_lost++;
         }

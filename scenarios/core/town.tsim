@@ -1,7 +1,8 @@
 # The town scenario under the firmware's core (tsim/core.h): the code a device runs, every node a
-# relay. The core carries no messages yet, so there is no traffic: what is measured is the routes
-# the nodes hold as the warmup ends, and what an hour of announces and requests costs after it.
-# tools/core.py compares it with candidate 3, and checks it.
+# relay. There is no traffic: what is measured is the routes the nodes hold as the warmup ends,
+# and what an hour of announces and requests costs after it. tools/core.py compares it with
+# candidate 3, and checks it. SF9 at 125 kHz is no region's: region-core-us915.tsim has the
+# settings the firmware ships.
 nodes     = 200
 placement = uniform
 area      = 8000 x 8000

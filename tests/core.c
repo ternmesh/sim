@@ -257,8 +257,8 @@ static void a_grid_never_loops_while_it_settles(void) {
     }
 }
 
-/* A node powered down is made again when it comes back, having kept nothing: the core's starting
- * rule is what its neighbours and it then go by. */
+/* A node powered down is made again when it comes back, with what a board keeps in its flash -
+ * its sequence number and announce numbers - and the core's starting rule for the rest. */
 static void a_node_that_restarts_is_routed_to_again(void) {
     struct rig r;
     grid(&r, 4, 4);
@@ -274,6 +274,31 @@ static void a_node_that_restarts_is_routed_to_again(void) {
     CHECK_EQ_U64(reach, 16 * 15);
     rig_close(&r);
 }
+
+#ifdef TSIM_FIRMWARE_NUMBERING
+/* And it is routed to again within minutes, with no route going round while it is: its neighbours
+ * take its announces at once, the numbers it kept being newer than any it sent before. Made with
+ * nothing kept, as until the firmware kept its numbers, some seeds here went round for minutes and
+ * took a quarter of an hour to reach it. */
+static void a_node_that_restarts_keeps_its_numbers(void) {
+    for (uint64_t seed = 1; seed <= 6; seed++) {
+        struct rig r;
+        grid(&r, 4, seed);
+        run(&r, TSIM_S(1800));
+        CHECK(tsim_net_power(r.net, 5, false));
+        run(&r, TSIM_S(1860));
+        CHECK(tsim_net_power(r.net, 5, true));
+        uint32_t held, reach, loops;
+        for (int t = 30; t <= 480; t *= 2) {
+            run(&r, TSIM_S(1860 + t));
+            routes(&r, &held, &reach, &loops);
+            CHECK_EQ_U64(loops, 0);
+        }
+        CHECK_EQ_U64(reach, 16 * 15);
+        rig_close(&r);
+    }
+}
+#endif
 
 /* With relays picked, a node that is not one is reached through one, and passes nothing on. */
 static void only_relays_pass_routes_on(void) {
@@ -376,6 +401,9 @@ int main(void) {
     RUN(a_message_that_cannot_arrive_is_given_up);
     RUN(a_grid_never_loops_while_it_settles);
     RUN(a_node_that_restarts_is_routed_to_again);
+#ifdef TSIM_FIRMWARE_NUMBERING
+    RUN(a_node_that_restarts_keeps_its_numbers);
+#endif
     RUN(only_relays_pass_routes_on);
     RUN(frames_that_met_do_not_meet_at_every_try);
     RUN(a_config_out_of_range_is_refused);

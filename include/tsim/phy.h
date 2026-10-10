@@ -140,6 +140,9 @@ struct tsim_phy_stats {
     /* Time spent on frames it was receiving, however each reception ended: what the radio was busy
      * with, which is all a radio's own channel utilisation counter can know of what it heard. */
     tsim_time rx_airtime;
+    /* The airtime of each frame it decoded, start to end: what a radio that is told only of the
+     * frames it received whole, and their lengths, can count of what it heard. */
+    tsim_time rx_whole_airtime;
 };
 
 struct tsim_phy;

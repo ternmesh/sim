@@ -5,10 +5,9 @@
     core.py check --tsim PATH
 
 The `core` routing is the firmware's own code (ternmesh/firmware, src/route.c; tsim/core.h), and
-candidate 3 (`distvec`) is the design it was specified from. The core carries no messages yet, so
-the two are compared on what both have: the routes nodes hold once a network has settled, and what
-its announces and requests cost. Candidate 3 is run without traffic for that, as the core is, and
-both with its re-attachment and without, which the core does not have.
+candidate 3 (`distvec`) is the design it was specified from. The two are compared on the routes
+nodes hold once a network has settled, and what its announces and requests cost, with no messages
+sent. Candidate 3 is run with its re-attachment and without, which the core does not have.
 
 `compare` runs each pair of scenarios below and prints, for each, the mean over the seeds of:
 
@@ -44,6 +43,7 @@ PAIRS = [
     ("region", "scale/region-distvec.tsim", "scale/region-core.tsim"),
     ("region, fast", "scale/region-distvec-fast.tsim", "scale/region-core-fast.tsim"),
     ("region, deployed", "scale/region-distvec-deployed.tsim", "scale/region-core-deployed.tsim"),
+    ("region, US915", "scale/region-distvec-us915.tsim", "scale/region-core-us915.tsim"),
 ]
 
 # The town, checked: what the core does there with room to spare for another seed, not what it
