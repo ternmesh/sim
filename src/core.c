@@ -269,9 +269,9 @@ static struct tern_lora lora_of(const struct tsim_lora *l);
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,
                                           double tx_dbm) {
-#ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
+#if defined(TSIM_FIRMWARE_DEFAULT_ROUTE) || defined(TSIM_FIRMWARE_LEARNING)
     struct tern_lora tl = lora_of(lora);
-    /* The default route as the firmware's router has it by default. */
+    /* The default route and learning allowance as the firmware's router has them by default. */
     struct tern_route_config rd = tern_route_defaults(&tl, 0, 0, false);
 #endif
     return (struct tsim_core_config){
