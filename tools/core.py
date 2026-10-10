@@ -20,8 +20,11 @@ sent. Candidate 3 is run with its re-attachment and without, which the core does
 The core is run twice: with the tables a board has (ports/node/node.c, the default), and without
 those limits, as candidate 3 has none.
 
-`check` runs scenarios/core/town.tsim and fails unless nearly every pair holds a route, nearly
-every route held arrives, and no node is on the air for more than its cap allows. It is what the
+`check` runs scenarios/core/town.tsim, settled - eight hours on, past the learning allowance's
+LEARN_FOR - and fails unless nearly every pair holds a route, nearly every route held arrives, and
+no node is on the air for more than its cap allows. While a network is learning, a relay may spend
+the allowance as well as the cap, and routes changing leave a few that end at a node with none for
+a moment; a settled network has neither. It is what the
 firmware's CI runs against a change to the core. It runs the core without a board's tables: the
 town's 200 nodes are more than a board's 128 destinations, and what it checks is the routing, not
 the memory. That routes never go round is not checked here
@@ -46,9 +49,10 @@ PAIRS = [
     ("region, US915", "scale/region-distvec-us915.tsim", "scale/region-core-us915.tsim"),
 ]
 
-# The town, checked: what the core does there with room to spare for another seed, not what it
-# might do. Its cap is 0.5% of a node's time, counted over a minute, and a node may spend a
+# The town, checked once settled: what the core does there with room to spare for another seed, not
+# what it might do. Its cap is 0.5% of a node's time, counted over a minute, and a node may spend a
 # minute's worth at once.
+SETTLED = ["warmup=8 h"]
 ROUTES_MIN = 0.995
 ADRIFT_MAX = 0.001  # routes held that do not arrive: over three seeds the core has 0.0001
 DUTY_MAX = 0.006
@@ -100,7 +104,7 @@ def compare(args):
 
 
 def check(args):
-    r = run(args.tsim, "core/town.tsim", UNBOUNDED)
+    r = run(args.tsim, "core/town.tsim", UNBOUNDED + SETTLED)
     routes, reach = r["warmup"]["routes"], r["warmup"]["reach"]
     failed = []
     if routes < ROUTES_MIN:
