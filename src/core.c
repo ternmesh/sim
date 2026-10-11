@@ -45,7 +45,7 @@
 /* The tables a board keeps (ports/node/node.c), which CMakeLists.txt reads from the firmware's
  * source. These are that file's sizes when this was written, for a checkout that has none. */
 #ifndef TSIM_BOARD_NEIGHBOURS
-#define TSIM_BOARD_NEIGHBOURS 64
+#define TSIM_BOARD_NEIGHBOURS 128
 #endif
 #ifndef TSIM_BOARD_DESTINATIONS
 #define TSIM_BOARD_DESTINATIONS 128
