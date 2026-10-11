@@ -81,6 +81,8 @@ misleading.
 | `channel.decorrelation` | 100 | spacing of the correlated shadowing field, in metres |
 | `phy.noise_figure` | 6 | receiver noise figure in dB |
 | `phy.capture` | 6 | dB a new frame must exceed the current one by to take over a receiver during the preamble |
+| `phy.co_sf` | 6 | dB a frame must stand above the summed interference of its own SF to be decoded: the isolation matrix's diagonal, for every SF |
+| `phy.isolation_offset` | 0 | dB added to every other entry of the isolation matrix, the rejection between SFs: positive rejects less |
 | `phy.lock_symbols` | 5 | preamble symbols before a receiver locks |
 | `phy.retune` | `1 ms` | time a radio is deaf after changing channel or modulation |
 | `phy.fading` | 0 | dB standard deviation of a Gaussian added to a link's loss afresh for every frame at every receiver |

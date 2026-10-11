@@ -193,6 +193,8 @@ static void problems_say_where_they_are(void) {
         {"nodes = 2\nrouting = flood\nmac = aloha\nphy.pairwise = maybe\n", 4, "yes or no"},
         {"nodes = 2\nrouting = flood\nmac = aloha\nphy.capture_anytime = 1\n", 4, "yes or no"},
         {"nodes = 2\nrouting = flood\nmac = aloha\nphy.cad_margin = nan\n", 4, "dB from -1000"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nphy.co_sf = nan\n", 4, "dB from -1000"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nphy.isolation_offset = x\n", 4, "dB from -1000"},
         {"nodes = 2\nrouting = flood\nmac = aloha\nphy.cad_delay = 5\n", 4, "expected a time"},
         {"nodes = 2\nrouting = flood\nmac = aloha\nchannel.model = okumura\n", 4,
          "log_distance, 3gpp_suburban or 3gpp_urban"},
@@ -653,6 +655,22 @@ static void airtime_past_what_a_time_holds_still_adds_up(void) {
     CHECK(rep.duty_mean > 0 && rep.duty_mean <= 1.0);
 }
 
+/* The isolation matrix's two knobs (MSH-74): the diagonal set outright, and every other entry
+ * moved from its default, so that the last setting wins rather than the sum. */
+static void isolation_knobs_read(void) {
+    struct tsim_scenario s;
+    struct tsim_phy_params d = tsim_phy_defaults();
+    CHECK(parse(&s, "nodes = 2\nrouting = flood\nmac = aloha\n"
+                    "phy.co_sf = 2.5\nphy.isolation_offset = 6\nphy.isolation_offset = -6\n"));
+    for (int i = 0; i < TSIM_SF_COUNT; i++) {
+        for (int j = 0; j < TSIM_SF_COUNT; j++) {
+            CHECK(s.net.phy.isolation_db[i][j] == (i == j ? 2.5 : d.isolation_db[i][j] - 6));
+        }
+    }
+    CHECK(parse(&s, "nodes = 2\nrouting = flood\nmac = aloha\n"));
+    CHECK(memcmp(s.net.phy.isolation_db, d.isolation_db, sizeof d.isolation_db) == 0);
+}
+
 /* The settings that reproduce LoRaSim's and Meshtasticator's simplifications. */
 static void compatibility_settings_read(void) {
     struct tsim_scenario s;
@@ -957,6 +975,7 @@ int main(void) {
     RUN(sites_are_picked_at_the_sites_modulation);
     RUN(churn_takes_meshtastics_leaves_from_its_picked_routers);
     RUN(a_run_repeats_with_its_seed);
+    RUN(isolation_knobs_read);
     RUN(compatibility_settings_read);
     RUN(positions_read_from_text);
     RUN(meshcore_settings_read);
