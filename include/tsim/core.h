@@ -352,7 +352,17 @@
  * costs them their routes. At a half it costs them nothing, and on the deployed preset it gets 84%
  * of what unbounded tables deliver (28.5% unicast) with four times their broadcast (3.6%). Not
  * salvaging a frame given up on to a second relay changes nothing: the waste is in the retries
- * of messages that cannot arrive, not in the salvage. */
+ * of messages that cannot arrive, not in the salvage.
+ *
+ * Every port now keeps 1024 destinations (firmware#79), and that is the default here. A leaf
+ * whose links to relays are none of them up, because it never heard the announce that names
+ * it, hands a frame to the relay with the lowest floor among those it hears (firmware#80, the
+ * routing draft's default route). With the board's tables, 200 relays and the traffic
+ * density.py offers (traffic.peers=4), seeds 1 to 3, unicast on time, broadcast on time, and
+ * the airtime spent:
+ *
+ *              EU868 (fast)              US915
+ *   board      96.9%  84.1%  10461 s     99.3%  87.0%  8691 s */
 struct tsim_core_config {
     uint16_t channel;
     struct tsim_lora lora;
