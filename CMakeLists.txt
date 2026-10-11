@@ -84,10 +84,30 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
     # core is measured by default with the memory a device has and not more. A checkout without
     # one, or without a size, leaves that size to tsim_core_default()'s own.
     set(TSIM_NODE_C "${TSIM_FIRMWARE_DIR}/ports/node/node.c")
+    # node.c's DESTINATIONS is for a build that sets none; every port's builds set
+    # CONFIG_TERN_DESTINATIONS, and the least of them is what a board has.
+    file(GLOB TSIM_PORT_CONFIGS "${TSIM_FIRMWARE_DIR}/ports/*/prj.conf"
+         "${TSIM_FIRMWARE_DIR}/ports/*/sdkconfig.defaults*")
+    set(TSIM_PORT_DESTINATIONS "")
+    foreach(conf ${TSIM_PORT_CONFIGS})
+        file(STRINGS "${conf}" line REGEX "^CONFIG_TERN_DESTINATIONS=[0-9]+")
+        if(line)
+            list(GET line 0 line)
+            string(REGEX REPLACE "^CONFIG_TERN_DESTINATIONS=([0-9]+).*" "\\1" n "${line}")
+            if(TSIM_PORT_DESTINATIONS STREQUAL "" OR n LESS TSIM_PORT_DESTINATIONS)
+                set(TSIM_PORT_DESTINATIONS ${n})
+            endif()
+        endif()
+    endforeach()
     foreach(pair "NEIGHBOURS;NEIGHBOURS" "DESTINATIONS;DESTINATIONS" "FORWARD_SLOTS;FRAMES"
                  "FLOOD_SLOTS;FLOOD_FRAMES" "PENDING;OWN")
         list(GET pair 0 from)
         list(GET pair 1 to)
+        if(from STREQUAL "DESTINATIONS" AND NOT TSIM_PORT_DESTINATIONS STREQUAL "")
+            target_compile_definitions(ternsim PRIVATE TSIM_BOARD_DESTINATIONS=${TSIM_PORT_DESTINATIONS})
+            message(STATUS "Core routing: a board's DESTINATIONS is ${TSIM_PORT_DESTINATIONS}")
+            continue()
+        endif()
         if(EXISTS "${TSIM_NODE_C}")
             file(STRINGS "${TSIM_NODE_C}" line REGEX "^#define ${from} [0-9]+")
             if(line)
