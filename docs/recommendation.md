@@ -19,8 +19,8 @@ This answers MSH-27. The decision has already been acted on, and this page recor
 - `tsim/core.h` links that core back in, so what is measured of the design can be measured of the
   code a board runs.
 
-Every figure below is already in the header named beside it, with the commands that produced it.
-None is new here.
+Every figure below is already recorded in the header or scenario file named beside it, with the
+commands that produced it. None is new here.
 
 ## The headline: delivery per second of airtime
 
@@ -38,9 +38,21 @@ seeds (`tsim/core.h`):
 | MeshCore           | -              | 30.3%  0.026        | 5.7%  0.004             |
 | candidate 3        | 100.0%  0.122  | 99.4%  0.538        | 9.2%  0.006             |
 | candidate 3, plain | -              | 96.8%  0.390        | 19.1%  0.016            |
-| firmware core      | 100.0%  0.132  | 96.7%  0.438        | 14.4%  0.013            |
+| firmware core *    | 100.0%  0.132  | 96.7%  0.438        | 14.4%  0.013            |
 
 "Plain" is candidate 3 without re-attachment or rescue floods, which the core has neither of.
+
+\* These core figures used tables larger than a board's: 255 neighbours, a destination for
+every node, and 16 frames of each kind. With a board's own tables, the core's figures are these:
+
+- **Every port's 1024 destinations and 128 neighbours** (firmware#79, the leaf's default route
+  from firmware#80; 200 relays, `traffic.peers=4`): 96.9% of unicasts on time on the fast preset,
+  and 99.3% on US915 (`tsim/core.h`, seeds 1 to 3).
+- **128 destinations, as the board had before firmware#79:** 12.5% on time, because a relay can
+  pass a frame on only toward a destination it has a place for.
+
+Routing in a network larger than a board's table is not specified yet. No board-table figure for
+the deployed preset is recorded with the current defaults.
 
 **On one fast radio, candidate 3 does 15 to 40 times the incumbents' work for each second of
 airtime, and delivers nearly everything.** The firmware's core delivers what candidate 3 does
@@ -54,17 +66,24 @@ airtime efficiency, and plain by four times. How badly the presets do is the rea
 
 ## The questions MSH-27 asked
 
-**Where each candidate's knee is.** Power stands in for density in `tools/density.py`, from about
-12 links per node at -5 dBm to about 470 at 20 dBm. On the fast preset, unicast on time from -5 to
-20 dBm:
+**Where each candidate's knee is.** In `tools/density.py`, transmit power stands in for density.
+On the fast preset that runs from about 5 links per node at -5 dBm to about 284 at 20 dBm. Unicast
+on time, from -5 to 20 dBm, 3 seeds (`scenarios/scale/region-distvec-fast.tsim`):
 
-- **candidate 3:** 60.6, 91.2, 97.5, 98.1 and 98.6%
-- **core:** 60.8, 92.0, 98.9, 98.0 and 96.1%
+| | -5 dBm | 0 dBm | 5 dBm | 10 dBm | 20 dBm |
+|---|---|---|---|---|---|
+| flooding | 14% | 35% | 47% | 51% | 46% |
+| Meshtastic | 11% | 31% | 43% | 50% | 22% |
+| MeshCore | 37% | 53% | 49% | 45% | 35% |
+| candidate 3 | 47% | 89% | 97% | 97% | 96% |
 
-So candidate 3 holds from about 0 dBm upward, and loses only where the network is too sparse for
-any route (`tsim/core.h`). The flooders have no knee inside the range: at a thousand nodes they are
-already past it. Meshtastic's compatibility runs on Meshtasticator's own maps (10 to 50 nodes,
-`scenarios/meshtasticator/`) are where it still delivers.
+- **MeshCore** peaks at 0 dBm and falls as density rises.
+- **Meshtastic** peaks at 10 dBm and loses more than half its delivery by 20 dBm, as its queues
+  stop draining.
+- **Candidate 3** has no knee in the range: it holds from 0 dBm up. It loses only where the
+  network is too sparse for routes to settle, and there MeshCore beats it.
+
+The firmware core tracks candidate 3 across the same range (`tsim/core.h`).
 
 **Whether the airtime metric prefers multi-hop fast links over single-hop slow ones, or is gamed.**
 Per-link spreading factor was the test of that (MSH-49, `tsim/distvec.h`): letting each link pick
@@ -91,6 +110,11 @@ unicast on time, both with salvage on:
 | A quarter of the 200 relay sites going down and coming back | 23.0, 61.2, 87.0, 88.4 and 85.9% |
 | A quarter of the leaves walking, with rescue floods | 35.1, 65.4, 81.7, 89.0 and 92.9% |
 
+This is candidate 3's weak side. Churn and movement cost it 11 to 30 points, where every other
+candidate moves by 4 or less, because a route outlives the relay or leaf it leads to until
+announces correct it. It still stays ahead of every incumbent except at the sparsest point, SF7 at
+-5 dBm, where MeshCore wins (`scenarios/scale/region-distvec-fast.tsim`).
+
 **Whether the DTN store-and-forward floor helps under mobility.** Not measured: it was never
 built (`tsim/distvec.h`). Salvage and rescue floods answered most of what mobility cost, as above.
 A floor is not needed for this decision. It stays open as a question for leaves that sleep.
@@ -99,17 +123,17 @@ A floor is not needed for this decision. It stays open as a question for leaves 
 
 - **The PHY is not calibrated.** Capture, inter-SF rejection, lock time and retune time are
   placeholders until the bench rig (MSH-32) measures them.
-- **Sensitivity has been checked for capture only.** Candidate 3's lead held across the published
-  0–6 dB capture range, by 5 to 10 times in delivery per airtime (MSH-74). Shadowing, path-loss
-  exponent and lock time are still to sweep.
+- **The sensitivity sweeps are not committed.** A capture sweep was run under MSH-74, but its
+  results are recorded only on that issue, not in this repository, so this page does not rely on
+  it. Capture, shadowing, path-loss exponent and lock time are all still to sweep, with the
+  results committed.
 - **The core trails candidate 3 plain on the deployed preset**, by 5 points. Why is not explained
   (`tsim/core.h`).
 - **Relay election is not in the specification.** The scenarios pick relays as a connected
   dominating set, with knowledge of the whole network.
 - **The workload is synthetic.** A field-derived traffic mix and scoped broadcast are MSH-34.
 
-Each of these could move a number. A sweep that flipped the ranking would reopen this page; none
-so far has come close.
+Each of these could move a number. A sweep that flipped the ranking would reopen this page.
 
 ## What would reopen this
 
