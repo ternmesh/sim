@@ -43,13 +43,16 @@ seeds (`tsim/core.h`):
 "Plain" is candidate 3 without re-attachment or rescue floods, which the core has neither of.
 
 \* These core figures used tables larger than a board's: 255 neighbours, a destination for
-every node, and 16 frames of each kind. With a board's own tables, the core's figures are these:
+every node, and 16 frames of each kind. The board-table figures below come from a different
+workload from the table's: the one `tools/density.py` offers, where a quarter of messages are
+broadcasts. So they compare with each other, not with the table:
 
 - **Every port's 1024 destinations and 128 neighbours** (firmware#79, the leaf's default route
   from firmware#80; 200 relays, `traffic.peers=4`): 96.9% of unicasts on time on the fast preset,
   and 99.3% on US915 (`tsim/core.h`, seeds 1 to 3).
-- **128 destinations, as the board had before firmware#79:** 12.5% on time, because a relay can
-  pass a frame on only toward a destination it has a place for.
+- **128 destinations, as the board had before firmware#79:** 12.5% on time, against 96.4% with
+  unbounded tables on the same workload (`tsim/core.h`, seeds 1 and 2). A relay can pass a frame
+  on only toward a destination it has a place for.
 
 Routing in a network larger than a board's table is not specified yet. No board-table figure for
 the deployed preset is recorded with the current defaults.
@@ -68,7 +71,8 @@ airtime efficiency, and plain by four times. How badly the presets do is the rea
 
 **Where each candidate's knee is.** In `tools/density.py`, transmit power stands in for density.
 On the fast preset that runs from about 5 links per node at -5 dBm to about 284 at 20 dBm. Unicast
-on time, from -5 to 20 dBm, 3 seeds (`scenarios/scale/region-distvec-fast.tsim`):
+on time, from -5 to 20 dBm, 3 seeds, with a quarter of messages broadcast as `density.py` offers
+them (`scenarios/scale/region-distvec-fast.tsim`):
 
 | | -5 dBm | 0 dBm | 5 dBm | 10 dBm | 20 dBm |
 |---|---|---|---|---|---|
