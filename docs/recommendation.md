@@ -79,13 +79,19 @@ them (`scenarios/scale/region-distvec-fast.tsim`):
 | flooding | 14% | 35% | 47% | 51% | 46% |
 | Meshtastic | 11% | 31% | 43% | 50% | 22% |
 | MeshCore | 37% | 53% | 49% | 45% | 35% |
-| candidate 3 | 47% | 89% | 97% | 97% | 96% |
+| candidate 3, at the first sweep | 47% | 89% | 97% | 97% | 96% |
+| candidate 3, current defaults | 61% | 91% | 98% | 98% | 99% |
 
 - **MeshCore** peaks at 0 dBm and falls as density rises.
 - **Meshtastic** peaks at 10 dBm and loses more than half its delivery by 20 dBm, as its queues
   stop draining.
-- **Candidate 3** has no knee in the range: it holds from 0 dBm up. It loses only where the
-  network is too sparse for routes to settle, and there MeshCore beats it.
+- **Candidate 3** has no knee in the range. On its current defaults it leads at every density,
+  the sparsest included: there, its sparse-network and re-attachment settings took it from 47% to
+  61%, past MeshCore's 37%.
+
+The incumbents' rows, and the first candidate 3 row, are from the first sweep. The current-defaults
+row is from the same file's later runs, with `link_margin_db` 0, sparse broadcasts and
+re-attachment where few relays are heard.
 
 The firmware core tracks candidate 3 across the same range (`tsim/core.h`).
 
@@ -106,18 +112,20 @@ with leaves reached through them (MSH-53, MSH-56, MSH-68), are what kept candida
 under its cap at a thousand nodes. The specification's
 [roles](https://github.com/ternmesh/spec/blob/main/draft/routing.md#roles) are relays and leaves.
 
-**Churn and mobility** (MSH-59; `tsim/distvec.h`, fast preset, -5 to 20 dBm). Two figures for
-unicast on time, both with salvage on:
+**Churn and mobility** (MSH-59). Unicast on time on the fast preset, -5 to 20 dBm, candidate 3 on
+its current defaults: salvage, rescue floods, and the sparse-network and re-attachment settings
+(`scenarios/scale/region-distvec-fast.tsim`, 3 seeds):
 
 | Stress | Unicast on time, -5 to 20 dBm |
 |---|---|
-| A quarter of the 200 relay sites going down and coming back | 23.0, 61.2, 87.0, 88.4 and 85.9% |
-| A quarter of the leaves walking, with rescue floods | 35.1, 65.4, 81.7, 89.0 and 92.9% |
+| Nothing stressed | 61, 91, 98, 98 and 99% |
+| A quarter of the 200 relay sites going down and coming back | 46, 74, 90, 90 and 87% |
+| A quarter of the leaves walking | 49, 72, 82, 90 and 94% |
 
-This is candidate 3's weak side. Churn and movement cost it 11 to 30 points, where every other
-candidate moves by 4 or less, because a route outlives the relay or leaf it leads to until
-announces correct it. It still stays ahead of every incumbent except at the sparsest point, SF7 at
--5 dBm, where MeshCore wins (`scenarios/scale/region-distvec-fast.tsim`).
+This is candidate 3's weak side. Churn and movement cost it 5 to 19 points, where every
+incumbent moves by 4 or less, because a route outlives the relay or leaf it leads to until
+announces correct it. Under both, it still stays ahead of every incumbent at every density. At the
+sparsest point, MeshCore manages 35% under churn and 37% under movement.
 
 **Whether the DTN store-and-forward floor helps under mobility.** Not measured: it was never
 built (`tsim/distvec.h`). Salvage and rescue floods answered most of what mobility cost, as above.
