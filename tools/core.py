@@ -7,7 +7,8 @@
 The `core` routing is the firmware's own code (ternmesh/firmware, src/route.c; tsim/core.h), and
 candidate 3 (`distvec`) is the design it was specified from. The two are compared on the routes
 nodes hold once a network has settled, and what its announces and requests cost, with no messages
-sent. Candidate 3 is run with its re-attachment and without, which the core does not have.
+sent. Each is run with its re-attachment and without: the core has it in a firmware with the
+routing draft's leaves that move, and with an older one its two rows are the same.
 
 `compare` runs each pair of scenarios below and prints, for each, the mean over the seeds of:
 
@@ -17,8 +18,9 @@ sent. Candidate 3 is run with its re-attachment and without, which the core does
             and does not arrive ends at a node with none, or goes round
   airtime   seconds on the air in the hour after the warmup, all nodes together
 
-The core is run twice: with the tables a board has (ports/node/node.c, the default), and without
-those limits, as candidate 3 has none.
+The core is run with the tables a board has (ports/node/node.c, the default); without those
+limits, as candidate 3 has none, with re-attachment and without; and without them but for 32
+neighbours, as the Heltec V3 had when the two were first compared (MSH-78).
 
 `check` runs scenarios/core/town.tsim, settled - eight hours on, past the learning allowance's
 LEARN_FOR - and fails unless nearly every pair holds a route, nearly every route held arrives, and
@@ -62,6 +64,8 @@ DUTY_MAX = 0.006
 # core is set free of them to be compared with it, and run as a board as well.
 UNBOUNDED = ["routing.neighbours=255", "routing.destinations=0", "routing.frames=16",
              "routing.flood_frames=16"]
+# And with the 32 neighbours a Heltec V3 had when the comparison was first made (MSH-78).
+N32 = ["routing.neighbours=32"] + UNBOUNDED[1:]
 
 
 def run(tsim, scenario, settings=()):
@@ -91,6 +95,9 @@ def compare(args):
             ("candidate 3", distvec, quiet),
             ("candidate 3, no re-attachment", distvec, quiet + ["routing.reattach=no"]),
             ("core, unbounded", core, UNBOUNDED),
+            ("core, unbounded, no re-attachment", core, UNBOUNDED + ["routing.reattach=0"]),
+            ("core, 32 neighbours", core, N32),
+            ("core, 32 neighbours, no re-attachment", core, N32 + ["routing.reattach=0"]),
             ("core, a board's tables", core, []),
         ]
         for label, scenario, settings in rows:

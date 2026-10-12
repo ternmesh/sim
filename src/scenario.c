@@ -999,6 +999,7 @@ static const char *core_set(void *config, const char *key, const char *value) {
         {"address_after", offsetof(struct tsim_core_config, address_after), 0, 255},
         {"address_every", offsetof(struct tsim_core_config, address_every), 0, 255},
         {"learn_ppm", offsetof(struct tsim_core_config, learn_ppm), 0, 1000000},
+        {"reattach", offsetof(struct tsim_core_config, reattach), 0, 1},
     };
     for (size_t i = 0; i < sizeof floods / sizeof floods[0]; i++) {
         if (strcmp(key, floods[i].key) == 0) {
