@@ -2239,11 +2239,35 @@ struct costs {
 /* Adds a's books less b's to sum, field by field: every field is a count. */
 static void books_add(struct tsim_routing_books *sum, const struct tsim_routing_books *a,
                       const struct tsim_routing_books *b) {
-    uint64_t *s = (uint64_t *)sum;
-    const uint64_t *x = (const uint64_t *)a, *y = (const uint64_t *)b;
-    for (size_t k = 0; k < sizeof *sum / sizeof *s; k++) {
-        s[k] += x[k] - y[k];
+#define BOOK(f) sum->f += a->f - b->f
+    BOOK(fires);
+    BOOK(suppressed);
+    for (int k = 0; k < TSIM_ROUTING_FIRES; k++) {
+        BOOK(fired[k]);
     }
+    for (int k = 0; k < TSIM_ROUTING_RESETS; k++) {
+        BOOK(resets[k]);
+    }
+    for (int k = 0; k < TSIM_ROUTING_CHANGES; k++) {
+        BOOK(queued[k]);
+    }
+    BOOK(reattached);
+    BOOK(raised);
+    BOOK(announces);
+    BOOK(burst);
+    BOOK(at_max);
+    BOOK(bytes);
+    BOOK(routes);
+    BOOK(changed);
+    BOOK(named);
+    BOOK(addressed);
+    BOOK(requests);
+#undef BOOK
+    /* A field added to the books is added here too. */
+    _Static_assert(sizeof *sum ==
+                       (11 + 2 + TSIM_ROUTING_FIRES + TSIM_ROUTING_RESETS + TSIM_ROUTING_CHANGES) *
+                           sizeof(uint64_t),
+                   "books_add() names every field");
 }
 #endif
 
