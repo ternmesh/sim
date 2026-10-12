@@ -25,12 +25,12 @@ Meshtastic and MeshCore, on the town and on the region's fast and deployed prese
   `SALVAGE` in `draft/forwarding.md`). A 60-byte frame takes 0.12 s on the fast preset but
   0.40 s at SF9 in the town and 0.71 s on the deployed preset, so where frames are lost one or two
   messages' retries spend the own part's 6 s. On the deployed preset at the comparison's own
-  traffic it held 3,000 to 4,500 frames an hour for about 2 minutes each, the 95th-percentile
+  traffic it held 3,100 to 4,600 frames an hour for about 2 minutes each, the 95th-percentile
   unicast delay rising from 73-117 s to 151-291 s. Unicast on time did not move, and deliveries
   per second of airtime rose 12 to 47%: the retries it held back were mostly lost anyway.
 - **Under load the own part collapses delivery.** With a message from every node every 5 minutes,
   six times the comparison's, candidate 3 in the town falls from 19.9% of unicasts on time to
-  5.1%, and on the deployed preset from 2.1-3.7% to 0.3-0.7%, each held message waiting 7 to 26
+  5.1%, and on the deployed preset from 2.1-3.7% to 0.3-0.7%, each held message waiting 7 to 20
   minutes. With 2% the town delivers 18.7% and the deployed preset 1.8-3.0%, near the budget off;
   with 4% nothing in the town is held.
 - **Against nodes that write without pause it does what it is for.** With a twentieth of the
@@ -107,7 +107,8 @@ done
 ```
 
 In the tables, per s is on-time deliveries per second of airtime; held, own frames that waited,
-every node, an hour; dropped, frames passed on that were dropped as a share of all relays were
+every node, an hour, those waiting as the hour began among them; wait, how long those that went
+waited, counting only their wait within the hour; dropped, frames passed on that were dropped as a share of all relays were
 asked to pass on; ten busiest, the same at the ten nodes asked to pass on the most; relay share,
 the busiest relay's airtime passing frames on over the hour.
 
@@ -118,9 +119,9 @@ the busiest relay's airtime passing frames on over the hour.
 | fast | -5 | 3.34 / 1.99 / 25.85 / 25.85 | 60.6 / 60.6 | 39.9 / 39.9 | 0 | 0 | 0 | 2.2% |
 | fast | 0 | 4.89 / 2.86 / 34.84 / 34.84 | 91.2 / 91.2 | 66.9 / 66.9 | 0 | 0 | 0 | 2.0% |
 | fast | 20 | 3.79 / 2.48 / 56.01 / 56.01 | 98.6 / 98.6 | 90.2 / 90.2 | 0 | 0 | 0 | 1.0% |
-| deployed | -5 | 0.65 / 0.43 / 2.91 / 3.25 | 22.5 / 22.6 | 20.8 / 22.2 | 3,041 | 1.2% | 3.6% | 5.6% |
-| deployed | 0 | 0.78 / 0.44 / 3.41 / 3.86 | 23.4 / 22.7 | 23.3 / 24.6 | 4,527 | 0.66% | 1.8% | 4.5% |
-| deployed | 20 | 0.18 / 0.34 / 0.94 / 1.38 | 11.9 / 11.5 | 5.7 / 8.4 | 4,321 | 0.07% | 0.4% | 3.0% |
+| deployed | -5 | 0.65 / 0.43 / 2.91 / 3.25 | 22.5 / 22.6 | 20.8 / 22.2 | 3,111 | 1.2% | 3.6% | 5.6% |
+| deployed | 0 | 0.78 / 0.44 / 3.41 / 3.86 | 23.4 / 22.7 | 23.3 / 24.6 | 4,628 | 0.66% | 1.8% | 4.5% |
+| deployed | 20 | 0.18 / 0.34 / 0.94 / 1.38 | 11.9 / 11.5 | 5.7 / 8.4 | 4,409 | 0.07% | 0.4% | 3.0% |
 | town | 20 | 0.55 (flooding 0.88) / - / 3.04 / 3.00 | 99.0 / 99.3 | 95.7 / 94.0 | 4 | 0 | 0 | 0.7% |
 
 On the fast preset the budget changes nothing: no frame waits, none is dropped, and shadow mode
@@ -134,10 +135,10 @@ On the deployed preset the two parts do different things. Taken apart:
 |---|---|---|---|---|---|---|---|---|---|
 | no budget | -5 / 0 / 20 | 2.91 / 3.41 / 0.94 | 22.5 / 23.4 / 11.9 | 20.8 / 23.3 / 5.7 | - | - | 75 / 73 / 117 | - | - |
 | relayed part only | -5 / 0 / 20 | 2.95 / 3.34 / 0.92 | 22.2 / 23.7 / 12.1 | 20.9 / 22.8 / 5.5 | 0 | - | 76 / 76 / 115 | 1.3 / 0.54 / 0.06% | 3.8 / 1.8 / 0.3% |
-| own 1%, relayed 8% (draft) | -5 / 0 / 20 | 3.25 / 3.86 / 1.38 | 22.6 / 22.7 / 11.5 | 22.2 / 24.6 / 8.4 | 3,041 / 4,527 / 4,321 | 124 / 130 / 131 | 151 / 279 / 291 | 1.2 / 0.66 / 0.07% | 3.6 / 1.8 / 0.4% |
-| own 2%, relayed 8% | -5 / 0 / 20 | 3.04 / 3.50 / 0.91 | 22.8 / 24.8 / 12.0 | 21.4 / 23.6 / 5.4 | 310 / 687 / 430 | 50 / 59 / 60 | 78 / 77 / 121 | 1.1 / 0.50 / 0.05% | 3.5 / 1.4 / 0.2% |
+| own 1%, relayed 8% (draft) | -5 / 0 / 20 | 3.25 / 3.86 / 1.38 | 22.6 / 22.7 / 11.5 | 22.2 / 24.6 / 8.4 | 3,111 / 4,628 / 4,409 | 121 / 127 / 128 | 151 / 279 / 291 | 1.2 / 0.66 / 0.07% | 3.6 / 1.8 / 0.4% |
+| own 2%, relayed 8% | -5 / 0 / 20 | 3.04 / 3.50 / 0.91 | 22.8 / 24.8 / 12.0 | 21.4 / 23.6 / 5.4 | 310 / 688 / 432 | 50 / 58 / 59 | 78 / 77 / 121 | 1.1 / 0.50 / 0.05% | 3.5 / 1.4 / 0.2% |
 | own 4%, relayed 8% | -5 / 0 / 20 | 2.94 / 3.36 / 0.91 | 22.9 / 24.1 / 12.2 | 20.8 / 22.9 / 5.5 | 1 / 6 / 0 | 5 / 12 / - | 74 / 77 / 117 | 1.3 / 0.57 / 0.04% | 3.9 / 1.7 / 0.2% |
-| own 2%, relayed 7% | -5 / 0 / 20 | 3.14 / 3.50 / 1.03 | 23.1 / 24.2 / 12.3 | 22.0 / 23.7 / 6.2 | 348 / 664 / 436 | 52 / 58 / 60 | 72 / 77 / 126 | 2.0 / 0.92 / 0.12% | 5.8 / 2.8 / 0.5% |
+| own 2%, relayed 7% | -5 / 0 / 20 | 3.14 / 3.50 / 1.03 | 23.1 / 24.2 / 12.3 | 22.0 / 23.7 / 6.2 | 348 / 665 / 438 | 52 / 57 / 60 | 72 / 77 / 126 | 2.0 / 0.92 / 0.12% | 5.8 / 2.8 / 0.5% |
 
 The relayed part alone costs nothing measurable. The own part at 1% holds a frame for two
 minutes, which is past the 60 s deadline: the messages it holds arrive late or not at all, and
@@ -195,15 +196,15 @@ is busy that is every node, and what it holds goes late.
 | a message every 5 min | dBm | unicast on time, % | per s | held | wait, s |
 |---|---|---|---|---|---|
 | town, no budget | 20 | 19.9 | 0.85 | - | - |
-| town, own 1% | 20 | 5.1 | 0.36 | 17,321 | 438 |
-| town, own 2% | 20 | 18.7 | 0.88 | 1,604 | 66 |
+| town, own 1% | 20 | 5.1 | 0.36 | 18,824 | 404 |
+| town, own 2% | 20 | 18.7 | 0.88 | 1,627 | 65 |
 | town, own 4% | 20 | 20.4 | 0.84 | 0 | - |
 | town, flooding / Meshtastic | 20 | 24.8 / 1.5 | 1.08 / 0.11 | - | - |
 | fast, no budget | -5 / 0 / 20 | 24.4 / 21.0 / 27.0 | 16.1 / 26.4 / 5.1 | - | - |
 | fast, own 1% | -5 / 0 / 20 | 24.9 / 21.4 / 27.0 | 15.6 / 26.4 / 5.1 | 0 / 19 / 63 | - / 23 / 23 |
 | deployed, no budget | -5 / 0 / 20 | 3.7 / 3.3 / 2.1 | 0.73 / 0.59 / 0.64 | - | - |
-| deployed, own 1% | -5 / 0 / 20 | 0.6 / 0.3 / 0.7 | 0.25 / 0.11 / 0.18 | 61,197 / 68,408 / 46,390 | 1,240 / 1,367 / 1,559 |
-| deployed, own 2% | -5 / 0 / 20 | 3.0 / 2.6 / 1.8 | 0.70 / 0.57 / 0.52 | 29,552 / 33,477 / 10,886 | 192 / 200 / 297 |
+| deployed, own 1% | -5 / 0 / 20 | 0.6 / 0.3 / 0.7 | 0.25 / 0.11 / 0.18 | 76,506 / 87,192 / 61,836 | 998 / 1,082 / 1,186 |
+| deployed, own 2% | -5 / 0 / 20 | 3.0 / 2.6 / 1.8 | 0.70 / 0.57 / 0.52 | 30,701 / 34,929 / 11,765 | 183 / 189 / 270 |
 | fast, Meshtastic / MeshCore | -5 / 0 / 20 | 6.9 / 12.5 / 1.3 and 10.5 / 14.9 / 8.8 | 4.77 / 6.14 / 0.88 and 2.08 / 2.95 / 2.64 | - | - |
 | deployed, Meshtastic / MeshCore | -5 / 0 / 20 | 2.8 / 1.6 / 0.1 and 2.8 / 2.8 / 1.3 | 0.55 / 0.35 / 0.09 and 0.38 / 0.41 / 0.21 | - | - |
 
@@ -214,7 +215,7 @@ next to nothing is delivered anyway. On the fast preset, where a frame is short,
 almost nothing even at this traffic.
 
 The flood allowances inside the own part are not what binds: the town with `airtime.floods = no`
-held as many frames (17,388) and delivered as little (4.8%).
+held as many frames (18,907) and delivered as little (4.8%).
 
 ## Writing without pause
 
@@ -225,11 +226,11 @@ of the nodes each send a message every 10 seconds, 180 times the others' rate
 | | dBm | the others' unicast on time, % | the others' broadcast, % | all unicast on time, % | per s | held | wait, s |
 |---|---|---|---|---|---|---|---|
 | fast, no budget | -5 / 0 / 20 | 16.7 / 14.1 / 18.6 | 12.1 / 22.2 / 3.0 | 14.2 / 12.1 / 14.9 | 17.7 / 25.6 / 6.7 | - | - |
-| fast, own 1% | -5 / 0 / 20 | 36.2 / 40.7 / 69.8 | 20.2 / 41.9 / 43.2 | 3.5 / 3.9 / 6.7 | 4.0 / 7.8 / 11.4 | 14,037 / 17,525 / 18,191 | 367 / 371 / 377 |
-| fast, own 2% | -5 / 0 / 20 | 24.6 / 25.9 / 54.3 | 14.6 / 34.2 / 24.9 | 4.1 / 2.7 / 5.2 | 5.0 / 6.4 / 5.6 | 28,112 / 36,066 / 38,198 | 165 / 178 / 184 |
+| fast, own 1% | -5 / 0 / 20 | 36.2 / 40.7 / 69.8 | 20.2 / 41.9 / 43.2 | 3.5 / 3.9 / 6.7 | 4.0 / 7.8 / 11.4 | 15,212 / 19,010 / 19,780 | 349 / 352 / 358 |
+| fast, own 2% | -5 / 0 / 20 | 24.6 / 25.9 / 54.3 | 14.6 / 34.2 / 24.9 | 4.1 / 2.7 / 5.2 | 5.0 / 6.4 / 5.6 | 29,159 / 37,506 / 39,760 | 161 / 174 / 179 |
 | deployed, no budget | -5 / 0 / 20 | 8.1 / 10.4 / 3.5 | 7.9 / 9.5 / 0.5 | 1.6 / 1.7 / 1.7 | 1.87 / 1.83 / 1.98 | - | - |
-| deployed, own 1% | -5 / 0 / 20 | 16.8 / 17.8 / 9.8 | 16.2 / 18.8 / 5.8 | 1.6 / 1.7 / 0.9 | 2.04 / 2.54 / 0.86 | 6,026 / 7,510 / 7,175 | 1,401 / 1,208 / 1,245 |
-| deployed, own 2% | -5 / 0 / 20 | 15.3 / 16.1 / 9.8 | 12.6 / 14.2 / 3.0 | 1.5 / 1.5 / 0.9 | 1.43 / 1.68 / 0.43 | 6,102 / 6,536 / 6,138 | 1,100 / 1,054 / 1,105 |
+| deployed, own 1% | -5 / 0 / 20 | 16.8 / 17.8 / 9.8 | 16.2 / 18.8 / 5.8 | 1.6 / 1.7 / 0.9 | 2.04 / 2.54 / 0.86 | 7,701 / 9,226 / 8,861 | 980 / 861 / 876 |
+| deployed, own 2% | -5 / 0 / 20 | 15.3 / 16.1 / 9.8 | 12.6 / 14.2 / 3.0 | 1.5 / 1.5 / 0.9 | 1.43 / 1.68 / 0.43 | 7,698 / 8,132 / 7,736 | 917 / 895 / 919 |
 
 The writers' messages are nine in ten of all, so the columns for every message, the headline among
 them, are theirs, and fall. The other nodes' columns are what the own part is for: with it the
