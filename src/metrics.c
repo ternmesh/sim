@@ -656,6 +656,9 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
         }
         r->queue_dropped += tsim_net_stats(net, i)->dropped - (b ? b->dropped : 0);
         r->duty_held += tsim_net_stats(net, i)->held - (b ? b->held : 0);
+        /* Waits brought up to now first: one that could end with no kick to end it - in shadow
+         * mode nothing is kicked for - would otherwise be read as still going. */
+        tsim_net_budget_settle(net, i);
         budget_node(r, i, tsim_net_stats(net, i), b ? &b->stats : NULL, ledger, &waited_ns,
                     &waited);
         const struct tsim_phy_stats *ps = tsim_phy_stats(phy, i);

@@ -1214,6 +1214,30 @@ static void shadow_mode_counts_a_frame_held_when_it_is_first_short(void) {
     rig_close(&r);
 }
 
+/* In shadow mode nothing is kicked when a frame's buckets fill, so the report brings its wait up to
+ * date itself: a frame free to go but not yet sent has waited, and waits no more. */
+static void a_report_ends_a_wait_nothing_kicked_for(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_SHADOW, 16);
+    struct tsim_metrics *m = tsim_metrics_create(r.net, TSIM_S(60));
+    tsim_metrics_begin(m);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    tsim_time full = airtime(255);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, full);
+    tsim_node_send(n, &own); /* short from `full`, free to go at 100 airtimes; never sent */
+    run_for(&r, 200 * full);
+    struct tsim_report rep;
+    tsim_metrics_report(m, &rep);
+    CHECK_EQ_U64(rep.budget.held, 1);
+    double want = (double)(99 * full) / 1e9;
+    CHECK(rep.budget.wait_mean_s > want - 1e-6 && rep.budget.wait_mean_s < want + 1e-6);
+    tsim_metrics_destroy(m);
+    rig_close(&r);
+}
+
 /* However long the queue, a node keeps no more than 32 frames of its own under the budget, waiting
  * now or not: any of them may come to wait. */
 static void a_node_keeps_32_of_its_own_however_long_its_queue(void) {
@@ -1313,6 +1337,7 @@ int main(void) {
     RUN(a_wait_ends_when_the_buckets_hold_the_frame);
     RUN(a_frame_free_to_go_as_the_window_begins_is_not_waiting);
     RUN(a_wait_behind_another_ends_when_that_one_is_gone);
+    RUN(a_report_ends_a_wait_nothing_kicked_for);
     RUN(a_node_keeps_32_of_its_own_however_long_its_queue);
     RUN(a_frame_no_bucket_could_hold_is_refused);
     RUN(with_the_budget_off_marks_change_nothing);
