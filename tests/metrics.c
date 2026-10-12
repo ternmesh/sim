@@ -292,6 +292,68 @@ static void destroy_stops_watching(void) {
     rig_close(&r);
 }
 
+/* A line of 5 nodes 1000 m apart. Node 0's broadcast of flow 1 with a reach of 2500 m is wanted by
+ * 1 and 2 only, though the flood takes it to all four: 3 and 4 are beyond. Flow 2's unicast and
+ * the plain broadcast are counted each in its own place, and both kinds in the headline. */
+static void a_reach_counts_only_the_nodes_within_it(void) {
+    struct rig r;
+    line(&r, 5, 0, TSIM_S(60), 1);
+    struct tsim_pos pos[5];
+    for (int i = 0; i < 5; i++) {
+        pos[i] = (struct tsim_pos){1000.0 * i, 0};
+    }
+    CHECK(tsim_metrics_flows(r.metrics, 2, pos));
+    CHECK(tsim_net_originate_flow(r.net, 0, TSIM_BROADCAST, 10, 1, 0, 2500) != 0);
+    tsim_sched_run_until(r.sched, TSIM_S(10));
+    CHECK(tsim_net_originate_flow(r.net, 4, 3, 10, 2, 0, 0) != 0);
+    CHECK(tsim_net_originate_flow(r.net, 4, 3, 10, 2, 1, 0) == 0); /* a unicast is not scoped */
+    tsim_sched_run_until(r.sched, TSIM_S(20));
+    tsim_net_originate(r.net, 4, TSIM_BROADCAST, 10);
+    tsim_sched_run_until(r.sched, TSIM_S(30));
+    struct tsim_report rep;
+    tsim_metrics_report(r.metrics, &rep);
+    CHECK_EQ_U64(rep.flow_count, 2);
+    CHECK_EQ_U64(rep.flow[0].messages, 1);
+    CHECK_EQ_U64(rep.flow[0].wanted, 2);
+    CHECK_EQ_U64(rep.flow[0].delivered, 2);
+    CHECK_EQ_U64(rep.flow[0].on_time, 2);
+    CHECK_EQ_U64(rep.flow_beyond[0], 2);
+    CHECK_EQ_U64(rep.flow[1].messages, 1);
+    CHECK_EQ_U64(rep.flow[1].wanted, 1);
+    CHECK_EQ_U64(rep.flow[1].on_time, 1);
+    CHECK_EQ_U64(rep.flow_beyond[1], 0);
+    CHECK_EQ_U64(rep.broadcast.messages, 2);
+    CHECK_EQ_U64(rep.broadcast.wanted, 2 + 4);
+    CHECK_EQ_U64(rep.broadcast.delivered, 2 + 4);
+    CHECK_EQ_U64(rep.broadcast.on_time, 2 + 4);
+    CHECK_EQ_U64(rep.unicast.messages, 1);
+    rig_close(&r);
+}
+
+/* A flow's message delivered before the window began is not the window's, beyond its reach or
+ * within it. */
+static void a_flows_message_before_the_window_is_not_counted(void) {
+    struct rig r;
+    line(&r, 5, 0, TSIM_S(60), 1);
+    struct tsim_pos pos[5];
+    for (int i = 0; i < 5; i++) {
+        pos[i] = (struct tsim_pos){1000.0 * i, 0};
+    }
+    CHECK(tsim_metrics_flows(r.metrics, 1, pos));
+    tsim_net_originate_flow(r.net, 0, TSIM_BROADCAST, 10, 1, 0, 2500);
+    tsim_sched_run_until(r.sched, TSIM_S(10));
+    tsim_metrics_begin(r.metrics);
+    tsim_sched_run_until(r.sched, TSIM_S(20));
+    struct tsim_report rep;
+    tsim_metrics_report(r.metrics, &rep);
+    CHECK_EQ_U64(rep.flow[0].messages, 0);
+    CHECK_EQ_U64(rep.flow[0].delivered, 0);
+    CHECK_EQ_U64(rep.flow[0].on_time, 0);
+    CHECK_EQ_U64(rep.flow_beyond[0], 0);
+    CHECK_EQ_U64(rep.broadcast.delivered, 0);
+    rig_close(&r);
+}
+
 int main(void) {
     RUN(a_wait_across_the_window_start_counts_only_its_part_in_the_window);
     RUN(latency_and_deadline_follow_each_delivery);
@@ -303,5 +365,7 @@ int main(void) {
     RUN(a_message_at_the_window_but_before_it_is_not_counted);
     RUN(destroy_stops_watching);
     RUN(churn_books_downs_and_messages_for_nodes_down);
+    RUN(a_reach_counts_only_the_nodes_within_it);
+    RUN(a_flows_message_before_the_window_is_not_counted);
     return CHECK_DONE();
 }

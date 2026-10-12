@@ -91,6 +91,8 @@ struct tsim_rx {
  * every other node when `dst` is TSIM_BROADCAST. The id is from 1 in the order messages were made;
  * a plugin carries it on the air in whatever field it would carry a packet id in. The content is
  * random bytes the network made, and a frame that carries the message carries them. */
+#define TSIM_FLOWS_MAX 8 /* flows a workload may run: see tsim/traffic.h */
+
 struct tsim_message {
     uint64_t id;
     uint32_t src;
@@ -101,6 +103,15 @@ struct tsim_message {
     /* A presence card (tsim/traffic.h): a broadcast that says who its sender is, not a message to
      * anyone. A routing carries it as any other broadcast; only the books keep it apart. */
     bool card;
+    /* The flow it belongs to (tsim/traffic.h), from 1, or 0 for the plain process, a reply to it,
+     * a set send or a card. Only the books read it. */
+    uint8_t flow;
+    /* How far a broadcast's sender asks it to go, which a routing that can scope a broadcast
+     * honours and any other ignores: `hops` relay hops, 0 for the routing's own; and `reach_m`
+     * metres from its sender, 0 for anywhere. The books count a broadcast with a reach as wanted
+     * only by the nodes that close to its sender, whatever the routing does with it. */
+    uint8_t hops;
+    double reach_m;
 };
 
 struct tsim_node;

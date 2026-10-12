@@ -43,7 +43,40 @@
  * first card falls uniformly in the first `card_interval` after the start, and each next one
  * between half and one and a half intervals after the last, so that cards neither bunch nor
  * march in step. Cards are made in [start, stop) like messages, and never in the closed loop's
- * wait. */
+ * wait.
+ *
+ * Beside the plain process, a workload can run flows (MSH-34): named kinds of message, each on
+ * processes of its own - a position every 15 minutes, a chat line now and then, a direct message
+ * to a regular correspondent - so that one run carries the mix a real mesh does and reports on each
+ * kind apart. A flow's messages all go one way: to every node, to one of the node's peers (which
+ * needs `peers`), or to another node chosen uniformly. A share of the nodes send it, drawn once
+ * each; each of those makes one on its own process, exponential as the plain one's or, for a flow
+ * on a timer, between half and one and a half intervals apart as cards are, the first uniformly
+ * in the first interval. A share of a flow's unicasts are answered as `reply` answers the plain
+ * process's, the answer belonging to the flow. A broadcast of a flow carries the hops and reach
+ * its flow sets (struct tsim_message): a routing that can scope a broadcast honours them, and the
+ * books count one with a reach as wanted only by the nodes within it. Each flow draws from streams
+ * of its own, per node, so adding a flow moves no draw of the plain process, of the cards or of
+ * another flow. */
+
+enum tsim_flow_to {
+    TSIM_FLOW_ALL,  /* a broadcast */
+    TSIM_FLOW_PEER, /* one of the node's peers */
+    TSIM_FLOW_ANY,  /* another node, chosen uniformly */
+};
+
+struct tsim_flow {
+    char name[16];
+    tsim_time interval; /* mean gap between one sending node's messages, above 0 */
+    bool timer;         /* gaps uniform over half to one and a half intervals, not exponential */
+    uint32_t len_min;
+    uint32_t len_max;
+    uint8_t to;     /* enum tsim_flow_to */
+    double share;   /* fraction of the nodes that send it, 0..1 */
+    double reply;   /* fraction of its unicasts answered, 0..1 */
+    uint8_t hops;   /* a broadcast's relay hops, 0 for the routing's own */
+    double reach_m; /* a broadcast's reach from its sender in metres, 0 for anywhere */
+};
 
 /* A message sent at a set time, as well as or instead of the ones the process makes: to put one
  * flood through a network and count what it costs, say. It uses none of the process's draws. */
@@ -76,6 +109,8 @@ struct tsim_traffic_params {
     tsim_time chatty_interval;
     const struct tsim_send *sends; /* copied: they need not outlive the call */
     uint32_t send_count;
+    struct tsim_flow flows[TSIM_FLOWS_MAX]; /* flow i + 1 is flows[i] */
+    uint32_t flow_count;
 };
 
 struct tsim_traffic;
@@ -84,7 +119,10 @@ struct tsim_traffic;
  * parameter - a negative interval, len_min over len_max or over TSIM_FRAME_MAX, a broadcast
  * fraction outside 0..1, stop before start, more peers than other nodes, a
  * reply fraction outside 0..1 or with closed, a negative reply delay, a negative card interval, a
- * card share outside 0..1, a card over TSIM_FRAME_MAX, a send from or to a node
+ * card share outside 0..1, a card over TSIM_FRAME_MAX, a flow whose interval is not above 0,
+ * whose lengths are out of order or over TSIM_FRAME_MAX, whose share or reply is outside 0..1,
+ * that goes to peers with none, that answers broadcasts, that scopes unicasts, whose reach is
+ * negative, or any flow with closed, a send from or to a node
  * that is not there, to its own node or over TSIM_FRAME_MAX - or when memory runs out. A send is
  * made whenever it falls, whatever start and stop say, and in the closed loop its finishing starts
  * no gap. */

@@ -1,5 +1,6 @@
 #include "tsim/metrics.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -35,6 +36,13 @@ struct tsim_metrics {
     struct latencies unicast;
     struct latencies broadcast;
     struct latencies card;
+    /* Flows, by tsim_metrics_flows(): each one's deliveries, and the nodes' positions a reach is
+     * judged from, or NULL; and deliveries beyond a reach, by flow and of broadcasts in all. */
+    uint32_t flow_count;
+    struct latencies *flows;
+    struct tsim_pos *pos;
+    uint64_t beyond[TSIM_FLOWS_MAX + 1];
+    uint64_t beyond_broadcast;
     tsim_time begun;   /* when the window began: 0 for the whole run */
     uint64_t first;    /* the first message id of the window: 1 for the whole run */
     struct base *base; /* per node, or NULL with no window begun */
@@ -133,23 +141,44 @@ static tsim_time percentile(const struct latencies *l, double p) {
     return l->max;
 }
 
-static void delivered(void *ctx, const struct tsim_message_record *rec, uint32_t node) {
-    (void)node;
-    struct tsim_metrics *m = ctx;
-    if (rec->msg.id < m->first) {
-        return; /* made before the window: not the window's to count */
+/* Whether `node` is within a broadcast's reach of its source: every node is, for one without. */
+static bool within(const struct tsim_metrics *m, const struct tsim_message *msg, uint32_t node) {
+    if (!(msg->reach_m > 0) || !m->pos) {
+        return true;
     }
-    struct latencies *l = rec->msg.card                    ? &m->card
-                          : rec->msg.dst == TSIM_BROADCAST ? &m->broadcast
-                                                           : &m->unicast;
-    tsim_time latency = tsim_sched_now(tsim_net_sched(m->net)) - rec->msg.created;
+    struct tsim_pos a = m->pos[msg->src], b = m->pos[node];
+    return hypot(a.x - b.x, a.y - b.y) <= msg->reach_m;
+}
+
+static void count_latency(struct latencies *l, tsim_time latency, tsim_time deadline) {
     l->count[bucket_of(latency)]++;
     l->total++;
     if (latency > l->max) {
         l->max = latency;
     }
+    l->on_time += latency <= deadline;
+}
+
+static void delivered(void *ctx, const struct tsim_message_record *rec, uint32_t node) {
+    struct tsim_metrics *m = ctx;
+    if (rec->msg.id < m->first) {
+        return; /* made before the window: not the window's to count */
+    }
+    uint8_t flow = rec->msg.flow <= m->flow_count ? rec->msg.flow : 0;
+    if (!within(m, &rec->msg, node)) {
+        m->beyond[flow]++;
+        m->beyond_broadcast++; /* a card has no reach */
+        return;
+    }
+    struct latencies *l = rec->msg.card                    ? &m->card
+                          : rec->msg.dst == TSIM_BROADCAST ? &m->broadcast
+                                                           : &m->unicast;
+    tsim_time latency = tsim_sched_now(tsim_net_sched(m->net)) - rec->msg.created;
+    if (flow) {
+        count_latency(&m->flows[flow - 1], latency, m->deadline);
+    }
+    count_latency(l, latency, m->deadline);
     if (latency <= m->deadline) {
-        l->on_time++;
         if (m->chatty && !m->chatty[rec->msg.src] && !rec->msg.card) {
             m->quiet_on_time[rec->msg.dst == TSIM_BROADCAST]++;
         }
@@ -343,6 +372,29 @@ struct tsim_metrics *tsim_metrics_create(struct tsim_net *net, tsim_time deadlin
     return m;
 }
 
+bool tsim_metrics_flows(struct tsim_metrics *m, uint32_t count, const struct tsim_pos *pos) {
+    uint32_t n = tsim_net_nodes(m->net);
+    if (count > TSIM_FLOWS_MAX) {
+        return false;
+    }
+    struct latencies *flows = calloc(count ? count : 1, sizeof *flows);
+    struct tsim_pos *copy = pos ? malloc(n * sizeof *copy) : NULL;
+    if (!flows || (pos && !copy)) {
+        free(flows);
+        free(copy);
+        return false;
+    }
+    if (pos) {
+        memcpy(copy, pos, n * sizeof *copy);
+    }
+    free(m->flows);
+    free(m->pos);
+    m->flows = flows;
+    m->pos = copy;
+    m->flow_count = count;
+    return true;
+}
+
 bool tsim_metrics_apart(struct tsim_metrics *m, const uint8_t *chatty) {
     uint32_t n = tsim_net_nodes(m->net);
     free(m->chatty);
@@ -369,6 +421,8 @@ void tsim_metrics_destroy(struct tsim_metrics *m) {
     free(m->adj);
     free(m->base);
     free(m->chatty);
+    free(m->flows);
+    free(m->pos);
     for (uint32_t i = 0; m->power && i < tsim_net_nodes(m->net); i++) {
         free(m->power[i].spans);
     }
@@ -438,6 +492,11 @@ void tsim_metrics_begin(struct tsim_metrics *m) {
     m->quiet_on_time[0] = m->quiet_on_time[1] = 0;
     m->broadcast = (struct latencies){0};
     m->card = (struct latencies){0};
+    for (uint32_t f = 0; f < m->flow_count; f++) {
+        m->flows[f] = (struct latencies){0};
+    }
+    memset(m->beyond, 0, sizeof m->beyond);
+    m->beyond_broadcast = 0;
     memset(m->hops, 0, sizeof m->hops);
     memset(m->rivals, 0, sizeof m->rivals);
     memset(m->progress, 0, sizeof m->progress);
@@ -562,10 +621,25 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
         struct tsim_delivery *d = rec->msg.card                    ? &r->card
                                   : rec->msg.dst == TSIM_BROADCAST ? &r->broadcast
                                                                    : &r->unicast;
+        /* A broadcast with a reach is wanted only within it. */
+        uint32_t wanted = rec->wanted;
+        if (rec->msg.reach_m > 0 && m->pos) {
+            wanted = 0;
+            for (uint32_t i = 0; i < tsim_net_nodes(net); i++) {
+                wanted += i != rec->msg.src && within(m, &rec->msg, i);
+            }
+        }
         d->messages++;
         d->refused += rec->refused;
-        d->wanted += rec->wanted;
+        d->wanted += wanted;
         d->delivered += rec->delivered;
+        if (rec->msg.flow && rec->msg.flow <= m->flow_count) {
+            struct tsim_delivery *f = &r->flow[rec->msg.flow - 1];
+            f->messages++;
+            f->refused += rec->refused;
+            f->wanted += wanted;
+            f->delivered += rec->delivered;
+        }
         if (m->chatty && !m->chatty[rec->msg.src] && !rec->msg.card) {
             *(rec->msg.dst == TSIM_BROADCAST ? &r->quiet.broadcast_wanted
                                              : &r->quiet.unicast_wanted) += rec->wanted;
@@ -624,6 +698,14 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
     finish(&r->unicast, &m->unicast);
     finish(&r->broadcast, &m->broadcast);
     finish(&r->card, &m->card);
+    /* What went beyond a reach was delivered, but not to anyone who wanted it. */
+    r->broadcast.delivered -= m->beyond_broadcast;
+    r->flow_count = m->flow_count;
+    for (uint32_t f = 0; f < m->flow_count; f++) {
+        r->flow[f].delivered -= m->beyond[f + 1];
+        r->flow_beyond[f] = m->beyond[f + 1];
+        finish(&r->flow[f], &m->flows[f]);
+    }
 
     uint32_t n = tsim_net_nodes(net);
     const struct tsim_phy *phy = tsim_net_phy(net);

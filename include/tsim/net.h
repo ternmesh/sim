@@ -99,6 +99,11 @@ uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, ui
 /* The same for a presence card: a broadcast marked as one, so that the books count it apart. */
 uint64_t tsim_net_originate_card(struct tsim_net *net, uint32_t src, uint32_t len);
 
+/* The same for a message of a flow (tsim/traffic.h): `flow`, from 1, and for a broadcast the hops
+ * and reach its sender asks for (struct tsim_message), which a unicast must leave at 0. */
+uint64_t tsim_net_originate_flow(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len,
+                                 uint8_t flow, uint8_t hops, double reach_m);
+
 /* The frame a node has on the air now, or NULL. */
 const struct tsim_tx *tsim_net_on_air(const struct tsim_net *net, uint32_t node);
 

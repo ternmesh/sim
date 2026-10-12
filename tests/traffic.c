@@ -741,6 +741,171 @@ static void invalid_cards_are_refused(void) {
     rig_close(&r);
 }
 
+/* Two flows on 100 nodes for 36000 s: positions from half the nodes on a 600 s timer, every one a
+ * broadcast carrying its flow's hops and reach, no two of a node's closer than half an interval or
+ * further apart than one and a half; and direct messages from every node to its peers, on an
+ * exponential process with a mean of 1200 s - 3000 expected, give or take 55. */
+static void flows_come_from_their_share_on_their_process(void) {
+    struct tsim_traffic_params p = params();
+    p.interval = 0;
+    p.stop = TSIM_S(36000);
+    p.peers = 2;
+    p.flow_count = 2;
+    p.flows[0] = (struct tsim_flow){.name = "position",
+                                    .interval = TSIM_S(600),
+                                    .timer = true,
+                                    .len_min = 40,
+                                    .len_max = 40,
+                                    .to = TSIM_FLOW_ALL,
+                                    .share = 0.5,
+                                    .hops = 2,
+                                    .reach_m = 1500};
+    p.flows[1] = (struct tsim_flow){.name = "dm",
+                                    .interval = TSIM_S(1200),
+                                    .len_min = 10,
+                                    .len_max = 90,
+                                    .to = TSIM_FLOW_PEER,
+                                    .share = 1.0};
+    struct rig r;
+    rig_open(&r, 100, &refuser, false, &p);
+    tsim_sched_run_until(r.sched, p.stop);
+    uint64_t count = tsim_net_message_count(r.net);
+    CHECK_EQ_U64(tsim_traffic_made(r.traffic), count);
+    tsim_time last[100];
+    uint32_t positions[100] = {0};
+    uint64_t dms = 0;
+    for (uint64_t id = 1; id <= count; id++) {
+        const struct tsim_message *m = &tsim_net_message(r.net, id)->msg;
+        CHECK(!m->card);
+        if (m->flow == 1) {
+            CHECK(m->dst == TSIM_BROADCAST && m->len == 40 && m->hops == 2 && m->reach_m == 1500);
+            if (positions[m->src]) {
+                tsim_time g = m->created - last[m->src];
+                CHECK(g >= TSIM_S(300) && g <= TSIM_S(900));
+            }
+            last[m->src] = m->created;
+            positions[m->src]++;
+        } else {
+            CHECK_EQ_U64(m->flow, 2);
+            CHECK(m->dst != TSIM_BROADCAST && m->len >= 10 && m->len <= 90);
+            CHECK(m->hops == 0 && m->reach_m == 0);
+            dms++;
+        }
+    }
+    uint32_t senders = 0;
+    for (uint32_t i = 0; i < 100; i++) {
+        senders += positions[i] > 0;
+        CHECK(positions[i] == 0 || (positions[i] >= 50 && positions[i] <= 70));
+    }
+    CHECK(senders > 35 && senders < 65);
+    CHECK(dms > 3000 - 250 && dms < 3000 + 250);
+    rig_close(&r);
+}
+
+/* Flows come from streams of their own: with one or without, the plain process's messages are the
+ * same, and so are another flow's. */
+static void a_flow_moves_none_of_the_other_draws(void) {
+    struct tsim_traffic_params p = params();
+    p.flow_count = 1;
+    p.flows[0] = (struct tsim_flow){
+        .name = "chat", .interval = TSIM_S(300), .len_min = 20, .len_max = 20, .share = 1.0};
+    struct tsim_traffic_params q = p;
+    q.flow_count = 2;
+    q.flows[1] = (struct tsim_flow){.name = "telemetry",
+                                    .interval = TSIM_S(90),
+                                    .timer = true,
+                                    .len_min = 50,
+                                    .len_max = 50,
+                                    .share = 1.0};
+    struct rig a, b;
+    rig_open(&a, 10, &refuser, false, &p);
+    rig_open(&b, 10, &refuser, false, &q);
+    tsim_sched_run_until(a.sched, p.stop);
+    tsim_sched_run_until(b.sched, p.stop);
+    uint64_t at = 1, added = 0;
+    for (uint64_t id = 1; id <= tsim_net_message_count(b.net); id++) {
+        const struct tsim_message *y = &tsim_net_message(b.net, id)->msg;
+        if (y->flow == 2) {
+            added++;
+            continue;
+        }
+        const struct tsim_message *x = &tsim_net_message(a.net, at++)->msg;
+        CHECK(x->src == y->src && x->dst == y->dst && x->len == y->len && x->flow == y->flow);
+        CHECK_EQ_I64(x->created, y->created);
+    }
+    CHECK(added > 300);
+    CHECK_EQ_U64(at - 1, tsim_net_message_count(a.net));
+    rig_close(&a);
+    rig_close(&b);
+}
+
+/* A flow's unicasts are answered as its reply says, and an answer belongs to its flow. */
+static void a_flows_answers_belong_to_it(void) {
+    struct tsim_traffic_params p = params();
+    p.interval = 0;
+    p.reply_delay = TSIM_S(30);
+    p.flow_count = 1;
+    p.flows[0] = (struct tsim_flow){.name = "dm",
+                                    .interval = TSIM_S(120),
+                                    .len_min = 16,
+                                    .len_max = 16,
+                                    .to = TSIM_FLOW_ANY,
+                                    .share = 1.0,
+                                    .reply = 1.0};
+    struct rig r;
+    rig_open(&r, 6, &refuser, false, &p);
+    tsim_sched_run_until(r.sched, p.stop);
+    uint64_t count = tsim_net_message_count(r.net);
+    CHECK(count > 200);
+    for (uint64_t id = 1; id <= count; id++) {
+        const struct tsim_message *m = &tsim_net_message(r.net, id)->msg;
+        CHECK_EQ_U64(m->flow, 1);
+        CHECK(m->dst != TSIM_BROADCAST && m->dst != m->src);
+    }
+    /* About as many answers as messages: every one answered, bar those past stop. */
+    CHECK(count > 2 * 6 * 30 * 8 / 10);
+    rig_close(&r);
+}
+
+static void invalid_flows_are_refused(void) {
+    struct tsim_traffic_params p = params();
+    p.flow_count = 1;
+    p.flows[0] = (struct tsim_flow){
+        .name = "f", .interval = TSIM_S(60), .len_min = 10, .len_max = 10, .share = 1.0};
+    struct rig r;
+    rig_open(&r, 4, &refuser, false, &p);
+    CHECK(r.traffic != NULL);
+    struct tsim_traffic_params bad = p;
+    bad.flows[0].interval = 0;
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    bad = p;
+    bad.flows[0].len_max = TSIM_FRAME_MAX + 1;
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    bad = p;
+    bad.flows[0].share = -0.1;
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    bad = p;
+    bad.flows[0].to = TSIM_FLOW_PEER; /* with no peers */
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    bad = p;
+    bad.flows[0].reply = 0.5; /* to a broadcast */
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    bad = p;
+    bad.flows[0].to = TSIM_FLOW_ANY;
+    bad.flows[0].hops = 2; /* a unicast scoped */
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    bad = p;
+    bad.flows[0].reach_m = -1;
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    bad = p;
+    bad.closed = true;
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    bad = p;
+    bad.flow_count = TSIM_FLOWS_MAX + 1;
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    rig_close(&r);
+}
+
 int main(void) {
     RUN(messages_come_at_the_configured_rate);
     RUN(messages_are_made_only_inside_the_window);
@@ -766,5 +931,9 @@ int main(void) {
     RUN(cards_move_none_of_the_message_draws);
     RUN(invalid_cards_are_refused);
     RUN(chatty_nodes_write_at_their_own_interval);
+    RUN(flows_come_from_their_share_on_their_process);
+    RUN(a_flow_moves_none_of_the_other_draws);
+    RUN(a_flows_answers_belong_to_it);
+    RUN(invalid_flows_are_refused);
     return CHECK_DONE();
 }

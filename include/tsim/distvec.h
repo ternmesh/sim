@@ -297,8 +297,20 @@
  *
  * with up to bcast_hops relays along any path - but for those that can use bcast_sparse relays or
  * fewer, which spend none (see Sparse networks) - each relay waiting a random time up to
- * bcast_window airtimes of the frame and dropping it if it hears bcast_cancel copies first. Scoped
- * broadcast is MSH-34's.
+ * bcast_window airtimes of the frame and dropping it if it hears bcast_cancel copies first.
+ *
+ * Scoped broadcast (MSH-34). A broadcast whose sender asks for fewer relay hops (struct
+ * tsim_message.hops) starts with those in place of bcast_hops; the frame is the same. With
+ * bcast_geo, one whose sender asks for a reach (struct tsim_message.reach_m) goes instead as
+ *
+ *     type 0x0E | source 4 | id 4 | hops 1 | x 3 | y 3 | reach 2 | content
+ *
+ * x and y the sender's position, signed metres east and north of an origin every node shares,
+ * and reach in tens of metres, rounded up; and a relay passes it on only if it stands within the
+ * reach of that position. Every node that hears it delivers it, wherever it stands: a relay just
+ * outside reaches the nodes on the edge, and stops there. A node's own position is what it was
+ * configured with (`pos`), as a relay on a mast is, and a leaf's is what it reports; neither
+ * moves. Off by default: no section of the specification has a scoped flood yet.
  *
  * How loud a broadcast goes, with power control (MSH-67): bcast_power. Broadcasts went as announces
  * do, loud enough for the power_k neighbours with the lowest floors. At high power those are near
@@ -593,6 +605,8 @@ enum tsim_distvec_pick {
 
 struct tsim_distvec_oracle;
 
+struct tsim_pos;
+
 struct tsim_distvec_config {
     uint16_t channel;
     struct tsim_lora lora;
@@ -662,7 +676,9 @@ struct tsim_distvec_config {
     uint8_t bcast_hops;
     uint8_t bcast_sparse; /* relays at most a relay can use that spend no hop of a broadcast */
     double bcast_window;
-    uint8_t bcast_cancel; /* copies heard, its own first one included, 0 for never */
+    uint8_t bcast_cancel;       /* copies heard, its own first one included, 0 for never */
+    bool bcast_geo;             /* scoped broadcast by place, above */
+    const struct tsim_pos *pos; /* with bcast_geo: [node], shared; set by the driver */
 
     bool etx;          /* links cost their ETX times the reference frame; off, every one the same */
     bool power;        /* power control, as above; off, all go at tx_dbm */

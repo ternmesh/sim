@@ -251,6 +251,21 @@ static void print_report(const char *path, const struct tsim_scenario *s,
     if (r->card.messages) {
         print_delivery("card", &r->card, ",");
     }
+    if (r->flow_count) {
+        printf("  \"flows\": {\n");
+        for (uint32_t f = 0; f < r->flow_count; f++) {
+            const struct tsim_delivery *d = &r->flow[f];
+            printf(
+                "    \"%s\": {\"messages\": %" PRIu64 ", \"refused\": %" PRIu64
+                ", \"wanted\": %" PRIu64 ", \"delivered\": %" PRIu64 ", \"on_time\": %" PRIu64
+                ", \"beyond\": %" PRIu64
+                ", \"latency_p50_s\": %.6f, \"latency_p95_s\": %.6f, \"latency_max_s\": %.6f}%s\n",
+                s->flows[f].name, d->messages, d->refused, d->wanted, d->delivered, d->on_time,
+                r->flow_beyond[f], seconds(d->latency_p50), seconds(d->latency_p95),
+                seconds(d->latency_max), f + 1 < r->flow_count ? "," : "");
+        }
+        printf("  },\n");
+    }
     printf("  \"airtime_s\": {\"total\": %.6f", r->airtime_total_s);
     for (int p = 0; p < TSIM_PURPOSE_COUNT; p++) {
         printf(", \"%s\": %.6f", purposes[p], r->airtime_s[p]);

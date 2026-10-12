@@ -35,6 +35,7 @@
 #define TYPE_SOLICIT 0x0B
 #define TYPE_HERE 0x0C
 #define TYPE_FLOOD 0x0D
+#define TYPE_BCAST_GEO 0x0E
 
 #define ANNOUNCE_HEAD 16
 #define IHU_LEN 5
@@ -46,7 +47,8 @@
 #define DATA_HEAD 18
 #define ACK_LEN 18
 #define BCAST_HEAD 10
-#define FLOOD_HEAD 14 /* a rescue flood: a broadcast's head and its destination */
+#define BCAST_GEO_HEAD 18 /* a broadcast scoped by place: its head, a position and a reach */
+#define FLOOD_HEAD 14     /* a rescue flood: a broadcast's head and its destination */
 /* With demand routes, a data, acknowledgement or reply frame's route to its source, and a route
  * request's length: see the header. */
 #define TRAIL_LEN 10
@@ -106,6 +108,21 @@ static void put32(uint8_t *p, uint32_t v) {
 }
 
 static uint16_t get16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
+
+/* A signed 24-bit number of whole metres, the nearest, held to what 24 bits hold. */
+static void put24s(uint8_t *p, double v) {
+    double m = round(v);
+    int32_t i = m > 8388607 ? 8388607 : m < -8388608 ? -8388608 : (int32_t)m;
+    uint32_t u = (uint32_t)i;
+    p[0] = (uint8_t)(u >> 16);
+    p[1] = (uint8_t)(u >> 8);
+    p[2] = (uint8_t)u;
+}
+
+static double get24s(const uint8_t *p) {
+    uint32_t u = (uint32_t)p[0] << 16 | (uint32_t)p[1] << 8 | p[2];
+    return (double)(int32_t)(u ^ 0x800000u) - 8388608.0;
+}
 
 static uint32_t get32(const uint8_t *p) {
     return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
@@ -3937,20 +3954,31 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
         return false;
     }
     if (msg->dst == TSIM_BROADCAST) {
-        if (BCAST_HEAD + msg->len > FRAME_MAX) {
+        bool geo = r->config.bcast_geo && msg->reach_m > 0 && r->config.pos;
+        uint32_t head = geo ? BCAST_GEO_HEAD : BCAST_HEAD;
+        if (head + msg->len > FRAME_MAX) {
             return false;
         }
         struct tsim_tx tx = frame(r, TSIM_PURPOSE_DATA, PRIORITY_DATA);
         tx.tx_dbm = bcast_dbm(r);
         tx.budget = TSIM_BUDGET_OWN | TSIM_BUDGET_FLOOD;
-        tx.bytes[0] = TYPE_BCAST;
+        tx.bytes[0] = geo ? TYPE_BCAST_GEO : TYPE_BCAST;
         put32(tx.bytes + 1, r->self);
         put32(tx.bytes + 5, (uint32_t)msg->id);
-        tx.bytes[9] = (uint8_t)(r->config.bcast_hops + 1);
-        memcpy(tx.bytes + BCAST_HEAD, msg->content, msg->len);
-        tx.len = BCAST_HEAD + msg->len;
+        tx.bytes[9] = (uint8_t)((msg->hops ? msg->hops : r->config.bcast_hops) + 1);
+        if (geo) {
+            const struct tsim_pos *at = &r->config.pos[r->self];
+            put24s(tx.bytes + 10, at->x);
+            put24s(tx.bytes + 13, at->y);
+            double tens = ceil(msg->reach_m / 10);
+            uint16_t reach = tens < UINT16_MAX ? (uint16_t)tens : UINT16_MAX;
+            tx.bytes[16] = (uint8_t)(reach >> 8);
+            tx.bytes[17] = (uint8_t)reach;
+        }
+        memcpy(tx.bytes + head, msg->content, msg->len);
+        tx.len = head + msg->len;
         tx.carries = msg->id;
-        tx.carries_at = BCAST_HEAD;
+        tx.carries_at = head;
         mark_seen(r, frame_key(TYPE_BCAST, r->self, (uint32_t)msg->id));
         unsigned mask = sf_mask(r);
         for (uint8_t sf = TSIM_SF_MIN; sf < TSIM_SF_MIN + TSIM_SF_COUNT; sf++) {
@@ -4133,9 +4161,21 @@ static void on_flood(struct router *r, const uint8_t *b, uint32_t len, uint8_t h
     }
 }
 
+/* Whether this relay stands within a broadcast's reach of where it began: always for one
+ * unscoped, and for one scoped by place by a node that does not know where it stands. */
+static bool in_reach(const struct router *r, const uint8_t *b) {
+    if (b[0] != TYPE_BCAST_GEO || !r->config.pos) {
+        return true;
+    }
+    const struct tsim_pos *at = &r->config.pos[r->self];
+    double reach = 10.0 * (double)((uint32_t)b[16] << 8 | b[17]);
+    return hypot(at->x - get24s(b + 10), at->y - get24s(b + 13)) <= reach;
+}
+
 static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t heard_sf) {
     uint32_t src = get32(b + 1), id = get32(b + 5);
     uint8_t hops = b[9];
+    uint32_t head = b[0] == TYPE_BCAST_GEO ? BCAST_GEO_HEAD : BCAST_HEAD;
     uint64_t key = frame_key(TYPE_BCAST, src, id);
     if (seen(r, key)) {
         heard_again(r, key, r->config.bcast_cancel, heard_sf);
@@ -4143,7 +4183,8 @@ static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t h
     }
     mark_seen(r, key);
     tsim_node_deliver(r->node, id);
-    if (!r->infra || hops == 0 || (r->config.bcast_cancel && r->config.bcast_cancel <= 1)) {
+    if (!r->infra || hops == 0 || (r->config.bcast_cancel && r->config.bcast_cancel <= 1) ||
+        !in_reach(r, b)) {
         return;
     }
     /* A relay with few others to pass it on is a bridge, not a crowd: it spends no hop, and
@@ -4159,7 +4200,7 @@ static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t h
     tx.bytes[9] = (uint8_t)(spends ? hops - 1 : hops);
     tx.len = len;
     tx.carries = id;
-    tx.carries_at = BCAST_HEAD;
+    tx.carries_at = head;
     unsigned mask = sf_mask(r);
     for (uint8_t sf = TSIM_SF_MIN; sf < TSIM_SF_MIN + TSIM_SF_COUNT; sf++) {
         if (mask >> (sf - TSIM_SF_MIN) & 1) {
@@ -4304,6 +4345,11 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
         return;
     case TYPE_BCAST:
         if (rx->len >= BCAST_HEAD) {
+            on_bcast(r, rx->bytes, rx->len, rx->lora.sf);
+        }
+        return;
+    case TYPE_BCAST_GEO:
+        if (rx->len >= BCAST_GEO_HEAD) {
             on_bcast(r, rx->bytes, rx->len, rx->lora.sf);
         }
         return;
