@@ -240,7 +240,8 @@
  * quarter of the leaves walking, after a leaf whose anchor went silent too re-attaches and a
  * request with no room is asked again (3 seeds): 90.6% of unicasts on time at 0.164 a second of
  * airtime, against 91.2% at 0.177 before, the re-attachments costing 7% of what a second of
- * airtime delivers.
+ * airtime delivers. Counting the anchor silent only if it was in both solicits of a pair, and
+ * numbering a leaf's solicits from a random place, leave that where it was: 90.4% at 0.162.
  *
  * Delivery, with every node sending a message to another at random every half hour and none
  * broadcast (-s traffic.broadcast=0, 3 seeds): messages that arrived within the minute allowed,
