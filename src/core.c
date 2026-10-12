@@ -433,6 +433,9 @@ static void service_routes(struct router *r, tsim_time now) {
         }
 #endif
         r->len = tern_route_poll(&r->route, now, r->frame, &r->dbm);
+        /* And after it, as a board stores it (keep_seq() in ports/node/node.c): a leaf that
+         * re-attaches raises it there. */
+        r->net->seq[tsim_node_index(r->node)] = r->route.seq;
     }
     if (r->len != 0) {
         bool announce = r->frame[0] == TERN_HDR_ANNOUNCE;
