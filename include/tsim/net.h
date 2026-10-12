@@ -222,6 +222,8 @@ struct tsim_net_heard {
     uint32_t from;
     uint32_t to;
     enum tsim_purpose purpose;
+    uint64_t carries; /* the message it carries, or 0 */
+    double tx_dbm;
     enum tsim_phy_fate fate;
     tsim_time start; /* when the frame began */
 };

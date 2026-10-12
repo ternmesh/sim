@@ -149,6 +149,7 @@ struct tsim_scenario {
     tsim_time move_step;
 
     bool report_announces; /* struct tsim_announces, for distvec: slow */
+    bool report_floods;    /* struct tsim_floods: slow */
     struct tsim_send sends[TSIM_SENDS_MAX];
     uint32_t send_count;
 

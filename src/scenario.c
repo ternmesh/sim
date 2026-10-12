@@ -994,6 +994,8 @@ static const char *core_set(void *config, const char *key, const char *value) {
         {"flood_relay_ppm", offsetof(struct tsim_core_config, flood_relay_ppm), 1, 1000000},
         {"flood_last", offsetof(struct tsim_core_config, flood_last), 0, 1},
         {"flood_busy_ppm", offsetof(struct tsim_core_config, flood_busy_ppm), 0, 1000000},
+        {"flood_resends", offsetof(struct tsim_core_config, flood_resends), 0, 255},
+        {"flood_echo", offsetof(struct tsim_core_config, flood_echo), 0, 255},
         {"card_hops", offsetof(struct tsim_core_config, card_hops), 0, 255},
         {"leaf_destinations", offsetof(struct tsim_core_config, leaf_destinations), 0, 65535},
         {"default_hops", offsetof(struct tsim_core_config, default_hops), 0, 32},
@@ -1584,6 +1586,9 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     if (strcmp(key, "report.announces") == 0) {
         return parse_yes_no(v, &s->report_announces) ? NULL : "expected yes or no";
     }
+    if (strcmp(key, "report.floods") == 0) {
+        return parse_yes_no(v, &s->report_floods) ? NULL : "expected yes or no";
+    }
     if (strcmp(key, "churn.share") == 0) {
         return parse_fraction(v, &s->churn_share) ? NULL : "expected a fraction from 0 to 1";
     }
@@ -1751,6 +1756,10 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     }
     if (ok && s->nodes == 0) {
         ok = fail(err, 0, "nodes is not set");
+    }
+    if (ok && s->report_announces && s->report_floods) {
+        ok = fail(err, 0,
+                  "report.announces and report.floods each follow every frame: one at a time");
     }
     if (ok && !s->routing) {
         ok = fail(err, 0, "routing is not set");
@@ -2216,6 +2225,182 @@ static void announces_free(struct announces *a) {
     free(a->pairs);
 }
 
+/* Broadcasts over the window (MSH-104): at every node, each frame carrying one, from the window
+ * on. A message's state at a node: FLOOD_DECODED, FLOOD_NEAR, the count of frames that came in
+ * above the floor, saturating, and above those a bit for each fate one of them met. */
+#define FLOOD_DECODED 0x80
+#define FLOOD_NEAR 0x40
+#define FLOOD_AUDIBLE 0x3f
+struct floods {
+    uint32_t n;
+    bool *watch;       /* [node]: every one */
+    const bool *relay; /* [node] */
+    const struct tsim_pos *pos;
+    const struct tsim_phy *phy;
+    double full_dbm; /* the radio's full power, less the floor */
+    uint64_t first;  /* the window's first message id */
+    uint16_t *state; /* [(id - first) * n + node] */
+    uint64_t held;   /* messages state has room for */
+    struct tsim_floods report;
+    struct tsim_core_floods *begun; /* [node], with the core */
+    bool failed;
+};
+
+static void flood_heard(void *ctx, const struct tsim_net_heard *h) {
+    struct floods *f = ctx;
+    if (h->carries < f->first || f->failed) {
+        return;
+    }
+    uint64_t k = h->carries - f->first;
+    if (k >= f->held) {
+        uint64_t held = f->held ? f->held : 64;
+        while (held <= k) {
+            held *= 2;
+        }
+        uint16_t *grown = realloc(f->state, held * f->n * sizeof *grown);
+        if (!grown) {
+            f->failed = true;
+            return;
+        }
+        memset(grown + f->held * f->n, 0, (held - f->held) * f->n * sizeof *grown);
+        f->state = grown;
+        f->held = held;
+    }
+    uint16_t *st = &f->state[k * f->n + h->to];
+    if (h->fate == TSIM_PHY_DECODED) {
+        *st |= FLOOD_DECODED;
+        return;
+    }
+    if (f->full_dbm - tsim_phy_loss(f->phy, h->from, h->to) >= 0) {
+        *st |= FLOOD_NEAR;
+    }
+    if (h->fate != TSIM_PHY_WEAK) {
+        if ((*st & FLOOD_AUDIBLE) < FLOOD_AUDIBLE) {
+            (*st)++;
+        }
+        *st |= (uint16_t)(0x100u << h->fate);
+    }
+}
+
+/* `relay`, `pos` and `full_dbm` are the caller's, set before. */
+static bool floods_start(struct floods *f, struct tsim_net *net) {
+    uint32_t n = tsim_net_nodes(net);
+    f->n = n;
+    f->phy = tsim_net_phy(net);
+    f->first = tsim_net_message_count(net) + 1;
+    f->watch = malloc(n * sizeof *f->watch);
+    if (!f->watch) {
+        return false;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        f->watch[i] = true;
+    }
+#ifdef TSIM_HAVE_CORE
+    if (tsim_net_routing_plugin(net) == &tsim_core) {
+        f->begun = calloc(n, sizeof *f->begun);
+        if (!f->begun) {
+            return false;
+        }
+        for (uint32_t i = 0; i < n; i++) {
+            const void *r = tsim_net_routing(net, i);
+            if (r) {
+                tsim_core_flood_counts(r, &f->begun[i]);
+            }
+        }
+    }
+#endif
+    tsim_net_observe_heard(net, flood_heard, f, f->watch);
+    return true;
+}
+
+static bool flood_wanted(const struct floods *f, const struct tsim_message *msg, uint32_t node) {
+    if (node == msg->src) {
+        return false;
+    }
+    if (!(msg->reach_m > 0) || !f->pos) {
+        return true;
+    }
+    struct tsim_pos a = f->pos[msg->src], b = f->pos[node];
+    return hypot(a.x - b.x, a.y - b.y) <= msg->reach_m;
+}
+
+static bool floods_report(struct floods *f, struct tsim_net *net, struct tsim_floods *out) {
+    tsim_net_observe_heard(net, NULL, NULL, NULL);
+    if (f->failed) {
+        return false;
+    }
+    struct tsim_floods *r = &f->report;
+    uint64_t count = tsim_net_message_count(net);
+    for (uint64_t id = f->first; id <= count; id++) {
+        const struct tsim_message_record *rec = tsim_net_message(net, id);
+        if (rec->msg.dst != TSIM_BROADCAST || rec->msg.card) {
+            continue;
+        }
+        r->messages++;
+        uint64_t k = id - f->first;
+        for (uint32_t i = 0; i < f->n; i++) {
+            if (!flood_wanted(f, &rec->msg, i)) {
+                continue;
+            }
+            uint16_t st = k < f->held ? f->state[k * f->n + i] : 0;
+            r->wanted++;
+            r->relays_wanted += f->relay[i];
+            if (st & FLOOD_DECODED) {
+                r->relays_reached += f->relay[i];
+                continue;
+            }
+            r->missed++;
+            r->missed_relays += f->relay[i];
+            uint8_t audible = st & FLOOD_AUDIBLE;
+            if (audible) {
+                r->lost++;
+                r->copies[audible < 4 ? audible - 1 : 3]++;
+                for (int fate = 0; fate < TSIM_PHY_FATE_COUNT; fate++) {
+                    r->fates[fate] += (st >> (8 + fate)) & 1;
+                }
+            } else if (st & FLOOD_NEAR) {
+                r->quiet++;
+            } else {
+                r->far++;
+            }
+        }
+    }
+#ifdef TSIM_HAVE_CORE
+    if (f->begun) {
+        r->has_core = true;
+        for (uint32_t i = 0; i < f->n; i++) {
+            const void *rt = tsim_net_routing(net, i);
+            if (!rt) {
+                continue;
+            }
+            struct tsim_core_floods c, *b = &f->begun[i];
+            tsim_core_flood_counts(rt, &c);
+            /* A node that restarted in the window counts from its restart. */
+            bool fresh = c.heard < b->heard;
+            r->core.heard += c.heard - (fresh ? 0 : b->heard);
+            r->core.copies += c.copies - (fresh ? 0 : b->copies);
+            r->core.passed_on += c.passed_on - (fresh ? 0 : b->passed_on);
+            r->core.cancelled += c.cancelled - (fresh ? 0 : b->cancelled);
+            r->core.unpaid += c.unpaid - (fresh ? 0 : b->unpaid);
+            r->core.busy += c.busy - (fresh ? 0 : b->busy);
+            r->core.hop_limit += c.hop_limit - (fresh ? 0 : b->hop_limit);
+            r->core.no_room += c.no_room - (fresh ? 0 : b->no_room);
+            r->core.echoed += c.echoed - (fresh ? 0 : b->echoed);
+            r->core.resent += c.resent - (fresh ? 0 : b->resent);
+        }
+    }
+#endif
+    *out = *r;
+    out->present = true;
+    return true;
+}
+
+static void floods_free(struct floods *f) {
+    free(f->watch);
+    free(f->state);
+    free(f->begun);
+}
+
 /* What the window's start leaves for its end to be measured against. */
 struct window {
     struct tsim_metrics *metrics;
@@ -2224,6 +2409,7 @@ struct window {
     bool *relay;                              /* [node], with dv */
     const struct tsim_distvec_stats *retired; /* books of routers since powered down */
     struct announces *announces;              /* with report.announces */
+    struct floods *floods;                    /* with report.floods */
     bool failed;
     tsim_time begun;
     struct tsim_distvec_stats stats;
@@ -2312,6 +2498,9 @@ static void begin_window(struct tsim_sched *sched, void *ctx) {
         w->failed = true;
     } else if (w->announces) {
         sensed_links(w->announces, w->net, w->announces->report.sensed[0]);
+    }
+    if (w->floods && !floods_start(w->floods, w->net)) {
+        w->failed = true;
     }
 }
 
@@ -2648,6 +2837,8 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     struct churn churn = {0};
     struct moving moving = {0};
     struct announces announces = {0};
+    struct floods floods = {0};
+    bool *flood_relay = NULL;
     bool ok = false;
     /* The oracle's routes are the driver's to hand down: the plugin is given where they will be,
      * and they are built once the links are laid. So is the table leaves' parents are kept in. */
@@ -2771,6 +2962,19 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         window.dv = dv;
         window.announces = s->report_announces ? &announces : NULL;
     }
+    if (metrics && s->report_floods) {
+        flood_relay = malloc(s->nodes * sizeof *flood_relay);
+        if (!flood_relay) {
+            goto done;
+        }
+        for (uint32_t i = 0; i < s->nodes; i++) {
+            flood_relay[i] = of_kind(s, routing_config, TSIM_CHURN_RELAYS, i);
+        }
+        floods.relay = flood_relay;
+        floods.pos = pos;
+        floods.full_dbm = s->radio.tx_dbm - tsim_phy_floor_dbm(tsim_net_phy(net), &s->radio.lora);
+        window.floods = &floods;
+    }
     /* Scheduled before the traffic, so it runs first of what happens as the warmup ends: a
      * message sent at that instant is all in the window. */
     if (metrics && tsim_sched_at(sched, s->warmup, begin_window, &window).slot == 0) {
@@ -2851,6 +3055,9 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         sensed_links(&announces, net, announces.report.sensed[1]);
         announces_report(&announces, net, window.begun, tsim_sched_now(sched), &report->announces);
     }
+    if (window.floods && !window.failed && !floods_report(&floods, net, &report->floods)) {
+        window.failed = true;
+    }
     ok = !churn.failed && !moving.failed && !window.failed &&
          tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);
     if (ok && dv && (dv->relay_pick != TSIM_DISTVEC_PICK_LIST || strcmp(dv->relays, "all") != 0)) {
@@ -2878,6 +3085,8 @@ done:
     free(churn.churners);
     move_free(&moving);
     announces_free(&announces); /* the network that called into it is gone */
+    floods_free(&floods);
+    free(flood_relay);
     free(window.relay);
     tsim_sched_destroy(sched);
     free(pos);

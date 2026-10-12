@@ -514,6 +514,8 @@ static void on_heard(void *ctx, uint32_t node, const struct tsim_frame *frame,
         .from = frame->src,
         .to = node,
         .purpose = sent->tx.purpose,
+        .carries = sent->tx.carries,
+        .tx_dbm = frame->tx_dbm,
         .fate = fate,
         .start = frame->start,
     };

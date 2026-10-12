@@ -203,6 +203,32 @@ static void print_report(const char *path, const struct tsim_scenario *s,
                r->relays.count, r->relays.components, r->relays.largest, r->relays.pairs,
                r->relays.covered);
     }
+    if (r->floods.present) {
+        static const char *fates[TSIM_PHY_FATE_COUNT] = {"decoded", "weak", "interfered",
+                                                         "taken",   "busy", "deaf"};
+        const struct tsim_floods *f = &r->floods;
+        printf("  \"floods\": {\"messages\": %" PRIu64 ", \"wanted\": %" PRIu64
+               ", \"missed\": %" PRIu64 ", \"missed_relays\": %" PRIu64 ", \"far\": %" PRIu64
+               ", \"quiet\": %" PRIu64 ", \"lost\": %" PRIu64 ",\n",
+               f->messages, f->wanted, f->missed, f->missed_relays, f->far, f->quiet, f->lost);
+        printf("             \"copies\": {\"1\": %" PRIu64 ", \"2\": %" PRIu64 ", \"3\": %" PRIu64
+               ", \"4+\": %" PRIu64 "}, \"fates\": ",
+               f->copies[0], f->copies[1], f->copies[2], f->copies[3]);
+        print_counts(fates + TSIM_PHY_INTERFERED, f->fates + TSIM_PHY_INTERFERED,
+                     TSIM_PHY_FATE_COUNT - TSIM_PHY_INTERFERED);
+        printf(", \"relays_wanted\": %" PRIu64 ", \"relays_reached\": %" PRIu64, f->relays_wanted,
+               f->relays_reached);
+        if (f->has_core) {
+            printf(",\n             \"core\": {\"heard\": %" PRIu64 ", \"copies\": %" PRIu64
+                   ", \"passed_on\": %" PRIu64 ", \"cancelled\": %" PRIu64 ", \"unpaid\": %" PRIu64
+                   ", \"busy\": %" PRIu64 ", \"hop_limit\": %" PRIu64 ", \"no_room\": %" PRIu64
+                   ", \"echoed\": %" PRIu64 ", \"resent\": %" PRIu64 "}",
+                   f->core.heard, f->core.copies, f->core.passed_on, f->core.cancelled,
+                   f->core.unpaid, f->core.busy, f->core.hop_limit, f->core.no_room, f->core.echoed,
+                   f->core.resent);
+        }
+        printf("},\n");
+    }
     if (r->announces.present) {
         static const char *fates[TSIM_PHY_FATE_COUNT] = {"decoded", "weak", "interfered",
                                                          "taken",   "busy", "deaf"};
