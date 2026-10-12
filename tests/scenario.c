@@ -1131,6 +1131,20 @@ static void floods_say_why_a_broadcast_was_missed(void) {
     CHECK(tsim_scenario_run(&s, &rep));
     CHECK(f->relays_wanted > 0 && f->relays_wanted < f->wanted);
 
+    /* Every Meshtastic node passes floods on but a muted client. */
+    for (int muted = 0; muted < 2; muted++) {
+        char text[1024];
+        snprintf(text, sizeof text,
+                 "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
+                 "routing = meshtastic\nmac = meshtastic\nrouting.role = %s\n"
+                 "traffic.interval = 5 min\ntraffic.broadcast = 1\nwarmup = 10 s\n"
+                 "duration = 30 min\nreport.floods = yes\n",
+                 muted ? "client_mute" : "client");
+        CHECK(parse(&s, text));
+        CHECK(tsim_scenario_run(&s, &rep));
+        CHECK(muted ? f->relays_wanted == 0 : f->relays_wanted == f->wanted);
+    }
+
     /* Each follows every frame, so they go one at a time. */
     snprintf(buf, sizeof buf, "%sreport.floods = yes\nreport.announces = yes\n", line_text);
     CHECK(!tsim_scenario_parse(&s, buf, &err));

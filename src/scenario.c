@@ -3026,6 +3026,13 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         }
         for (uint32_t i = 0; i < s->nodes; i++) {
             flood_relay[i] = of_kind(s, routing_config, TSIM_CHURN_RELAYS, i);
+            if (s->routing->routing == &tsim_meshtastic) {
+                /* Every Meshtastic node passes floods on but a muted client. */
+                const struct tsim_meshtastic_config *mt =
+                    (const struct tsim_meshtastic_config *)routing_config;
+                flood_relay[i] =
+                    (mt->relay_pick && mt->relay_set[i]) || mt->role != TSIM_MESHTASTIC_CLIENT_MUTE;
+            }
         }
         floods.relay = flood_relay;
         floods.pos = pos;
