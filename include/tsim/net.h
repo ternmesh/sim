@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "tsim/budget.h"
 #include "tsim/lora.h"
 #include "tsim/node.h"
 #include "tsim/phy.h"
@@ -28,9 +29,24 @@ struct tsim_net_params {
      * than the whole share is refused when queued, as a full queue refuses one. Its frames are
      * remembered across a power cycle, as the airtime is spent all the same. */
     double duty_cycle;
+    /* Tern's airtime budget (tsim/budget.h), kept for every node as its routing marks its frames;
+     * off by default. Each node's buckets start full when it is made or powered up again, and
+     * hold at least one 255-byte frame at `listen`'s modulation. On, a frame of a node's own that
+     * its buckets do not hold is passed over - the MAC sees the frame behind it as the head - and
+     * so is every frame of its own behind it, but acknowledgements, until they do, when the MAC is
+     * kicked; a frame passed on that they do not hold when the MAC would transmit it, after
+     * net.duty_cycle and the routing's `sending` have let it go, is taken out of the queue,
+     * booked as TSIM_DROP_BUDGET, and handed to the routing's `withdrawn`. Frames waiting for the
+     * budget are the node's to keep, as a companion keeps the messages it is handed, and do not
+     * count against queue_limit; but it keeps no more than 32 of its own queued, waiting or not, a
+     * board's companion link's worth, and refuses one more as a full queue refuses one, and refuses
+     * so too a frame its buckets could not hold however full - one longer than the 255-byte frame
+     * they are sized for, at a slower modulation than `listen`'s - which would never go. */
+    struct tsim_budget_params budget;
 };
 
-/* tsim_phy_defaults(), every radio on channel 0 at SF7/125 kHz, and 16 frames of queue. */
+/* tsim_phy_defaults(), every radio on channel 0 at SF7/125 kHz, 16 frames of queue, and the
+ * budget off. */
 struct tsim_net_params tsim_net_defaults(uint64_t seed);
 
 struct tsim_net;
@@ -111,9 +127,26 @@ struct tsim_net_stats {
     uint64_t refused;   /* messages originated here that its routing could not carry */
     uint64_t delivered; /* messages delivered to this node's application */
     uint64_t held;      /* times the radio held a frame back for the duty cycle */
+    /* The airtime budget's books, in shadow mode what it would have done: */
+    uint64_t budget_held;    /* frames of its own that waited for their buckets */
+    uint64_t budget_gone;    /* waits that have ended, the frame free to go */
+    tsim_time budget_waited; /* how long those waits took, all together */
+    uint64_t budget_dropped; /* frames it would have passed on, dropped */
+    uint64_t budget_relayed; /* frames passed on that their buckets paid for, sent */
+    uint64_t budget_short;   /* acknowledgements sent that their buckets did not hold */
 };
 
 const struct tsim_net_stats *tsim_net_stats(const struct tsim_net *net, uint32_t node);
+
+/* For the books (tsim/metrics.h): brings a node's frames' waits for the airtime budget up to now -
+ * starting those held back, ending those that could go - and returns how many wait. And from `at`
+ * on, a new count: a wait adds to budget_waited only its part from `at`, so a window begun while
+ * a frame waited counts no more of its wait than fell in it, and every frame waiting at `at`, or
+ * coming to wait after, is counted held in it once. budget_held counts a frame the first time it
+ * waits in a count, budget_gone each wait as it ends, and budget_waited how long the waits that
+ * ended took. Settle every node before beginning a count. */
+uint32_t tsim_net_budget_settle(struct tsim_net *net, uint32_t node);
+void tsim_net_budget_count_from(struct tsim_net *net, tsim_time at);
 
 /* A drop of a message, as tsim_node_drop() booked it. */
 struct tsim_message_drop {
@@ -139,6 +172,9 @@ struct tsim_message_record {
     tsim_time sent;
     uint32_t drops[TSIM_DROP_COUNT];
     struct tsim_message_drop drop;
+    /* In the airtime budget's shadow mode, frames carrying it that the budget would have dropped,
+     * and that went all the same: booked here, not as drops, since they went. */
+    uint32_t budget_shadow;
 };
 
 /* The record for a message id, or NULL. Valid until the next message is originated. */

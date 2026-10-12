@@ -23,11 +23,14 @@ struct base {
     struct tsim_ledger ledger;
     uint64_t dropped;
     uint64_t held;
+    struct tsim_net_stats stats;
     struct tsim_phy_stats phy;
 };
 
 struct tsim_metrics {
     struct tsim_net *net;
+    uint8_t *chatty;           /* see tsim_metrics_apart(), or NULL */
+    uint64_t quiet_on_time[2]; /* the rest's deliveries on time in the window: unicast, broadcast */
     tsim_time deadline;
     struct latencies unicast;
     struct latencies broadcast;
@@ -147,6 +150,9 @@ static void delivered(void *ctx, const struct tsim_message_record *rec, uint32_t
     }
     if (latency <= m->deadline) {
         l->on_time++;
+        if (m->chatty && !m->chatty[rec->msg.src] && !rec->msg.card) {
+            m->quiet_on_time[rec->msg.dst == TSIM_BROADCAST]++;
+        }
     }
 }
 
@@ -337,6 +343,16 @@ struct tsim_metrics *tsim_metrics_create(struct tsim_net *net, tsim_time deadlin
     return m;
 }
 
+bool tsim_metrics_apart(struct tsim_metrics *m, const uint8_t *chatty) {
+    uint32_t n = tsim_net_nodes(m->net);
+    free(m->chatty);
+    m->chatty = malloc(n);
+    if (m->chatty) {
+        memcpy(m->chatty, chatty, n);
+    }
+    return m->chatty != NULL;
+}
+
 void tsim_metrics_destroy(struct tsim_metrics *m) {
     if (!m) {
         return;
@@ -352,6 +368,7 @@ void tsim_metrics_destroy(struct tsim_metrics *m) {
     free(m->adj_at);
     free(m->adj);
     free(m->base);
+    free(m->chatty);
     for (uint32_t i = 0; m->power && i < tsim_net_nodes(m->net); i++) {
         free(m->power[i].spans);
     }
@@ -403,15 +420,22 @@ void tsim_metrics_begin(struct tsim_metrics *m) {
         tsim_net_ledger_now(m->net, i, &base[i].ledger);
         base[i].dropped = tsim_net_stats(m->net, i)->dropped;
         base[i].held = tsim_net_stats(m->net, i)->held;
+        /* A frame waiting as the window begins waits in it too: it counts as held in the window,
+         * and only its wait from now on (tsim_net_budget_count_from()). One that could go but
+         * has not yet gone is not waiting. */
+        tsim_net_budget_settle(m->net, i);
+        base[i].stats = *tsim_net_stats(m->net, i);
         base[i].phy = *tsim_phy_stats(phy, i);
         m->warmup_ns += (double)tsim_ledger_airtime(&base[i].ledger);
     }
     m->base = base;
     m->begun = tsim_sched_now(tsim_net_sched(m->net));
+    tsim_net_budget_count_from(m->net, m->begun);
     /* By id, not time: a message made earlier at this same instant is still before the window. */
     m->first = tsim_net_message_count(m->net) + 1;
     /* Every delivery so far was of a message made before the window. */
     m->unicast = (struct latencies){0};
+    m->quiet_on_time[0] = m->quiet_on_time[1] = 0;
     m->broadcast = (struct latencies){0};
     m->card = (struct latencies){0};
     memset(m->hops, 0, sizeof m->hops);
@@ -463,6 +487,62 @@ static void fate(const struct tsim_metrics *m, const struct tsim_message_record 
     }
 }
 
+/* One node's part of the budget's report: its counts since the window began, and its place among
+ * the nodes that passed on the most, kept in order, the most first and the lower number first. */
+static void budget_node(struct tsim_report *r, uint32_t node, const struct tsim_net_stats *now,
+                        const struct tsim_net_stats *was, const struct tsim_ledger *ledger,
+                        double *waited_ns, uint64_t *waited) {
+    struct tsim_budget_report *bd = &r->budget;
+    struct tsim_net_stats zero = {0};
+    was = was ? was : &zero;
+    uint64_t dropped = now->budget_dropped - was->budget_dropped;
+    uint64_t relayed = now->budget_relayed - was->budget_relayed;
+    bd->held += now->budget_held - was->budget_held;
+    bd->dropped += dropped;
+    bd->relayed += relayed;
+    bd->short_acks += now->budget_short - was->budget_short;
+    bd->dropping += dropped > 0;
+    *waited_ns += (double)(now->budget_waited - was->budget_waited);
+    *waited += now->budget_gone - was->budget_gone;
+    if (relayed + dropped == 0) {
+        return;
+    }
+    struct tsim_budget_node n = {
+        .node = node,
+        .relayed = relayed,
+        .dropped = dropped,
+        .relay_duty = (double)ledger->airtime[TSIM_PURPOSE_RELAY],
+        .duty = (double)tsim_ledger_airtime(ledger),
+    };
+    uint32_t at = bd->busiest_count;
+    while (at > 0 &&
+           bd->busiest[at - 1].relayed + bd->busiest[at - 1].dropped < relayed + dropped) {
+        at--;
+    }
+    if (at == TSIM_BUDGET_BUSIEST) {
+        return;
+    }
+    uint32_t keep =
+        bd->busiest_count < TSIM_BUDGET_BUSIEST ? bd->busiest_count : TSIM_BUDGET_BUSIEST - 1;
+    memmove(&bd->busiest[at + 1], &bd->busiest[at], (keep - at) * sizeof n);
+    bd->busiest[at] = n;
+    bd->busiest_count = keep + 1;
+}
+
+static void budget_finish(struct tsim_budget_report *bd, tsim_time elapsed, double waited_ns,
+                          uint64_t waited) {
+    bd->wait_mean_s = waited ? waited_ns / (double)waited / 1e9 : 0;
+    uint64_t asked = 0, dropped = 0;
+    for (uint32_t i = 0; i < bd->busiest_count; i++) {
+        struct tsim_budget_node *n = &bd->busiest[i];
+        asked += n->relayed + n->dropped;
+        dropped += n->dropped;
+        n->relay_duty = elapsed > 0 ? n->relay_duty / (double)elapsed : 0;
+        n->duty = elapsed > 0 ? n->duty / (double)elapsed : 0;
+    }
+    bd->busiest_drop = asked ? (double)dropped / (double)asked : 0;
+}
+
 void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
     struct tsim_net *net = m->net;
     *r = (struct tsim_report){
@@ -486,6 +566,21 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
         d->refused += rec->refused;
         d->wanted += rec->wanted;
         d->delivered += rec->delivered;
+        if (m->chatty && !m->chatty[rec->msg.src] && !rec->msg.card) {
+            *(rec->msg.dst == TSIM_BROADCAST ? &r->quiet.broadcast_wanted
+                                             : &r->quiet.unicast_wanted) += rec->wanted;
+        }
+        /* Hit: a frame carrying it dropped for the budget, or in shadow mode one that would have
+         * been. */
+        bool hit = rec->drops[TSIM_DROP_BUDGET] || rec->budget_shadow;
+        if (hit && rec->msg.dst == TSIM_BROADCAST && !rec->msg.card) {
+            r->budget.broadcast_hit++;
+        }
+        if (hit && rec->msg.dst != TSIM_BROADCAST) {
+            r->budget.unicast_hit++;
+            r->budget.unicast_hit_on_time +=
+                rec->delivered && rec->first - rec->msg.created <= m->deadline;
+        }
         if (rec->msg.dst != TSIM_BROADCAST) {
             fate(m, rec, &r->losses, &wait_ns, &transit_ns, &late_sent);
             if (m->power && down_at(&m->power[rec->msg.dst], rec->msg.created)) {
@@ -521,6 +616,11 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
     memcpy(r->losses.hops, m->hops, sizeof m->hops);
     memcpy(r->losses.rivals, m->rivals, sizeof m->rivals);
     memcpy(r->losses.progress, m->progress, sizeof m->progress);
+    if (m->chatty) {
+        r->quiet.present = true;
+        r->quiet.unicast_on_time = m->quiet_on_time[0];
+        r->quiet.broadcast_on_time = m->quiet_on_time[1];
+    }
     finish(&r->unicast, &m->unicast);
     finish(&r->broadcast, &m->broadcast);
     finish(&r->card, &m->card);
@@ -530,6 +630,8 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
     tsim_time busiest = -1;
     double airtime_ns[TSIM_PURPOSE_COUNT] = {0};
     double total_ns = 0;
+    double waited_ns = 0;
+    uint64_t waited = 0;
     for (uint32_t i = 0; i < n; i++) {
         struct tsim_ledger now;
         tsim_net_ledger_now(net, i, &now);
@@ -553,6 +655,11 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
         }
         r->queue_dropped += tsim_net_stats(net, i)->dropped - (b ? b->dropped : 0);
         r->duty_held += tsim_net_stats(net, i)->held - (b ? b->held : 0);
+        /* Waits brought up to now first: one that could end with no kick to end it - in shadow
+         * mode nothing is kicked for - would otherwise be read as still going. */
+        tsim_net_budget_settle(net, i);
+        budget_node(r, i, tsim_net_stats(net, i), b ? &b->stats : NULL, ledger, &waited_ns,
+                    &waited);
         const struct tsim_phy_stats *ps = tsim_phy_stats(phy, i);
         r->rx_ok += ps->rx_ok - (b ? b->phy.rx_ok : 0);
         r->rx_lost += ps->rx_lost - (b ? b->phy.rx_lost : 0);
@@ -564,6 +671,7 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
         r->airtime_s[p] = airtime_ns[p] / 1e9;
     }
     r->airtime_total_s = total_ns / 1e9;
+    budget_finish(&r->budget, r->elapsed, waited_ns, waited);
     if (r->elapsed > 0) {
         r->duty_max = (double)busiest / (double)r->elapsed;
         r->duty_mean = total_ns / (double)n / (double)r->elapsed;

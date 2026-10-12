@@ -239,6 +239,48 @@ static void a_message_at_the_window_but_before_it_is_not_counted(void) {
 }
 
 /* Destroying the metrics stops the network calling into them. */
+/* A frame of a node's own that started waiting for the airtime budget before the window, and went
+ * in it: held in the window, and only the part of its wait in the window counted. Node 0's own
+ * part holds one 255-byte frame and fills at 1%, so the second waits a hundred airtimes from the
+ * first. */
+static void a_wait_across_the_window_start_counts_only_its_part_in_the_window(void) {
+    struct tsim_net_params p = tsim_net_defaults(1);
+    p.budget.mode = TSIM_BUDGET_MODE_ON;
+    p.budget.own_ppm = 10000;
+    p.budget.own_window = TSIM_S(1);
+    static struct tsim_flood_config fc;
+    static struct tsim_aloha_config ac;
+    fc = (struct tsim_flood_config){
+        .channel = 0, .lora = tsim_lora_default(7, 125000), .tx_dbm = 14.0, .hops = 10};
+    ac = (struct tsim_aloha_config){0};
+    struct rig r;
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 2, &tsim_flood, &fc, &tsim_aloha, &ac);
+    tsim_phy_set_loss(tsim_net_phy(r.net), 0, 1, 100.0);
+    tsim_net_start(r.net);
+    r.metrics = tsim_metrics_create(r.net, TSIM_S(60));
+    struct tsim_tx tx = {.lora = fc.lora,
+                         .tx_dbm = 14.0,
+                         .purpose = TSIM_PURPOSE_DATA,
+                         .budget = TSIM_BUDGET_OWN,
+                         .len = 255};
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    tsim_time full = tsim_lora_airtime(&fc.lora, 255);
+    CHECK(tsim_node_send(n, &tx) != 0);
+    tsim_sched_run_until(r.sched, full);
+    CHECK(tsim_node_send(n, &tx) != 0); /* waits until 100 * full */
+    tsim_sched_run_until(r.sched, TSIM_S(10));
+    tsim_metrics_begin(r.metrics);
+    tsim_sched_run_until(r.sched, TSIM_S(60));
+    struct tsim_report rep;
+    tsim_metrics_report(r.metrics, &rep);
+    CHECK_EQ_U64(tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_DATA], 2);
+    CHECK_EQ_U64(rep.budget.held, 1);
+    double want = (double)(100 * full - TSIM_S(10)) / 1e9;
+    CHECK(rep.budget.wait_mean_s > want - 1e-6 && rep.budget.wait_mean_s < want + 1e-6);
+    rig_close(&r);
+}
+
 static void destroy_stops_watching(void) {
     struct rig r;
     line(&r, 3, 0, TSIM_S(5), 1);
@@ -251,6 +293,7 @@ static void destroy_stops_watching(void) {
 }
 
 int main(void) {
+    RUN(a_wait_across_the_window_start_counts_only_its_part_in_the_window);
     RUN(latency_and_deadline_follow_each_delivery);
     RUN(unicast_and_broadcast_are_counted_apart);
     RUN(airtime_and_duty_add_up_from_the_ledgers);

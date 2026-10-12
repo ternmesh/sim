@@ -1144,6 +1144,51 @@ static const char *parse_send(struct tsim_scenario *s, const char *v) {
 }
 
 /* NULL if the setting took, or what was wrong with it. */
+/* airtime.*: the budget (tsim/budget.h), its parts' shares and windows. */
+static const char *set_budget(struct tsim_budget_params *b, const char *key, const char *v) {
+    const struct {
+        const char *share;
+        const char *window;
+        uint32_t *ppm;
+        tsim_time *span;
+    } parts[] = {
+        {"own", "own_window", &b->own_ppm, &b->own_window},
+        {"relayed", "relayed_window", &b->relayed_ppm, &b->relayed_window},
+        {"flood_own", "flood_own_window", &b->flood_own_ppm, &b->flood_own_window},
+        {"flood_relayed", "flood_relayed_window", &b->flood_relayed_ppm, &b->flood_relayed_window},
+    };
+    if (strcmp(key, "budget") == 0) {
+        static const char *modes[] = {"off", "on", "shadow"};
+        for (size_t i = 0; i < sizeof modes / sizeof *modes; i++) {
+            if (strcmp(v, modes[i]) == 0) {
+                b->mode = (enum tsim_budget_mode)i;
+                return NULL;
+            }
+        }
+        return "expected on, off or shadow";
+    }
+    if (strcmp(key, "floods") == 0) {
+        return parse_yes_no(v, &b->floods) ? NULL : "expected yes or no";
+    }
+    for (size_t i = 0; i < sizeof parts / sizeof *parts; i++) {
+        if (strcmp(key, parts[i].share) == 0) {
+            double share;
+            if (!parse_share(v, &share) || share * 1e6 < 0.5) {
+                return "expected a percentage such as 8%, of at least one in a million";
+            }
+            *parts[i].ppm = (uint32_t)(share * 1e6 + 0.5);
+            return NULL;
+        }
+        if (strcmp(key, parts[i].window) == 0) {
+            tsim_time *w = parts[i].span;
+            return parse_time(v, w) && *w > 0 && *w <= TSIM_S(3600)
+                       ? NULL
+                       : "expected a time above 0 and at most 1 h";
+        }
+    }
+    return "is not a setting of the airtime budget";
+}
+
 static const char *set_core(struct tsim_scenario *s, const char *key, const char *v) {
     uint64_t u;
     if (strcmp(key, "seed") == 0) {
@@ -1220,6 +1265,9 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     if (strcmp(key, "duty_cycle") == 0) {
         return parse_share(v, &s->net.duty_cycle) ? NULL
                                                   : "expected a percentage such as 10%, or none";
+    }
+    if (strncmp(key, "airtime.", 8) == 0) {
+        return set_budget(&s->net.budget, key + 8, v);
     }
 
     if (strcmp(key, "radio.channel") == 0) {
@@ -1418,6 +1466,14 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     }
     if (strcmp(key, "traffic.reply") == 0) {
         return parse_fraction(v, &s->reply) ? NULL : "expected a fraction from 0 to 1";
+    }
+    if (strcmp(key, "traffic.chatty") == 0) {
+        return parse_fraction(v, &s->chatty_share) ? NULL : "expected a fraction from 0 to 1";
+    }
+    if (strcmp(key, "traffic.chatty_interval") == 0) {
+        return parse_time(v, &s->chatty_interval) && s->chatty_interval > 0
+                   ? NULL
+                   : "expected a time above 0";
     }
     if (strcmp(key, "traffic.reply_delay") == 0) {
         return parse_time(v, &s->reply_delay) ? NULL : "expected a time, such as 2 min";
@@ -1643,6 +1699,9 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
         ok = fail(err, 0,
                   "traffic.reply needs traffic.closed = no: an answer would start no gap, and "
                   "the closed loop has no gap for it to wait on");
+    }
+    if (ok && s->chatty_share > 0 && s->chatty_interval == 0) {
+        ok = fail(err, 0, "traffic.chatty needs traffic.chatty_interval: how often they write");
     }
     if (ok && !(extent(s) / s->channel.decorrelation_m <= 1e9)) {
         ok = fail(err, 0,
@@ -2622,12 +2681,25 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         .card_interval = s->card_interval,
         .card_len = s->card_len,
         .card_share = s->card_share,
+        .chatty_share = s->chatty_share,
+        .chatty_interval = s->chatty_interval,
         .sends = s->sends,
         .send_count = s->send_count,
     };
     traffic = tsim_traffic_create(net, &tp);
     if (!metrics || !traffic) {
         goto done;
+    }
+    if (s->chatty_share > 0) {
+        uint8_t *chatty = malloc(s->nodes);
+        for (uint32_t i = 0; chatty && i < s->nodes; i++) {
+            chatty[i] = tsim_traffic_chatty(traffic, i);
+        }
+        bool apart = chatty && tsim_metrics_apart(metrics, chatty);
+        free(chatty);
+        if (!apart) {
+            goto done;
+        }
     }
     if (s->churn_share > 0) {
         churn = (struct churn){.net = net,
@@ -2647,6 +2719,10 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     tsim_net_start(net);
     tsim_sched_run_until(sched, s->warmup + s->duration + s->deadline);
     tsim_metrics_report(metrics, report);
+    report->budget.mode = s->net.budget.mode;
+    if (s->net.budget.mode == TSIM_BUDGET_MODE_SHADOW) {
+        report->budget.wait_mean_s = NAN; /* shadow mode models no wait */
+    }
     if (window.dv) {
         health(&window, tsim_sched_now(sched), &report->health);
     }

@@ -88,9 +88,33 @@ static void print_counts(const char *const *names, const uint64_t *counts, int c
     printf("}");
 }
 
+static void print_budget(const struct tsim_budget_report *b) {
+    /* Shadow mode models no wait: null. */
+    char wait[32] = "null";
+    if (b->mode != TSIM_BUDGET_MODE_SHADOW) {
+        snprintf(wait, sizeof wait, "%.6g", b->wait_mean_s);
+    }
+    printf("  \"budget\": {\"mode\": \"%s\", \"held\": %" PRIu64 ", \"wait_mean_s\": %s, "
+           "\"dropped\": %" PRIu64 ", \"relayed\": %" PRIu64 ", \"short_acks\": %" PRIu64
+           ", \"dropping\": %" PRIu32 ",\n",
+           b->mode == TSIM_BUDGET_MODE_SHADOW ? "shadow" : "on", b->held, wait, b->dropped,
+           b->relayed, b->short_acks, b->dropping);
+    printf("             \"unicast_hit\": %" PRIu64 ", \"unicast_hit_on_time\": %" PRIu64
+           ", \"broadcast_hit\": %" PRIu64 ", \"busiest_drop\": %.6g,\n",
+           b->unicast_hit, b->unicast_hit_on_time, b->broadcast_hit, b->busiest_drop);
+    printf("             \"busiest\": [");
+    for (uint32_t i = 0; i < b->busiest_count; i++) {
+        const struct tsim_budget_node *n = &b->busiest[i];
+        printf("%s{\"node\": %" PRIu32 ", \"relayed\": %" PRIu64 ", \"dropped\": %" PRIu64
+               ", \"relay_duty\": %.6g, \"duty\": %.6g}",
+               i ? ", " : "", n->node, n->relayed, n->dropped, n->relay_duty, n->duty);
+    }
+    printf("]},\n");
+}
+
 static void print_losses(const struct tsim_losses *l) {
-    static const char *drops[TSIM_DROP_COUNT] = {"no_route", "retries", "hop_limit",
-                                                 "queue",    "other",   "duty"};
+    static const char *drops[TSIM_DROP_COUNT] = {"no_route", "retries", "hop_limit", "queue",
+                                                 "other",    "duty",    "budget"};
     static const char *places[TSIM_PLACE_COUNT] = {"source", "partway", "last_hop"};
     static const char *fates[TSIM_PHY_FATE_COUNT] = {"decoded", "weak", "interfered",
                                                      "taken",   "busy", "deaf"};
@@ -208,6 +232,15 @@ static void print_report(const char *path, const struct tsim_scenario *s,
                r->churn.routed_to, r->churn.repair_s);
     }
     print_losses(&r->losses);
+    if (r->budget.mode != TSIM_BUDGET_MODE_OFF) {
+        print_budget(&r->budget);
+    }
+    if (r->quiet.present) {
+        printf("  \"quiet\": {\"unicast_wanted\": %" PRIu64 ", \"unicast_on_time\": %" PRIu64
+               ", \"broadcast_wanted\": %" PRIu64 ", \"broadcast_on_time\": %" PRIu64 "},\n",
+               r->quiet.unicast_wanted, r->quiet.unicast_on_time, r->quiet.broadcast_wanted,
+               r->quiet.broadcast_on_time);
+    }
     printf("  \"on_time_per_airtime_s\": %.6g,\n", r->on_time_per_airtime_s);
     printf("  \"unicast_per_airtime_s\": %.6g,\n", r->unicast_per_airtime_s);
     printf("  \"broadcast_per_airtime_s\": %.6g,\n", r->broadcast_per_airtime_s);

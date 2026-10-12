@@ -123,6 +123,8 @@ struct tsim_scenario {
     tsim_time card_interval; /* presence cards: see tsim/traffic.h; 0 for none */
     uint32_t card_len;
     double card_share;
+    double chatty_share; /* see tsim/traffic.h */
+    tsim_time chatty_interval;
 
     /* Churn (MSH-59): this share of the nodes `churn_nodes` names each go down and come back up
      * for the whole run, for times drawn from exponentials of these means, as tsim_net_power()

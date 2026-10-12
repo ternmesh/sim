@@ -69,6 +69,11 @@ struct tsim_traffic_params {
     tsim_time card_interval; /* mean time between one card node's cards; 0 for no cards */
     uint32_t card_len;       /* bytes in a card */
     double card_share;       /* fraction of the nodes that send cards, 0..1 */
+    /* A share of the nodes that write far more than the rest - a bot, a client in a loop - each
+     * with a mean gap of `chatty_interval` instead of `interval`. Which they are is drawn from a
+     * stream of their own, so with a share of 0 every draw is the plain process's. */
+    double chatty_share;
+    tsim_time chatty_interval;
     const struct tsim_send *sends; /* copied: they need not outlive the call */
     uint32_t send_count;
 };
@@ -94,5 +99,8 @@ uint64_t tsim_traffic_made(const struct tsim_traffic *traffic);
 
 /* Cards made so far. */
 uint64_t tsim_traffic_cards(const struct tsim_traffic *traffic);
+
+/* Whether a node is one of the chatty share. */
+bool tsim_traffic_chatty(const struct tsim_traffic *traffic, uint32_t node);
 
 #endif

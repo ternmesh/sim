@@ -34,6 +34,13 @@ and after them, for context:
   reach    for a candidate that keeps routes, the share of ordered pairs of nodes its routes
            connected when the warmup ended, followed node to node: whether it had settled
 
+and, where a run keeps Tern's airtime budget (-s airtime.budget=on or shadow; docs/airtime.md):
+
+  held     frames of nodes' own that waited for their buckets, every node
+  drop     frames passed on that were dropped, as a share of all the relays were asked to pass on
+  busy     the same at the ten nodes asked to pass on the most
+  hit      of the unicasts with a frame dropped on the way, the share delivered on time all the same
+
 churn and move each take a run of their own for every case, so the sweep takes three times as
 long; --quick leaves them out. With -s routing.relay_pick=elect there are no sites when churn and
 movement pick their nodes, so those runs take theirs from every node, as flooding's do.
@@ -93,6 +100,7 @@ DEPLOYED = {s: s.replace(".tsim", "-deployed.tsim") for _, s in CANDIDATES}
 FAST = {s: s.replace(".tsim", "-fast.tsim") for _, s in CANDIDATES}
 METRICS = ["unicast", "bcast", "p50", "p95", "b50", "b95", "per_s", "uni_s", "bc_s", "duty",
            "churn", "move", "links", "reach"]
+BUDGET = ["held", "drop", "busy", "hit"]
 
 # The stresses the scorecard's churn and move columns are measured under: over the sites where
 # there are sites, and the same number of nodes from all of them where there are none.
@@ -116,7 +124,7 @@ def run(tsim, scenario, power, seed, sets):
                          check=True).stdout
     r = json.loads(out)
     u, b = r["unicast"], r["broadcast"]
-    return {
+    out = {
         "links": r["links"]["degree_mean"],
         "unicast": 100.0 * u["on_time"] / u["wanted"] if u["wanted"] else 0.0,
         "bcast": 100.0 * b["on_time"] / b["wanted"] if b["wanted"] else 0.0,
@@ -130,6 +138,28 @@ def run(tsim, scenario, power, seed, sets):
         "duty": 100.0 * r["duty_max"],
         "reach": 100.0 * r["warmup"]["reach"],
     }
+    q = r.get("quiet")
+    if q:
+        # With chatty nodes: the rest's unicast and broadcast on time, apart.
+        out["quiet_uni"] = (100.0 * q["unicast_on_time"] / q["unicast_wanted"]
+                            if q["unicast_wanted"] else 0.0)
+        out["quiet_bc"] = (100.0 * q["broadcast_on_time"] / q["broadcast_wanted"]
+                           if q["broadcast_wanted"] else 0.0)
+    bd = r.get("budget")
+    if bd:
+        asked = bd["relayed"] + bd["dropped"]
+        out.update({
+            "held": bd["held"],
+            "drop": 100.0 * bd["dropped"] / asked if asked else 0.0,
+            "busy": 100.0 * bd["busiest_drop"],
+            "hit": (100.0 * bd["unicast_hit_on_time"] / bd["unicast_hit"]
+                    if bd["unicast_hit"] else None),
+            "busiest": bd["busiest"],
+            "short_acks": bd["short_acks"],
+            "wait_mean_s": bd["wait_mean_s"],  # null in shadow mode: no wait is modelled
+            "unicast_hit": bd["unicast_hit"],
+        })
+    return out
 
 
 def stress_sets(name, sited, stress, sets):
@@ -146,7 +176,7 @@ def cell(rows, metric):
         return "-"
     m = statistics.mean(values)
     sd = statistics.stdev(values) if len(values) > 1 else 0.0
-    if metric == "links":
+    if metric in ("links", "held"):
         return "%.0f ±%.0f" % (m, sd)
     if metric in ("p50", "p95", "b50", "b95"):
         return "%.1f ±%.1f" % (m, sd)
@@ -237,6 +267,8 @@ def main():
             rows.setdefault(key, {})[r["stress"]] = r["unicast"]
 
     metrics = [m for m in METRICS if m not in STRESS or m in stresses]
+    if any("held" in r for r in runs):
+        metrics += BUDGET
     width = 14
     print("%-13s %6s" % ("candidate", "dBm") + "".join("%*s" % (width, m) for m in metrics))
     for name, _ in chosen:

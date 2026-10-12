@@ -10,6 +10,8 @@ struct source {
     struct tsim_traffic *traffic;
     uint32_t node;
     struct tsim_rng rng;
+    tsim_time interval; /* its mean gap: the process's, or a chatty node's */
+    bool chatty;        /* one of the chatty share */
     struct tsim_event next;
     uint32_t *peers; /* into tsim_traffic.peer_list */
     uint32_t peer_count;
@@ -53,7 +55,7 @@ struct tsim_traffic {
 static tsim_time exponential(struct tsim_rng *rng, tsim_time mean);
 
 static tsim_time gap(struct source *s) {
-    tsim_time t = exponential(&s->rng, s->traffic->params.interval);
+    tsim_time t = exponential(&s->rng, s->interval);
     return t > 0 ? t : 1;
 }
 
@@ -305,7 +307,9 @@ struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
         !(p->broadcast >= 0.0 && p->broadcast <= 1.0) || p->stop < p->start ||
         (p->send_count > 0 && !p->sends) || p->peers > (n ? n - 1 : 0) ||
         !(p->reply >= 0.0 && p->reply <= 1.0) || (p->reply > 0 && p->closed) ||
-        p->reply_delay < 0 || p->card_interval < 0 ||
+        p->reply_delay < 0 || p->card_interval < 0 || p->chatty_interval < 0 ||
+        !(p->chatty_share >= 0.0 && p->chatty_share <= 1.0) ||
+        (p->chatty_share > 0 && p->chatty_interval == 0) ||
         !(p->card_share >= 0.0 && p->card_share <= 1.0) || p->card_len > TSIM_FRAME_MAX) {
         return NULL;
     }
@@ -347,7 +351,14 @@ struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
         s->node = i;
         /* Apart from every node's own streams, and from the network's message content. */
         tsim_rng_init(&s->rng, p->seed, UINT64_C(0xC1) << 56 | i);
-        if (p->interval > 0) {
+        s->interval = p->interval;
+        if (p->chatty_share > 0) {
+            struct tsim_rng pick;
+            tsim_rng_init(&pick, p->seed, UINT64_C(0xC8) << 56 | i);
+            s->chatty = tsim_rng_unit(&pick) < p->chatty_share;
+            s->interval = s->chatty ? p->chatty_interval : p->interval;
+        }
+        if (s->interval > 0) {
             plan(s, from);
         }
         /* Whether it sends cards, and when, from a stream of its own. */
@@ -402,3 +413,7 @@ void tsim_traffic_destroy(struct tsim_traffic *t) {
 uint64_t tsim_traffic_made(const struct tsim_traffic *t) { return t->made; }
 
 uint64_t tsim_traffic_cards(const struct tsim_traffic *t) { return t->cards; }
+
+bool tsim_traffic_chatty(const struct tsim_traffic *t, uint32_t node) {
+    return node < t->n && t->sources[node].chatty;
+}

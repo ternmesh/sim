@@ -30,6 +30,11 @@ The isolation matrix, capture threshold, lock time and retune time are placehold
 literature until the bench rig (MSH-32) measures them; they are parameters, meant to be swept.
 [docs/sensitivity.md](docs/sensitivity.md) has the sweeps (MSH-74).
 
+Tern's airtime budget (the specification's `draft/airtime.md`) can be kept for candidate 3's
+frames, `airtime.budget = on`, with each part's share and window a setting to sweep;
+`tsim/budget.h` is the budget and [docs/airtime.md](docs/airtime.md) what it does to a mesh
+(MSH-92).
+
 The comparison has been made: candidate 3 proceeds, and [docs/recommendation.md](docs/recommendation.md)
 says why and what could reopen it (MSH-27). Mobility and churn are measured; the store-and-forward
 floor was never built.

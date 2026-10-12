@@ -1,5 +1,7 @@
 #include "tsim/net.h"
 
+#include "tsim/metrics.h"
+
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,8 +26,10 @@ struct log {
     int kicks[MAX_NODES];
     bool eager;
     bool refuse;
-    uint64_t veto; /* the frame the routing withdraws when it is due */
-    int finished;  /* calls to the finished observer */
+    uint64_t veto;      /* the frame the routing withdraws when it is due */
+    uint64_t withdrawn; /* the frame the network last took back */
+    int withdrawals;
+    int finished; /* calls to the finished observer */
     uint64_t finished_msg;
 };
 
@@ -93,6 +97,23 @@ static const struct tsim_routing keeper = {
     .tx_done = rec_tx_done,
     .sending = rec_sending,
     .reports_finished = true,
+};
+
+static void rec_withdrawn(void *self, uint64_t handle) {
+    struct log *log = ((struct self *)self)->log;
+    log->withdrawn = handle;
+    log->withdrawals++;
+}
+
+/* The recorder, told of the frames the airtime budget drops. */
+static const struct tsim_routing budgeted = {
+    .name = "budgeted",
+    .create = self_create,
+    .destroy = self_destroy,
+    .originate = rec_originate,
+    .rx = rec_rx,
+    .tx_done = rec_tx_done,
+    .withdrawn = rec_withdrawn,
 };
 
 static void on_finished(void *ctx, const struct tsim_message_record *rec) {
@@ -956,6 +977,429 @@ static void the_radio_holds_to_the_duty_cycle(void) {
     tsim_sched_destroy(sched);
 }
 
+/* A network keeping the airtime budget, its parts holding one 255-byte frame each: 1% of a second
+ * is less than that. */
+static void budget_rig(struct rig *r, enum tsim_budget_mode mode, uint32_t queue) {
+    struct tsim_net_params p = tsim_net_defaults(1);
+    p.queue_limit = queue;
+    p.budget.mode = mode;
+    p.budget.own_window = p.budget.relayed_window = TSIM_S(1);
+    p.budget.own_ppm = p.budget.relayed_ppm = 10000;
+    memset(&r->log, 0, sizeof r->log);
+    r->sched = tsim_sched_create();
+    r->net = tsim_net_create(r->sched, &p, 3, &budgeted, &r->log, &manual, &r->log);
+    tsim_phy_set_loss(tsim_net_phy(r->net), 0, 1, 100.0);
+    tsim_net_start(r->net);
+}
+
+static struct tsim_tx marked(enum tsim_purpose purpose, uint8_t priority, uint32_t len,
+                             uint8_t mark) {
+    struct tsim_tx tx = frame(purpose, priority, len);
+    tx.budget = mark;
+    return tx;
+}
+
+/* A frame of the node's own that its part does not hold waits, out of the MAC's sight, and so does
+ * one of its own behind it; frames of other parts, and routing's, go past them; and the MAC is
+ * kicked when the part has filled. */
+static void the_budget_holds_a_nodes_own_frames(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 16);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    tsim_time full = airtime(255);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    CHECK(tsim_node_send(n, &own) != 0);
+    CHECK(tsim_node_transmit(n)); /* at 0: the part is empty now */
+    run_for(&r, full);
+    uint64_t first = tsim_node_send(n, &own);
+    struct tsim_tx small = marked(TSIM_PURPOSE_DATA, 1, 10, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &small); /* the part could pay for this one, but it is behind */
+    CHECK(tsim_node_head(n) == NULL && tsim_node_head_handle(n) == 0);
+    CHECK(!tsim_node_transmit(n));
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_held, 2);
+    struct tsim_tx relayed = marked(TSIM_PURPOSE_RELAY, 2, 10, TSIM_BUDGET_RELAYED);
+    uint64_t passed = tsim_node_send(n, &relayed);
+    struct tsim_tx announce = frame(TSIM_PURPOSE_ANNOUNCE, 0, 10);
+    uint64_t routing = tsim_node_send(n, &announce);
+    CHECK(tsim_node_head_handle(n) == passed && tsim_node_transmit(n));
+    run_for(&r, TSIM_S(1));
+    CHECK(tsim_node_head_handle(n) == routing && tsim_node_transmit(n));
+    run_for(&r, TSIM_S(1));
+    /* The part fills at 1%: a 255-byte frame's worth a hundred of its airtimes after it emptied. */
+    r.log.eager = true;
+    run_for(&r, 100 * full - tsim_sched_now(r.sched) - 1);
+    CHECK_EQ_U64(tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_DATA], 1);
+    run_for(&r, 1);
+    CHECK_EQ_U64(tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_DATA], 2);
+    run_for(&r, full);
+    CHECK(r.log.done[0] == first);
+    /* The small one goes once the part holds it again. */
+    run_for(&r, TSIM_S(5));
+    CHECK_EQ_U64(tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_DATA], 3);
+    /* Three waits, two frames held: the small one waited behind the first until that one could
+     * go, at 100 airtimes, and then for its own part, which the first had emptied. */
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_gone, 3);
+    CHECK(tsim_net_stats(r.net, 0)->budget_waited >= 2 * (100 * full - full));
+    CHECK(tsim_net_stats(r.net, 0)->budget_held == 2 && r.log.withdrawals == 0);
+    rig_close(&r);
+}
+
+/* A frame passed on that its part does not hold when it is due is dropped: out of the queue, booked
+ * against the message it carries, and handed back to the routing. An acknowledgement goes all the
+ * same. In shadow mode both go, and what would have been dropped is counted. */
+static void the_budget_drops_what_it_does_not_pay_to_pass_on(void) {
+    for (int shadow = 0; shadow < 2; shadow++) {
+        struct rig r;
+        budget_rig(&r, shadow ? TSIM_BUDGET_MODE_SHADOW : TSIM_BUDGET_MODE_ON, 16);
+        struct tsim_node *n = tsim_net_node(r.net, 0);
+        struct tsim_tx relayed = marked(TSIM_PURPOSE_RELAY, 2, 255, TSIM_BUDGET_RELAYED);
+        tsim_node_send(n, &relayed);
+        CHECK(tsim_node_transmit(n));
+        run_for(&r, TSIM_S(1) - 1); /* filling at 1%, the part holds 10 ms of a 400 ms frame */
+        uint64_t id = tsim_net_originate(r.net, 0, 2, 8);
+        const struct tsim_message_record *rec = tsim_net_message(r.net, id);
+        struct tsim_tx tx = marked(TSIM_PURPOSE_RELAY, 2, 12, TSIM_BUDGET_RELAYED);
+        memcpy(tx.bytes + 4, rec->msg.content, 8);
+        tx.carries = id;
+        tx.carries_at = 4;
+        tx.addressed = true;
+        tx.to = 1;
+        uint64_t handle = tsim_node_send(n, &tx);
+        struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 10, TSIM_BUDGET_OWN);
+        uint64_t mine = tsim_node_send(n, &own);
+        int kicks = r.log.kicks[0];
+        if (!shadow) {
+            CHECK(!tsim_node_transmit(n));
+            CHECK(r.log.withdrawn == handle && r.log.withdrawals == 1);
+            CHECK_EQ_I64(rec->drops[TSIM_DROP_BUDGET], 1);
+            CHECK_EQ_I64(rec->drop.next, 1);
+            CHECK(r.log.kicks[0] > kicks && tsim_node_head_handle(n) == mine);
+            CHECK_EQ_U64(tsim_net_stats(r.net, 0)->cancelled, 0);
+        }
+        CHECK(tsim_node_transmit(n)); /* shadow: the relayed frame; on: the node's own */
+        run_for(&r, TSIM_S(1));
+        CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_dropped, 1);
+        /* Two frames asked to be passed on: one paid for, one dropped - or in shadow mode sent
+         * unpaid, which counts as dropped and not as relayed, so the two add up to what was
+         * asked. */
+        CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_relayed, 1);
+        CHECK_EQ_U64(
+            tsim_net_stats(r.net, 0)->budget_relayed + tsim_net_stats(r.net, 0)->budget_dropped, 2);
+        if (shadow) {
+            CHECK(tsim_node_transmit(n)); /* the node's own */
+            run_for(&r, TSIM_S(1));
+        }
+        /* The relayed part holds less than an acknowledgement: one passed on still goes. */
+        struct tsim_tx ack =
+            marked(TSIM_PURPOSE_CONTROL, 3, 19, TSIM_BUDGET_RELAYED | TSIM_BUDGET_ACK);
+        tsim_node_send(n, &ack);
+        CHECK(tsim_node_transmit(n));
+        CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_short, 1);
+        CHECK(r.log.withdrawals == (shadow ? 0 : 1));
+        rig_close(&r);
+    }
+}
+
+/* Frames waiting for the budget are the node's to keep, not the queue's: a queue of one still takes
+ * a frame to pass on behind 32 of them, and it keeps no more than that. */
+static void frames_waiting_for_the_budget_leave_the_queue_room(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 1);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, TSIM_S(1));
+    /* It keeps 32 of its own waiting, and no more. */
+    for (int i = 0; i < 32; i++) {
+        CHECK(tsim_node_send(n, &own) != 0);
+    }
+    CHECK_EQ_U64(tsim_node_send(n, &own), 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->dropped, 1);
+    struct tsim_tx relayed = marked(TSIM_PURPOSE_RELAY, 2, 10, TSIM_BUDGET_RELAYED);
+    CHECK(tsim_node_send(n, &relayed) != 0);
+    CHECK_EQ_U64(tsim_node_send(n, &relayed), 0); /* but only one */
+    CHECK_EQ_U64(tsim_node_queue_length(n), 33);
+    rig_close(&r);
+}
+
+/* A frame's wait for the budget ends when its buckets come to hold it, however long the MAC then
+ * takes to send it. The part empties at 0 and holds a frame again a hundred airtimes on. */
+static void a_wait_ends_when_the_buckets_hold_the_frame(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 16);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    tsim_time full = airtime(255);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, full);
+    tsim_node_send(n, &own); /* held from `full` */
+    run_for(&r, 300 * full); /* the MAC is slow: it sends long after */
+    CHECK(tsim_node_transmit(n));
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_gone, 1);
+    CHECK_EQ_I64(tsim_net_stats(r.net, 0)->budget_waited, 100 * full - full);
+    rig_close(&r);
+}
+
+/* A frame its buckets could pay for, held only behind one of its own they could not, waits until
+ * that one is out of its way: here until the routing takes the first back. */
+static void a_wait_behind_another_ends_when_that_one_is_gone(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 16);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n)); /* empties the part at 0 */
+    run_for(&r, airtime(255));
+    uint64_t big = tsim_node_send(n, &own);
+    run_for(&r, TSIM_S(1) - airtime(255));
+    struct tsim_tx small = marked(TSIM_PURPOSE_DATA, 1, 10, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &small); /* held from 1 s; its buckets hold it from about 4 s */
+    run_for(&r, TSIM_S(19));
+    CHECK(tsim_node_head(n) == NULL);
+    CHECK(tsim_node_cancel(n, big));
+    CHECK(tsim_node_transmit(n)); /* at 20 s */
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_gone, 1);
+    CHECK_EQ_I64(tsim_net_stats(r.net, 0)->budget_waited, TSIM_S(19));
+    rig_close(&r);
+}
+
+/* A frame its buckets came to hold before the window began, still waiting on the MAC as it began,
+ * no longer waits for the budget: the window counts no frame held and no wait. */
+static void a_frame_free_to_go_as_the_window_begins_is_not_waiting(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 16);
+    struct tsim_metrics *m = tsim_metrics_create(r.net, TSIM_S(60));
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    tsim_time full = airtime(255);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, full);
+    tsim_node_send(n, &own); /* held; free to go at 100 airtimes */
+    run_for(&r, 200 * full);
+    tsim_metrics_begin(m);
+    run_for(&r, TSIM_S(1));
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, TSIM_S(1));
+    struct tsim_report rep;
+    tsim_metrics_report(m, &rep);
+    CHECK_EQ_U64(rep.budget.held, 0);
+    CHECK(rep.budget.wait_mean_s == 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_gone, 1);
+    tsim_metrics_destroy(m);
+    rig_close(&r);
+}
+
+/* In shadow mode a frame of the node's own is counted held the moment its buckets fall short, as
+ * one waits with the budget on, though the MAC still sees it - and once only, however late the
+ * MAC sends it, when its buckets have filled again. */
+static void shadow_mode_counts_a_frame_held_when_it_is_first_short(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_SHADOW, 16);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, TSIM_S(1));
+    uint64_t second = tsim_node_send(n, &own);
+    CHECK(tsim_node_head_handle(n) == second); /* not hidden */
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_held, 1);
+    run_for(&r, 200 * airtime(255)); /* the part has filled */
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, TSIM_S(1));
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_held, 1);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_gone, 1);
+    rig_close(&r);
+}
+
+/* A frame that waited before the window, could go as it began, and waits again in it - an
+ * acknowledgement having emptied its part - is held in the window: once, with its second wait. */
+static void a_frame_waiting_again_in_the_window_is_held_in_it(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 16);
+    struct tsim_metrics *m = tsim_metrics_create(r.net, TSIM_S(60));
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    tsim_time full = airtime(255);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, full);
+    tsim_node_send(n, &own); /* waits until 100 airtimes */
+    run_for(&r, 200 * full);
+    tsim_metrics_begin(m);
+    struct tsim_tx ack = marked(TSIM_PURPOSE_CONTROL, 3, 255, TSIM_BUDGET_OWN | TSIM_BUDGET_ACK);
+    tsim_node_send(n, &ack);
+    CHECK(tsim_node_transmit(n)); /* the part is empty again: the frame waits again */
+    run_for(&r, 200 * full);
+    struct tsim_report rep;
+    tsim_metrics_report(m, &rep);
+    CHECK_EQ_U64(rep.budget.held, 1);
+    double want = (double)(100 * full) / 1e9;
+    CHECK(rep.budget.wait_mean_s > want - 1e-6 && rep.budget.wait_mean_s < want + 1e-6);
+    tsim_metrics_destroy(m);
+    rig_close(&r);
+}
+
+/* A frame free to go comes to wait when one of its own its part cannot pay for is queued ahead of
+ * it, and waits until that one is taken back. */
+static void a_frame_waits_while_one_queued_ahead_of_it_is_short(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 16);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n)); /* the own part is empty */
+    run_for(&r, TSIM_S(10));      /* and holds 100 ms */
+    struct tsim_tx small = marked(TSIM_PURPOSE_DATA, 1, 10, TSIM_BUDGET_OWN);
+    uint64_t free = tsim_node_send(n, &small);
+    CHECK(tsim_node_head_handle(n) == free && tsim_net_stats(r.net, 0)->budget_held == 0);
+    struct tsim_tx big = marked(TSIM_PURPOSE_DATA, 3, 255, TSIM_BUDGET_OWN);
+    uint64_t ahead = tsim_node_send(n, &big);
+    CHECK(tsim_node_head(n) == NULL && tsim_net_stats(r.net, 0)->budget_held == 2);
+    run_for(&r, TSIM_S(5));
+    CHECK(tsim_node_cancel(n, ahead));
+    CHECK(tsim_node_head_handle(n) == free);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_gone, 1);
+    CHECK_EQ_I64(tsim_net_stats(r.net, 0)->budget_waited, TSIM_S(5));
+    rig_close(&r);
+}
+
+/* In shadow mode nothing is kicked when a frame's buckets fill, so the report brings its wait up to
+ * date itself: a frame free to go but not yet sent has waited, and waits no more. */
+static void a_report_ends_a_wait_nothing_kicked_for(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_SHADOW, 16);
+    struct tsim_metrics *m = tsim_metrics_create(r.net, TSIM_S(60));
+    tsim_metrics_begin(m);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    tsim_time full = airtime(255);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, full);
+    tsim_node_send(n, &own); /* short from `full`, free to go at 100 airtimes; never sent */
+    run_for(&r, 200 * full);
+    struct tsim_report rep;
+    tsim_metrics_report(m, &rep);
+    CHECK_EQ_U64(rep.budget.held, 1);
+    double want = (double)(99 * full) / 1e9;
+    CHECK(rep.budget.wait_mean_s > want - 1e-6 && rep.budget.wait_mean_s < want + 1e-6);
+    tsim_metrics_destroy(m);
+    rig_close(&r);
+}
+
+/* A frame of the node's own that will wait for the budget as it is queued takes no room in the
+ * queue: a queue of one, holding a frame to pass on, takes it and holds it. */
+static void a_frame_that_will_wait_takes_no_room_in_the_queue(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 1);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n)); /* the own part is empty */
+    run_for(&r, TSIM_S(1));
+    struct tsim_tx relayed = marked(TSIM_PURPOSE_RELAY, 2, 10, TSIM_BUDGET_RELAYED);
+    uint64_t passed = tsim_node_send(n, &relayed);
+    CHECK(tsim_node_send(n, &own) != 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->dropped, 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_held, 1);
+    CHECK(tsim_node_head_handle(n) == passed);
+    /* One the buckets hold still needs room, and there is none. */
+    struct tsim_tx ack = marked(TSIM_PURPOSE_CONTROL, 3, 10, TSIM_BUDGET_OWN | TSIM_BUDGET_ACK);
+    CHECK_EQ_U64(tsim_node_send(n, &ack), 0);
+    rig_close(&r);
+}
+
+/* Room in the queue is decided where a frame would land. A queue of one holds a frame to pass on
+ * and a frame of the node's own its part cannot pay for. A small frame of its own behind that one
+ * would be held there, and is taken; the same frame sent ahead of it, at a higher priority, would
+ * be paid for and go, so it needs room, and there is none. */
+static void room_is_decided_where_a_frame_would_land(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 1);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n)); /* the own part is empty */
+    run_for(&r, TSIM_S(10));      /* and holds 100 ms: enough for a small frame, not a big one */
+    struct tsim_tx relayed = marked(TSIM_PURPOSE_RELAY, 2, 10, TSIM_BUDGET_RELAYED);
+    CHECK(tsim_node_send(n, &relayed) != 0);
+    CHECK(tsim_node_send(n, &own) != 0); /* short: held */
+    struct tsim_tx small = marked(TSIM_PURPOSE_DATA, 1, 10, TSIM_BUDGET_OWN);
+    CHECK(tsim_node_send(n, &small) != 0); /* behind it: held */
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_held, 2);
+    struct tsim_tx ahead = marked(TSIM_PURPOSE_DATA, 3, 10, TSIM_BUDGET_OWN);
+    CHECK_EQ_U64(tsim_node_send(n, &ahead), 0); /* ahead of it, paid for: no room */
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->dropped, 1);
+    rig_close(&r);
+}
+
+/* However long the queue, a node keeps no more than 32 frames of its own under the budget, waiting
+ * now or not: any of them may come to wait. */
+static void a_node_keeps_32_of_its_own_however_long_its_queue(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 0);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 10, TSIM_BUDGET_OWN);
+    int taken = 0;
+    for (int i = 0; i < 40; i++) {
+        taken += tsim_node_send(n, &own) != 0;
+    }
+    CHECK(taken == 32);
+    CHECK(tsim_node_head(n) != NULL); /* the first is paid for: not every one waits */
+    struct tsim_tx relayed = marked(TSIM_PURPOSE_RELAY, 2, 10, TSIM_BUDGET_RELAYED);
+    CHECK(tsim_node_send(n, &relayed) != 0);
+    rig_close(&r);
+}
+
+/* A frame its buckets could not hold however full - here at SF12, 14 s against a part sized for a
+ * 255-byte frame at SF7 - would never go, nor anything of its own behind it: it is refused. An
+ * acknowledgement so long still goes. */
+static void a_frame_no_bucket_could_hold_is_refused(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 16);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    own.lora = tsim_lora_default(12, 125000);
+    CHECK_EQ_U64(tsim_node_send(n, &own), 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->dropped, 1);
+    struct tsim_tx relayed = own;
+    relayed.budget = TSIM_BUDGET_RELAYED;
+    CHECK_EQ_U64(tsim_node_send(n, &relayed), 0);
+    struct tsim_tx ack = own;
+    ack.budget = TSIM_BUDGET_OWN | TSIM_BUDGET_ACK;
+    CHECK(tsim_node_send(n, &ack) != 0);
+    rig_close(&r);
+}
+
+/* Off, the marks change nothing. */
+static void with_the_budget_off_marks_change_nothing(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_OFF, 16);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx relayed = marked(TSIM_PURPOSE_RELAY, 2, 255, TSIM_BUDGET_RELAYED);
+    for (int i = 0; i < 3; i++) {
+        tsim_node_send(n, &relayed);
+        CHECK(tsim_node_transmit(n));
+        run_for(&r, TSIM_S(1));
+    }
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_dropped, 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_relayed, 0);
+    rig_close(&r);
+
+    struct tsim_net_params p = tsim_net_defaults(1);
+    p.budget.mode = TSIM_BUDGET_MODE_ON;
+    p.budget.relayed_ppm = 0;
+    struct tsim_sched *sched = tsim_sched_create();
+    CHECK(tsim_net_create(sched, &p, 2, &budgeted, &r.log, &manual, &r.log) == NULL);
+    p = tsim_net_defaults(1);
+    p.budget.mode = (enum tsim_budget_mode) - 1; /* neither on nor off: refused, not run */
+    CHECK(tsim_net_create(sched, &p, 2, &budgeted, &r.log, &manual, &r.log) == NULL);
+    tsim_sched_destroy(sched);
+}
+
 int main(void) {
     RUN(head_handle_names_the_frame_at_the_head);
     RUN(a_node_knows_its_own_airtime);
@@ -984,5 +1428,20 @@ int main(void) {
     RUN(a_node_powered_down_comes_back_with_nothing);
     RUN(destroy_leaves_the_scheduler_runnable);
     RUN(the_radio_holds_to_the_duty_cycle);
+    RUN(the_budget_holds_a_nodes_own_frames);
+    RUN(the_budget_drops_what_it_does_not_pay_to_pass_on);
+    RUN(frames_waiting_for_the_budget_leave_the_queue_room);
+    RUN(shadow_mode_counts_a_frame_held_when_it_is_first_short);
+    RUN(a_wait_ends_when_the_buckets_hold_the_frame);
+    RUN(a_frame_free_to_go_as_the_window_begins_is_not_waiting);
+    RUN(a_wait_behind_another_ends_when_that_one_is_gone);
+    RUN(a_report_ends_a_wait_nothing_kicked_for);
+    RUN(a_frame_waits_while_one_queued_ahead_of_it_is_short);
+    RUN(a_frame_waiting_again_in_the_window_is_held_in_it);
+    RUN(a_frame_that_will_wait_takes_no_room_in_the_queue);
+    RUN(room_is_decided_where_a_frame_would_land);
+    RUN(a_node_keeps_32_of_its_own_however_long_its_queue);
+    RUN(a_frame_no_bucket_could_hold_is_refused);
+    RUN(with_the_budget_off_marks_change_nothing);
     return CHECK_DONE();
 }
