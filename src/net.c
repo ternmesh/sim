@@ -1020,13 +1020,17 @@ bool tsim_node_transmit(struct tsim_node *nd) {
             tsim_budget_paid(&nd->budget, now, tx->budget, airtime)) {
             nd->stats.budget_relayed++;
         }
-        tsim_budget_charge(&nd->budget, now, tx->budget, airtime);
         if (nd->air.held_since >= 0) {
+            /* Its wait ends when its buckets came to hold it, not when the MAC, drawing a wait of
+             * its own, sent it; in shadow mode one sent unpaid waited until now at least. */
             tsim_time from =
                 nd->air.held_since > net->budget_from ? nd->air.held_since : net->budget_from;
+            tsim_time end = tsim_budget_paid_since(&nd->budget, now, tx->budget, airtime);
+            end = end < 0 ? now : end;
             nd->stats.budget_gone++;
-            nd->stats.budget_waited += now - from;
+            nd->stats.budget_waited += end > from ? end - from : 0;
         }
+        tsim_budget_charge(&nd->budget, now, tx->budget, airtime);
     }
     nd->air_end = tsim_sched_now(nd->net->sched) + airtime;
     nd->ledger.airtime[tx->purpose] += airtime;

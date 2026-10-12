@@ -1119,6 +1119,25 @@ static void frames_waiting_for_the_budget_leave_the_queue_room(void) {
     rig_close(&r);
 }
 
+/* A frame's wait for the budget ends when its buckets come to hold it, however long the MAC then
+ * takes to send it. The part empties at 0 and holds a frame again a hundred airtimes on. */
+static void a_wait_ends_when_the_buckets_hold_the_frame(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 16);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    tsim_time full = airtime(255);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, full);
+    tsim_node_send(n, &own); /* held from `full` */
+    run_for(&r, 300 * full); /* the MAC is slow: it sends long after */
+    CHECK(tsim_node_transmit(n));
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_gone, 1);
+    CHECK_EQ_I64(tsim_net_stats(r.net, 0)->budget_waited, 100 * full - full);
+    rig_close(&r);
+}
+
 /* In shadow mode a frame of the node's own is counted held the moment its buckets fall short, as
  * one waits with the budget on, though the MAC still sees it - and once only, however late the
  * MAC sends it, when its buckets have filled again. */
@@ -1199,6 +1218,7 @@ int main(void) {
     RUN(the_budget_drops_what_it_does_not_pay_to_pass_on);
     RUN(frames_waiting_for_the_budget_leave_the_queue_room);
     RUN(shadow_mode_counts_a_frame_held_when_it_is_first_short);
+    RUN(a_wait_ends_when_the_buckets_hold_the_frame);
     RUN(with_the_budget_off_marks_change_nothing);
     return CHECK_DONE();
 }

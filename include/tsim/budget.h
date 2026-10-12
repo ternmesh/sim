@@ -120,6 +120,12 @@ bool tsim_budget_paid(const struct tsim_budget *budget, tsim_time at, uint8_t ma
 /* Charges a frame sent at `at` to every bucket that pays for it, all at once. */
 void tsim_budget_charge(struct tsim_budget *budget, tsim_time at, uint8_t mark, tsim_time airtime);
 
+/* Since when every bucket that pays for it has held it, as of `at`: the latest of the times each
+ * came to hold it after it was last charged, or its last charge if it held it then. -1 if they do
+ * not all hold it at `at`. */
+tsim_time tsim_budget_paid_since(const struct tsim_budget *budget, tsim_time at, uint8_t mark,
+                                 tsim_time airtime);
+
 /* How long from `at` until every bucket that pays for it holds it, if nothing else is charged. */
 tsim_time tsim_budget_wait(const struct tsim_budget *budget, tsim_time at, uint8_t mark,
                            tsim_time airtime);
