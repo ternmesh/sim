@@ -488,6 +488,50 @@ static void a_config_out_of_range_is_refused(void) {
     c.flood_busy_ppm = 0;
     c.flood_last = 2;
     CHECK(tsim_core_check(&c) != NULL);
+    /* Resending a node's own flood needs a firmware that does, whichever of the two is set. */
+    for (int k = 0; k < 2; k++) {
+        c = tsim_core_default(0, &l, 14.0);
+        *(k ? &c.flood_echo : &c.flood_resends) = 3;
+#ifdef TSIM_FIRMWARE_RESENDS
+        CHECK(tsim_core_check(&c) == NULL);
+#else
+        CHECK(tsim_core_check(&c) != NULL);
+#endif
+        *(k ? &c.flood_echo : &c.flood_resends) = 256;
+        CHECK(tsim_core_check(&c) != NULL);
+    }
+}
+
+/* report.floods with the core books its flooders over the window, a node's books kept as it
+ * powers down and counted afresh from when it comes back up. */
+static void floods_count_the_flooders_through_restarts(void) {
+    struct tsim_scenario s;
+    struct tsim_scenario_error err;
+    CHECK(tsim_scenario_parse(&s,
+                              "nodes = 30\nplacement = grid\nspacing = 1500\nrouting = core\n"
+                              "mac = listen\ntraffic.interval = 2 min\ntraffic.broadcast = 1\n"
+                              "warmup = 20 min\nduration = 40 min\nchurn.share = 0.3\n"
+                              "churn.up = 10 min\nchurn.down = 5 min\nreport.floods = yes\n",
+                              &err));
+    struct tsim_report rep;
+    CHECK(tsim_scenario_run(&s, &rep));
+    const struct tsim_floods *f = &rep.floods;
+    CHECK(f->present && f->has_core);
+    /* Every delivery is a flooder hearing a frame first, and a node back up hears afresh. */
+    CHECK(f->core.heard >= rep.broadcast.delivered && f->core.heard < 1000000);
+    CHECK(f->core.passed_on <= f->core.heard);
+    CHECK(f->core.cancelled + f->core.unpaid + f->core.busy <= f->core.passed_on);
+#ifdef TSIM_FIRMWARE_RESENDS
+    /* As the firmware's own defaults have it: listened for, and some heard passed on. */
+    if (tern_flood_defaults().resends) {
+        CHECK(f->core.echoed > 0);
+    } else {
+        CHECK(f->core.echoed == 0 && f->core.resent == 0);
+    }
+#else
+    CHECK(f->core.echoed == 0 && f->core.resent == 0); /* a firmware that never sends again */
+#endif
+    CHECK_EQ_U64(f->missed, rep.broadcast.wanted - rep.broadcast.delivered);
 }
 
 /* With a firmware that counts, a core run reports what its routing spent over the window, leaves
@@ -548,5 +592,6 @@ int main(void) {
     RUN(a_node_keeps_four_of_its_own_and_the_rest_wait);
     RUN(a_node_listens_for_the_answer_before_its_next_frame);
     RUN(a_config_out_of_range_is_refused);
+    RUN(floods_count_the_flooders_through_restarts);
     return CHECK_DONE();
 }

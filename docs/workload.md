@@ -279,7 +279,41 @@ behind this work flagged control traffic as the risk a routed design adds
 **Tern's flood under-delivers on a light load.** On the metro, where the channel is quiet, the
 core's floods reach 85-86% within the reach and candidate 3's 88-93%, where Meshtastic's reach 99%.
 Scope closes the gap for candidate 3 (96%) and narrows it for the core (88% at hops 2). Why the
-unscoped flood leaves 7-15% behind on a quiet channel is not yet found.
+unscoped flood leaves 7-15% behind on a quiet channel is [below](#why-the-flood-under-delivers-msh-104).
+
+### Why the flood under-delivers (MSH-104)
+
+`report.floods = yes` books, for each broadcast, every node that wanted it and missed it, and why
+(docs/scenarios.md). On the metro, seed 1, the core missed 22,601 deliveries:
+
+- 38% were `far`: no node that sent a copy was in reach of them. 17% were `quiet`, and 46% `lost`:
+  copies came in above the floor and were lost on the air.
+- 80 of the 638 broadcasts reached **no relay at all**, and those 80 were 75% of the misses. Each
+  was sent once, by its source, while every relay in reach of it - 20 to 50 of them - was receiving
+  another frame. A relay hears a 5 km circle, so even a quiet mesh keeps it receiving much of the
+  time. Once a flood reached relays it did well.
+- The flood had no answer to this: a node sent its own frame once and could not know it had gone
+  nowhere. Meshtastic's sender listens for a rebroadcast and sends again.
+
+The firmware now listens for a relay passing its own frame on and, hearing none within 16
+airtimes, sends it once more (`routing.flood_resends`, `routing.flood_echo`; ternmesh/spec#49).
+The core, three seeds, once against with one resend:
+
+| | | Local | Chat | Alerts | Direct | Airtime |
+|---|---|---|---|---|---|---|
+| Metro | once | 85.0-86.3% | 81.3-88.0% | 62.7-95.5% | 95.6-97.0% | 11.6 ks |
+| | again | 92.7-94.2% | 91.5-94.7% | 75.7-95.5% | 93.3-97.3% | 12.6 ks |
+| Event | once | 43.0-47.6% | 40.5-45.1% | 50.9-56.9% | 65.8-84.4% | 16.0 ks |
+| | again | 53.0-54.9% | 40.8-54.3% | 32.3-69.0% | 58.9-65.7% | 16.1 ks |
+| DM-heavy | once | 82.9-84.3% | 72.0-80.2% | 61.3-95.0% | 94.0-95.8% | 13.0 ks |
+| | again | 91.0-93.1% | 85.4-94.3% | 91.3-94.4% | 89.3-93.3% | 13.9 ks |
+
+The frames sent again are few: 144 an hour on the metro. What the airtime pays for is the relays
+carrying floods that used to die at the first hop, and that is what costs direct messages: their
+first hops are lost to relayed frames. Two resends gained a point or two of broadcast for as much
+again of direct messages. Listening longer (32 or 64 airtimes) heard no more copies: at the event,
+where some 3,000 frames an hour went again, the copies were never sent, busy relays having dropped
+them.
 
 ## Recommendation for the specification (MSH-30)
 

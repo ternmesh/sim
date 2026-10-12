@@ -289,6 +289,24 @@ static void tag_put(uint8_t *b, uint32_t v) {
     b[3] = (uint8_t)v;
 }
 
+void tsim_core_flood_counts(const void *router, struct tsim_core_floods *out) {
+    const struct tern_flood_counts *c = &((const struct router *)router)->flood.counts;
+    *out = (struct tsim_core_floods){
+        .heard = c->heard,
+        .copies = c->copies,
+        .passed_on = c->passed_on,
+        .cancelled = c->cancelled,
+        .unpaid = c->unpaid,
+        .busy = c->busy,
+        .hop_limit = c->hop_limit,
+        .no_room = c->no_room,
+#ifdef TSIM_FIRMWARE_RESENDS
+        .echoed = c->echoed,
+        .resent = c->resent,
+#endif
+    };
+}
+
 static struct tern_lora lora_of(const struct tsim_lora *l);
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,
@@ -320,6 +338,10 @@ struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lo
         .flood_own_ppm = tern_flood_defaults().own_ppm,
         .flood_relay_ppm = tern_flood_defaults().relay_ppm,
         .flood_busy_ppm = tern_flood_defaults().busy_ppm,
+#ifdef TSIM_FIRMWARE_RESENDS
+        .flood_resends = tern_flood_defaults().resends,
+        .flood_echo = tern_flood_defaults().echo,
+#endif
 #ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
         .default_hops = rd.default_hops,
         .default_busy_ppm = rd.default_busy_ppm,
@@ -375,6 +397,14 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
         return "learn_ppm needs a firmware with a learning allowance";
     }
 #endif
+#ifndef TSIM_FIRMWARE_RESENDS
+    if (c->flood_resends || c->flood_echo) {
+        return "flood_resends and flood_echo need a firmware whose flooder sends again";
+    }
+#endif
+    if (c->flood_resends > 255 || c->flood_echo > 255) {
+        return "flood_resends and flood_echo must be 0 to 255";
+    }
 #ifndef TSIM_FIRMWARE_REATTACH
     if (c->reattach) {
         return "reattach needs a firmware whose leaves re-attach";
@@ -959,6 +989,10 @@ static void *router_create(struct tsim_node *node, const void *config) {
     flc.own_ppm = c->flood_own_ppm;
     flc.relay_ppm = c->flood_relay_ppm;
     flc.busy_ppm = c->flood_busy_ppm;
+#ifdef TSIM_FIRMWARE_RESENDS
+    flc.resends = (uint8_t)c->flood_resends;
+    flc.echo = (uint8_t)c->flood_echo;
+#endif
     tern_flood_init(&r->flood, &flc, &r->route, r->flood_slots, c->flood_frames, r->flood_seen,
                     TERN_FLOOD_SEEN, tsim_rng_next(&rng), tsim_node_now(node));
     return r;

@@ -514,6 +514,12 @@ struct tsim_core_config {
      * its radio spent sending or receiving, past which a relay passes fewer flooded frames on,
      * and none when it is never idle. 1000000 for never fewer. */
     uint32_t flood_busy_ppm;
+    /* A node's own flood that a relay should pass on is listened for, and sent again up to
+     * `flood_resends` times if no copy is heard within `flood_echo` airtimes of its going: the
+     * firmware's own by default, 0 resends for none. Needs a firmware that has it to be other
+     * than 0 (MSH-104). */
+    uint32_t flood_resends; /* 0..255 */
+    uint32_t flood_echo;    /* 0..255 */
     /* What a presence card's flood starts with (tsim/traffic.h), 0 for flood_hops. A card the
      * length of one goes with the firmware's card header, and its flooder holds it to CARD_HOPS
      * (2) whatever this says, so this can only lower it; one of another length is not a card the
@@ -548,6 +554,24 @@ bool tsim_core_relay(const struct tsim_core_config *config, uint32_t node);
  * that keeps them (MSH-103), as struct tsim_routing_books has them. False, and `out` zero, with a
  * firmware without them. `router` is tsim_net_routing()'s. */
 bool tsim_core_route_counts(const void *router, struct tsim_routing_books *out);
+
+/* The flooder's books at one node since it last started (tern/flood.h's counts), for
+ * report.floods: frames heard new and copies heard, frames taken to pass on and, of them, those
+ * dropped on hearing enough copies, for the allowance and for a busy radio, and frames heard new
+ * that had come as far as they may or found no slot. `router` is tsim_net_routing()'s. */
+struct tsim_core_floods {
+    uint64_t heard;
+    uint64_t copies;
+    uint64_t passed_on;
+    uint64_t cancelled;
+    uint64_t unpaid;
+    uint64_t busy;
+    uint64_t hop_limit;
+    uint64_t no_room;
+    uint64_t echoed; /* the node's own, heard passed on; with a firmware that sends again */
+    uint64_t resent; /* and sent again, none heard */
+};
+void tsim_core_flood_counts(const void *router, struct tsim_core_floods *out);
 
 extern const struct tsim_routing tsim_core;
 
