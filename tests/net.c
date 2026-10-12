@@ -1162,7 +1162,7 @@ static void with_the_budget_off_marks_change_nothing(void) {
     struct tsim_sched *sched = tsim_sched_create();
     CHECK(tsim_net_create(sched, &p, 2, &budgeted, &r.log, &manual, &r.log) == NULL);
     p = tsim_net_defaults(1);
-    p.budget.mode = (enum tsim_budget_mode)-1; /* neither on nor off: refused, not run */
+    p.budget.mode = (enum tsim_budget_mode) - 1; /* neither on nor off: refused, not run */
     CHECK(tsim_net_create(sched, &p, 2, &budgeted, &r.log, &manual, &r.log) == NULL);
     tsim_sched_destroy(sched);
 }
