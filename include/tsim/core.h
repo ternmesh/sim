@@ -171,9 +171,12 @@
  *
  * So on the fast preset the core delivers what candidate 3 does plain, and what candidate 3 has
  * over both there is re-attachment and rescue. On the deployed preset, where the channel is full
- * and most of what is sent is lost, the core is 5 points short of candidate 3 plain, which is not
- * explained, and both are ahead of candidate 3 as it is, whose rescue floods cost more there than
- * they bring.
+ * and most of what is sent is lost, the core is 5 points short of candidate 3 plain, and both are
+ * ahead of candidate 3 as it is, whose rescue floods cost more there than they bring. The 5 points
+ * are a snapshot of networks still settling (MSH-78, docs/sensitivity.md): re-measured with signed
+ * announces, the core holds routes for 31% of pairs as the 6 h warmup ends against candidate 3
+ * plain's 60%, and delivers 11.0% against 19.1%; with a 12 h warmup it delivers 18.5% and
+ * candidate 3 plain 8.3%.
  *
  * Broadcast, measured with tools/density.py --candidates 3,core --quick (3 seeds, a message from
  * every node every 30 minutes, a quarter of them broadcasts): unicasts on time and broadcast

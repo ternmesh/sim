@@ -1329,6 +1329,34 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     if (strcmp(key, "phy.capture") == 0) {
         return parse_double(v, &s->net.phy.capture_db) ? NULL : "expected dB";
     }
+    /* The isolation matrix as two knobs, for sweeping it (MSH-74): the diagonal, co-SF capture,
+     * set outright; and every other entry moved from its default by an offset, so that setting
+     * it twice does not add up. */
+    if (strcmp(key, "phy.co_sf") == 0) {
+        double db;
+        if (!parse_double(v, &db) || !(fabs(db) <= 1e3)) {
+            return "expected dB from -1000 to 1000";
+        }
+        for (int i = 0; i < TSIM_SF_COUNT; i++) {
+            s->net.phy.isolation_db[i][i] = db;
+        }
+        return NULL;
+    }
+    if (strcmp(key, "phy.isolation_offset") == 0) {
+        double db;
+        if (!parse_double(v, &db) || !(fabs(db) <= 1e3)) {
+            return "expected dB from -1000 to 1000";
+        }
+        struct tsim_phy_params d = tsim_phy_defaults();
+        for (int i = 0; i < TSIM_SF_COUNT; i++) {
+            for (int j = 0; j < TSIM_SF_COUNT; j++) {
+                if (i != j) {
+                    s->net.phy.isolation_db[i][j] = d.isolation_db[i][j] + db;
+                }
+            }
+        }
+        return NULL;
+    }
     if (strcmp(key, "phy.lock_symbols") == 0) {
         if (!parse_u64(v, UINT16_MAX, &u)) {
             return "expected a number of symbols";

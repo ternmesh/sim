@@ -135,17 +135,26 @@ A floor is not needed for this decision. It stays open as a question for leaves 
 
 - **The PHY is not calibrated.** Capture, inter-SF rejection, lock time and retune time are
   placeholders until the bench rig (MSH-32) measures them.
-- **The sensitivity sweeps are not committed.** A capture sweep was run under MSH-74, but its
-  results are recorded only on that issue, not in this repository, so this page does not rely on
-  it. Capture, shadowing, path-loss exponent and lock time are all still to sweep, with the
-  results committed.
-- **The core trails candidate 3 plain on the deployed preset**, by 5 points. Why is not explained
-  (`tsim/core.h`).
+- **Per-frame fading flips the unicast headline on the deployed preset.** The sweeps
+  ([docs/sensitivity.md](sensitivity.md), MSH-74) cover capture, co-SF and inter-SF rejection,
+  lock time, shadowing, path-loss exponent and fading. On the fast preset candidate 3 leads at
+  every point, by 2.4 times or more, though fading costs it unicast delivery where the network
+  is sparse. On the deployed preset, fading of 4 dB from frame to frame ties its unicast
+  deliveries per second of airtime with MeshCore's, and 6 dB puts it at 0.7 times MeshCore's.
+  It still leads in all deliveries, which are mostly broadcast. Two cells at 20 dBm on the
+  deployed preset also flip: all shadowing shared between links, and a 12-hour warmup. Fading
+  is a must-measure item for the bench rig (MSH-32).
+- **The core trailed candidate 3 plain on the deployed preset** because the 6-hour warmup ends
+  before either has settled, and the core's routes settle more slowly: its signed announces
+  cost more air under the same cap. Given 12 hours it delivers 18.5% against candidate 3
+  plain's 8.3% (MSH-78, [docs/sensitivity.md](sensitivity.md)).
 - **Relay election is not in the specification.** The scenarios pick relays as a connected
   dominating set, with knowledge of the whole network.
 - **The workload is synthetic.** A field-derived traffic mix and scoped broadcast are MSH-34.
 
-Each of these could move a number. A sweep that flipped the ranking would reopen this page.
+Each of these could move a number. The fading flip is confined to the deployed preset, where every
+candidate is poor and which the specification's radio settings do not choose. A measured fading
+that flipped the fast preset too would reopen this page.
 
 ## What would reopen this
 

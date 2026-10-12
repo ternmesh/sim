@@ -28,6 +28,7 @@ metered resource. The protocol is defined by the specification in
 
 The isolation matrix, capture threshold, lock time and retune time are placeholders from the
 literature until the bench rig (MSH-32) measures them; they are parameters, meant to be swept.
+[docs/sensitivity.md](docs/sensitivity.md) has the sweeps (MSH-74).
 
 The comparison has been made: candidate 3 proceeds, and [docs/recommendation.md](docs/recommendation.md)
 says why and what could reopen it (MSH-27). Mobility and churn are measured; the store-and-forward
