@@ -231,6 +231,13 @@
  * without it, at 0.177 deliveries per second of airtime against 0.193; candidate 3 without rescue
  * floods 93.5% against 89.2% plain, at 0.240 against 0.254.
  *
+ * Those figures are of firmware#86 as first proposed. Its later commits - any newer route as good
+ * taking the place of the one selected, an answer breaking the count of solicits unanswered, and a
+ * full table giving up a neighbour out of use first - move the core with 32 neighbours on the fast
+ * preset (3 seeds again): 84.95% of pairs hold a route, 84.81% arriving, and 83.1% of unicasts
+ * arrive on time at 0.196 a second of airtime, so re-attachment gains it 2.6 points there rather
+ * than 4.6. With 255 neighbours (seeds 1 and 2) nothing moved beyond a seed's spread.
+ *
  * Delivery, with every node sending a message to another at random every half hour and none
  * broadcast (-s traffic.broadcast=0, 3 seeds): messages that arrived within the minute allowed,
  * and how many did for each second on the air, all nodes together. Candidate 3 is run as it is,
