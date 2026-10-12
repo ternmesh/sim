@@ -631,9 +631,16 @@ uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
     bool never = budget && !(tx->budget & TSIM_BUDGET_ACK) &&
                  !tsim_budget_fits(&nd->budget, tx->budget, tsim_lora_airtime(&tx->lora, tx->len));
     bool no_room = budget && may_wait(tx) && own_queued(nd) >= BUDGET_WAITING_MAX;
+    /* Frames waiting for the budget take no room in the queue, and nor does this one if it will
+     * wait: behind one of its own that waits, or short itself. */
     size_t waiting = budget_waiting(nd);
+    bool will_wait =
+        budget && may_wait(tx) &&
+        (waiting > 0 || !tsim_budget_paid(&nd->budget, tsim_sched_now(net->sched), tx->budget,
+                                          tsim_lora_airtime(&tx->lora, tx->len)));
     if (too_long || never || no_room ||
-        (net->params.queue_limit && nd->queue_len - waiting >= net->params.queue_limit)) {
+        (net->params.queue_limit && !will_wait &&
+         nd->queue_len - waiting >= net->params.queue_limit)) {
         nd->stats.dropped++;
         if (tx->carries) {
             tsim_node_drop(nd, tx->carries, TSIM_DROP_QUEUE,

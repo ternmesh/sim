@@ -1238,6 +1238,28 @@ static void a_report_ends_a_wait_nothing_kicked_for(void) {
     rig_close(&r);
 }
 
+/* A frame of the node's own that will wait for the budget as it is queued takes no room in the
+ * queue: a queue of one, holding a frame to pass on, takes it and holds it. */
+static void a_frame_that_will_wait_takes_no_room_in_the_queue(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 1);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n)); /* the own part is empty */
+    run_for(&r, TSIM_S(1));
+    struct tsim_tx relayed = marked(TSIM_PURPOSE_RELAY, 2, 10, TSIM_BUDGET_RELAYED);
+    uint64_t passed = tsim_node_send(n, &relayed);
+    CHECK(tsim_node_send(n, &own) != 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->dropped, 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_held, 1);
+    CHECK(tsim_node_head_handle(n) == passed);
+    /* One the buckets hold still needs room, and there is none. */
+    struct tsim_tx ack = marked(TSIM_PURPOSE_CONTROL, 3, 10, TSIM_BUDGET_OWN | TSIM_BUDGET_ACK);
+    CHECK_EQ_U64(tsim_node_send(n, &ack), 0);
+    rig_close(&r);
+}
+
 /* However long the queue, a node keeps no more than 32 frames of its own under the budget, waiting
  * now or not: any of them may come to wait. */
 static void a_node_keeps_32_of_its_own_however_long_its_queue(void) {
@@ -1338,6 +1360,7 @@ int main(void) {
     RUN(a_frame_free_to_go_as_the_window_begins_is_not_waiting);
     RUN(a_wait_behind_another_ends_when_that_one_is_gone);
     RUN(a_report_ends_a_wait_nothing_kicked_for);
+    RUN(a_frame_that_will_wait_takes_no_room_in_the_queue);
     RUN(a_node_keeps_32_of_its_own_however_long_its_queue);
     RUN(a_frame_no_bucket_could_hold_is_refused);
     RUN(with_the_budget_off_marks_change_nothing);
