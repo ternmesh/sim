@@ -959,7 +959,7 @@ static void duty_cycle_settings_read(void) {
 static void budget_settings_read(void) {
     struct tsim_scenario s;
     CHECK(parse(&s, "nodes = 2\nrouting = flood\nmac = aloha\n"));
-    CHECK(s.net.budget.mode == TSIM_BUDGET_MODE_OFF && s.net.budget.relayed_ppm == 80000);
+    CHECK(s.net.budget.mode == TSIM_BUDGET_MODE_OFF && s.net.budget.relayed_ppm == 70000);
     CHECK(parse(&s, "nodes = 2\nrouting = flood\nmac = aloha\nairtime.budget = shadow\n"
                     "airtime.own = 0.5%\nairtime.own_window = 10 min\nairtime.relayed = 12%\n"
                     "airtime.relayed_window = 2 min\nairtime.floods = no\n"

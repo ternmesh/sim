@@ -7,8 +7,8 @@
 #include "tsim/lora.h"
 
 /* The airtime budget against the specification's vectors (ternmesh/spec, vectors/airtime.json,
- * from vectors/tools/airtime.py at the commit that merged draft/airtime.md): the spends and the
- * estimates, frame by frame, and the reference's own hand-worked checks. */
+ * from vectors/tools/airtime.py as of the own part at 2% and the relayed part at 7%): the spends
+ * and the estimates, frame by frame, and the reference's own hand-worked checks. */
 
 /* The two profiles the vectors use, as Tern's frames go: a 16-symbol preamble, coding rate 4/5. */
 static struct tsim_lora profile(bool us915) {
@@ -88,31 +88,31 @@ static void airtimes_are_the_vectors(void) {
 
 /* Spends "own": a leaf's own part, emptied by a burst, and filling again. */
 static void own_part_empties_and_fills(void) {
-    struct offer o[19];
-    for (int i = 0; i < 15; i++) {
-        o[i] = (struct offer){0, 0x48, true, 255, i < 14};
+    struct offer o[34];
+    for (int i = 0; i < 30; i++) {
+        o[i] = (struct offer){0, 0x48, true, 255, i < 29};
     }
-    o[15] = (struct offer){11711999999, 0x48, true, 255, false};
-    o[16] = (struct offer){11712000000, 0x48, true, 255, true};
-    o[17] = (struct offer){11712000000, 0x52, true, 60, false};
-    o[18] = (struct offer){TSIM_S(600), 0x48, true, 67, true};
-    spend(false, o, 19);
+    o[30] = (struct offer){11711999999, 0x48, true, 255, false};
+    o[31] = (struct offer){11712000000, 0x48, true, 255, true};
+    o[32] = (struct offer){11712000000, 0x52, true, 60, false};
+    o[33] = (struct offer){TSIM_S(600), 0x48, true, 67, true};
+    spend(false, o, 34);
 }
 
 /* Spends "acknowledgements": an acknowledgement goes when the part is empty, and leaves it empty,
  * not owing. */
 static void acknowledgements_go_and_leave_no_debt(void) {
-    struct offer o[23];
-    for (int i = 0; i < 14; i++) {
+    struct offer o[38];
+    for (int i = 0; i < 29; i++) {
         o[i] = (struct offer){0, 0x48, true, 255, true};
     }
-    for (int i = 14; i < 20; i++) {
+    for (int i = 29; i < 35; i++) {
         o[i] = (struct offer){0, 0x50, true, 19, true};
     }
-    o[20] = (struct offer){0, 0x48, true, 23, false};
-    o[21] = (struct offer){40780799999, 0x48, true, 255, false};
-    o[22] = (struct offer){40780800000, 0x48, true, 255, true};
-    spend(false, o, 23);
+    o[35] = (struct offer){0, 0x48, true, 23, false};
+    o[36] = (struct offer){20390399999, 0x48, true, 255, false};
+    o[37] = (struct offer){20390400000, 0x48, true, 255, true};
+    spend(false, o, 38);
 }
 
 /* Spends "own-floods": the own flood allowance binds first, and a message still goes from what the
@@ -129,15 +129,15 @@ static void own_floods_bind_first(void) {
 
 /* Spends "relayed": frames passed on empty the relayed part; the node's own still go. */
 static void relayed_part_is_apart(void) {
-    struct offer o[19];
-    for (int i = 0; i < 15; i++) {
-        o[i] = (struct offer){0, 0x48, false, 255, i < 14};
+    struct offer o[18];
+    for (int i = 0; i < 14; i++) {
+        o[i] = (struct offer){0, 0x48, false, 255, i < 13};
     }
-    o[15] = (struct offer){0, 0x48, true, 255, true};
-    o[16] = (struct offer){0, 0x50, false, 19, true};
-    o[17] = (struct offer){825599999, 0x48, false, 255, false};
-    o[18] = (struct offer){825600000, 0x48, false, 255, true};
-    spend(true, o, 19);
+    o[14] = (struct offer){0, 0x48, true, 255, true};
+    o[15] = (struct offer){0, 0x50, false, 19, true};
+    o[16] = (struct offer){4582399999, 0x48, false, 255, false};
+    o[17] = (struct offer){4582400000, 0x48, false, 255, true};
+    spend(true, o, 18);
 }
 
 /* Spends "relayed-floods": the relay flood allowance binds first, and other frames passed on
@@ -170,15 +170,15 @@ static void waits(const struct node *n, tsim_time at, const uint8_t *hdr, const 
 
 static void estimates_are_the_vectors(void) {
     struct node n;
-    /* "messages" and "later": a leaf that spent fourteen 255-byte frames at 0. */
+    /* "messages" and "later": a leaf that spent twenty-nine 255-byte frames at 0. */
     node_init(&n, false);
-    for (int i = 0; i < 14; i++) {
+    for (int i = 0; i < 29; i++) {
         offer(&n, 0, 0x48, true, 255);
     }
     const uint8_t m3[] = {0x48, 0x48, 0x48};
     const uint32_t l3[] = {255, 67, 255};
-    waits(&n, 0, m3, l3, 3, (const int64_t[]){12, 25, 66});
-    waits(&n, TSIM_S(30), m3, l3, 3, (const int64_t[]){0, 0, 36});
+    waits(&n, 0, m3, l3, 3, (const int64_t[]){12, 19, 39});
+    waits(&n, TSIM_S(30), m3, l3, 3, (const int64_t[]){0, 0, 9});
 
     /* "group-behind-message": a group frame waits for the flood bucket behind a message. */
     node_init(&n, false);
@@ -191,13 +191,13 @@ static void estimates_are_the_vectors(void) {
     waits(&n, 0, (const uint8_t[]){0x48, 0x60, 0x60}, (const uint32_t[]){255, 255, 120}, 3,
           (const int64_t[]){0, 53, 95});
 
-    /* "us915": eighteen frames spent, then four short ones. */
+    /* "us915": thirty-seven frames spent, then four short ones. */
     node_init(&n, true);
-    for (int i = 0; i < 18; i++) {
+    for (int i = 0; i < 37; i++) {
         offer(&n, 0, 0x48, true, 255);
     }
     waits(&n, 0, (const uint8_t[]){0x48, 0x48, 0x48, 0x48}, (const uint32_t[]){23, 23, 23, 23}, 4,
-          (const int64_t[]){0, 0, 0, 2});
+          (const int64_t[]){0, 0, 3, 6});
 
     /* "message-behind-group": a message the own part could pay for waits as long as the group
      * frame ahead of it. */
@@ -213,23 +213,24 @@ static void estimates_are_the_vectors(void) {
 static void hand_worked(void) {
     struct node n;
     node_init(&n, false);
-    for (int i = 0; i < 14; i++) {
+    /* 2% of ten minutes is 12 s: twenty-nine 255-byte frames on EU868, and not thirty. */
+    for (int i = 0; i < 29; i++) {
         CHECK(offer(&n, 0, 0x48, true, 255));
     }
     CHECK(!offer(&n, 0, 0x48, true, 255));
-    /* What is left is 290.688 ms; the rest of a frame, 117.12 ms, takes 11.712 s to come. */
+    /* What is left is 173.568 ms; the rest of a frame, 234.24 ms, takes 11.712 s to come. */
     CHECK_EQ_I64(tsim_bucket_level(&n.budget.bucket[TSIM_BUCKET_OWN], 0),
-                 (int64_t)290688000 * 1000000);
+                 (int64_t)173568000 * 1000000);
     CHECK_EQ_I64(tsim_budget_wait(&n.budget, 0, TSIM_BUDGET_OWN, 407808000), 11712000000);
     CHECK(offer(&n, 11712000000, 0x48, true, 255));
     /* Then empty: an acknowledgement still goes, and leaves no debt. */
     CHECK(offer(&n, 11712000000, 0x50, true, 19));
     CHECK_EQ_I64(tsim_bucket_level(&n.budget.bucket[TSIM_BUCKET_OWN], 11712000000), 0);
-    CHECK(!offer(&n, 52492799999, 0x48, true, 255));
-    CHECK(offer(&n, 52492800000, 0x48, true, 255));
-    /* 8% of a minute is 4.8 s: fourteen 255-byte frames on US915. */
+    CHECK(!offer(&n, 32102399999, 0x48, true, 255));
+    CHECK(offer(&n, 32102400000, 0x48, true, 255));
+    /* 7% of a minute is 4.2 s: thirteen 255-byte frames on US915. */
     node_init(&n, true);
-    for (int i = 0; i < 14; i++) {
+    for (int i = 0; i < 13; i++) {
         CHECK(offer(&n, 0, 0x48, false, 255));
     }
     CHECK(!offer(&n, 0, 0x48, false, 255));
@@ -261,8 +262,8 @@ static void buckets_hold_a_frame_and_no_more_than_their_room(void) {
 static void params_are_checked(void) {
     struct tsim_budget_params p = tsim_budget_defaults();
     CHECK(p.mode == TSIM_BUDGET_MODE_OFF && tsim_budget_valid(&p));
-    CHECK(p.own_ppm == 10000 && p.own_window == TSIM_S(600));
-    CHECK(p.relayed_ppm == 80000 && p.relayed_window == TSIM_S(60));
+    CHECK(p.own_ppm == 20000 && p.own_window == TSIM_S(600));
+    CHECK(p.relayed_ppm == 70000 && p.relayed_window == TSIM_S(60));
     p.relayed_ppm = 0;
     CHECK(!tsim_budget_valid(&p));
     p = tsim_budget_defaults();

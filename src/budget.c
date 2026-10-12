@@ -6,9 +6,9 @@
 struct tsim_budget_params tsim_budget_defaults(void) {
     return (struct tsim_budget_params){
         .mode = TSIM_BUDGET_MODE_OFF,
-        .own_ppm = 10000,
+        .own_ppm = 20000,
         .own_window = TSIM_S(600),
-        .relayed_ppm = 80000,
+        .relayed_ppm = 70000,
         .relayed_window = TSIM_S(60),
         .floods = true,
         .flood_own_ppm = 5000,

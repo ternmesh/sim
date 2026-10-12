@@ -1,11 +1,14 @@
 # The airtime budget, measured
 
 The specification's `draft/airtime.md` (ternmesh/spec#42) gives every node an airtime budget in
-three parts: routing, as Routes' cap has it; the node's own frames, 1% of its time held over
-600 s; and, for a relay, the frames it passes on, 8% held over 60 s. A frame of its own that its
-part does not hold waits; a frame passed on is dropped; an acknowledgement always goes. Its numbers
-were set before the simulator kept one. This page is what keeping one does to candidate 3, beside
-Meshtastic and MeshCore, on the town and on the region's fast and deployed presets (MSH-92).
+three parts: routing, as Routes' cap has it; the node's own frames, held over 600 s; and, for a
+relay, the frames it passes on, held over 60 s. A frame of its own that its part does not hold
+waits; a frame passed on is dropped; an acknowledgement always goes. Its numbers were set before
+the simulator kept one: 1% of the node's time for its own frames and 8% for those passed on. This
+page is what keeping one does to candidate 3, beside Meshtastic and MeshCore, on the town and on
+the region's fast and deployed presets (MSH-92). On what it found the draft now has 2% and 7%,
+and so do `airtime.own` and `airtime.relayed` here by default; every row below says the shares it
+was run with.
 
 ## The answer
 
@@ -39,14 +42,15 @@ Meshtastic and MeshCore, on the town and on the region's fast and deployed prese
   3 to 10% on the deployed preset. The writers pay: their frames wait and nothing drops them, so
   every message they send goes out behind a backlog minutes long. See
   [Writing without pause](#writing-without-pause).
-- **Own 2% and relayed 7% delivers more unicast, sooner, than the draft's values.** It keeps the
-  budget at 9.6875% of a relay's time, as the draft's does. On the deployed preset it delivers
+- **Own 2% and relayed 7% delivers more unicast, sooner, than 1% and 8%.** It keeps the budget
+  at 9.6875% of a relay's time, as 1% and 8% did. On the deployed preset it delivers
   23.1/24.2/12.3% of unicasts on time at -5/0/20 dBm against 22.5/23.4/11.9% with no budget and
-  22.6/22.7/11.5% with the draft's, with a 95th-percentile delay of 72-126 s against 73-117 s and
+  22.6/22.7/11.5% with 1% and 8%, with a 95th-percentile delay of 72-126 s against 73-117 s and
   151-291 s. Its deliveries per second of airtime, 3.14/3.50/1.03, are above no budget's
-  (2.91/3.41/0.94) and below the draft's (3.25/3.86/1.38), whose held retries leave more of the
+  (2.91/3.41/0.94) and below 1% and 8%'s (3.25/3.86/1.38), whose held retries leave more of the
   channel to broadcasts. In the town at six times the traffic, 2% of own holds the budget near
-  off where 1% cuts unicast on time by three quarters.
+  off where 1% cuts unicast on time by three quarters. These are now the draft's values and the
+  defaults here.
 
 At the comparison's traffic candidate 3 leads Meshtastic and MeshCore in deliveries per second
 of airtime with the budget on as it did with it off. At six times that traffic on the deployed
@@ -81,7 +85,9 @@ message from every node every 30 minutes, a quarter broadcast, `--quick`. `--fas
 candidate on SF7 at 125 kHz over the same 200 sites; `--deployed` each on its own preset,
 candidate 3 on SF8 at 62.5 kHz with coding rate 4/8. Both hold every radio to the sub-band's 10%
 as well. Release build, the core from the firmware commit CI pins (e300726). The budget-off rows
-reproduce sensitivity.md's default rows to the digit.
+reproduce sensitivity.md's default rows to the digit. The runs were made when `airtime.budget=on`
+meant own 1% and relayed 8%; it now means 2% and 7%, so the commands below name the shares the
+rows were run at, and `c3 on` below is those.
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DTSIM_FIRMWARE_DIR=../firmware
@@ -89,13 +95,15 @@ cmake --build build
 tools/density.py --tsim build/tsim --fast --quick --seeds 3 --power=-5,0,20 \
     --candidates 1,2,3 --json fast.json
 tools/density.py --tsim build/tsim --fast --quick --seeds 3 --power=-5,0,20 \
-    --candidates 3 --json fast-on.json -s airtime.budget=on
+    --candidates 3 --json fast-on.json -s airtime.budget=on \
+    -s airtime.own=1% -s airtime.relayed=8%
 ```
 
-and the same with `--deployed`. Each row below adds its settings to the second command:
-`-s airtime.relayed=4%`, `-s airtime.own=2%`, `-s 'traffic.interval=5 min'` for the heavier
-traffic, `-s traffic.chatty=0.05 -s 'traffic.chatty_interval=10 s'` for nodes writing without
-pause. density.py prints `held`, `drop`, `busy` and `hit` where a run keeps the budget; the
+and the same with `--deployed`. Each row below adds its settings to the second command, a share
+it names replacing the 1% or 8% there: `-s airtime.relayed=4%`, `-s airtime.own=2%`,
+`-s 'traffic.interval=5 min'` for the heavier traffic, `-s traffic.chatty=0.05
+-s 'traffic.chatty_interval=10 s'` for nodes writing without pause. The town's runs below name
+the shares the same way. density.py prints `held`, `drop`, `busy` and `hit` where a run keeps the budget; the
 busiest relay's own figures are in its `--json`, under `busiest`.
 
 The town is `scenarios/town-distvec.tsim`, every one of its 200 nodes a relay, at SF9 and 20 dBm,
@@ -103,7 +111,8 @@ with `town.tsim` (flooding) and `town-meshtastic.tsim` beside it, 5 seeds:
 
 ```bash
 for seed in 1 2 3 4 5; do
-    build/tsim -s seed=$seed -s airtime.budget=on scenarios/town-distvec.tsim
+    build/tsim -s seed=$seed -s airtime.budget=on -s airtime.own=1% -s airtime.relayed=8% \
+        scenarios/town-distvec.tsim
 done
 ```
 
@@ -138,7 +147,7 @@ On the deployed preset the two parts do different things. Taken apart:
 |---|---|---|---|---|---|---|---|---|---|
 | no budget | -5 / 0 / 20 | 2.91 / 3.41 / 0.94 | 22.5 / 23.4 / 11.9 | 20.8 / 23.3 / 5.7 | - | - | 75 / 73 / 117 | - | - |
 | relayed part only | -5 / 0 / 20 | 2.95 / 3.34 / 0.92 | 22.2 / 23.7 / 12.1 | 20.9 / 22.8 / 5.5 | 0 | - | 76 / 76 / 115 | 1.3 / 0.54 / 0.06% | 3.8 / 1.8 / 0.3% |
-| own 1%, relayed 8% (draft) | -5 / 0 / 20 | 3.25 / 3.86 / 1.38 | 22.6 / 22.7 / 11.5 | 22.2 / 24.6 / 8.4 | 3,111 / 4,629 / 4,410 | 63 / 64 / 63 | 151 / 279 / 291 | 1.2 / 0.66 / 0.07% | 3.6 / 1.8 / 0.4% |
+| own 1%, relayed 8% (the draft's first) | -5 / 0 / 20 | 3.25 / 3.86 / 1.38 | 22.6 / 22.7 / 11.5 | 22.2 / 24.6 / 8.4 | 3,111 / 4,629 / 4,410 | 63 / 64 / 63 | 151 / 279 / 291 | 1.2 / 0.66 / 0.07% | 3.6 / 1.8 / 0.4% |
 | own 2%, relayed 8% | -5 / 0 / 20 | 3.04 / 3.50 / 0.91 | 22.8 / 24.8 / 12.0 | 21.4 / 23.6 / 5.4 | 310 / 689 / 434 | 27 / 29 / 29 | 78 / 77 / 121 | 1.1 / 0.50 / 0.05% | 3.5 / 1.4 / 0.2% |
 | own 4%, relayed 8% | -5 / 0 / 20 | 2.94 / 3.36 / 0.91 | 22.9 / 24.1 / 12.2 | 20.8 / 22.9 / 5.5 | 1 / 6 / 0 | 3 / 5 / - | 74 / 77 / 117 | 1.3 / 0.57 / 0.04% | 3.9 / 1.7 / 0.2% |
 | own 2%, relayed 7% | -5 / 0 / 20 | 3.14 / 3.50 / 1.03 | 23.1 / 24.2 / 12.3 | 22.0 / 23.7 / 6.2 | 348 / 666 / 441 | 28 / 29 / 28 | 72 / 77 / 126 | 2.0 / 0.92 / 0.12% | 5.8 / 2.8 / 0.5% |
@@ -174,8 +183,8 @@ busiest relays drop:
 | 2% | 54.5 / 84.6 / 98.7 | 27.0 / 31.2 / 59.9 | 7.8 / 8.8 / 0.2% | 12.9 / 18.0 / 8.6 | 4.45 / 5.80 / 3.21 | 42 / 35 / 23% | 97.8 |
 | 1% | 35.4 / 58.7 / 94.8 | 27.3 / 34.8 / 59.4 | 25 / 28 / 7.9% | 7.5 / 10.9 / 5.5 | 3.80 / 5.90 / 3.80 | 61 / 60 / 50% | 96.2 |
 
-Every row's own part is the draft's 1%, so the deployed preset's own frames wait as in the 8%
-row.
+Every row's own part is 1%, the draft's first, so the deployed preset's own frames wait as in
+the 8% row.
 
 Read the deployed columns with care: dropping more raises deliveries per second of airtime while
 unicast falls. What relays no longer pass on - mostly retries of frames that would have been lost
@@ -190,11 +199,11 @@ and unicast falls 5 points. In the town at that traffic the busiest relay passes
 
 ## The own part, and retries
 
-1% of 600 s is 6 s. The draft's rationale counted it against one try of a message; a message may
-go 24 times from its source, and where frames are lost it does. 24 tries of a 60-byte frame take
-2.9 s on the fast preset, 9.7 s at the town's SF9 and 16.9 s on the deployed preset. So the own
-part holds the frames of a node retrying hard, which is what it is for; but where the channel
-is busy that is every node, and what it holds goes late.
+1% of 600 s is 6 s. The draft's rationale first counted it against one try of a message; a
+message may go 24 times from its source, and where frames are lost it does. 24 tries of a 60-byte
+frame take 2.9 s on the fast preset, 9.7 s at the town's SF9 and 16.9 s on the deployed preset.
+So the own part holds the frames of a node retrying hard, which is what it is for; but where the
+channel is busy that is every node, and what it holds goes late.
 
 | a message every 5 min | dBm | unicast on time, % | per s | held | wait, s |
 |---|---|---|---|---|---|
@@ -259,8 +268,10 @@ wait, or on how many may, belongs in the specification with the companion protoc
   2% does (36 to 69% of their unicasts on time on the fast preset against 25 to 52%); 2% still
   delivers 1.5 to 2.9 times what no budget does for them.
 - 2% own and 7% relayed keep a relay's whole budget at 9.6875% of its time, within the 10% three
-  profiles allow. On the deployed preset they delivered more unicast on time than the draft's
-  values and than no budget, at every power, with delay back to no budget's.
+  profiles allow. On the deployed preset they delivered more unicast on time than 1% and 8% and
+  than no budget, at every power, with delay back to no budget's. The draft has since taken them
+  (ternmesh/spec, `draft/airtime.md`), and they are `airtime.own` and `airtime.relayed`'s
+  defaults.
 
 ## Not done
 
