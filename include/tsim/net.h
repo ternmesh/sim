@@ -139,10 +139,12 @@ struct tsim_net_stats {
 const struct tsim_net_stats *tsim_net_stats(const struct tsim_net *net, uint32_t node);
 
 /* For the books (tsim/metrics.h): brings a node's frames' waits for the airtime budget up to now -
- * starting those held back, ending those that could go - and returns how many wait; and from `at`
- * on, a wait adds to budget_waited only its part from `at`, so a window begun while a frame waited
- * counts no more of its wait than fell in it. budget_held counts a frame the first time it waits,
- * budget_gone each wait as it ends, and budget_waited how long the waits that ended took. */
+ * starting those held back, ending those that could go - and returns how many wait. And from `at`
+ * on, a new count: a wait adds to budget_waited only its part from `at`, so a window begun while
+ * a frame waited counts no more of its wait than fell in it, and every frame waiting at `at`, or
+ * coming to wait after, is counted held in it once. budget_held counts a frame the first time it
+ * waits in a count, budget_gone each wait as it ends, and budget_waited how long the waits that
+ * ended took. Settle every node before beginning a count. */
 uint32_t tsim_net_budget_settle(struct tsim_net *net, uint32_t node);
 void tsim_net_budget_count_from(struct tsim_net *net, tsim_time at);
 

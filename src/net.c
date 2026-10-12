@@ -5,10 +5,10 @@
 
 struct queued {
     uint64_t handle;
-    /* Its wait for the airtime budget (budget_track()): whether it has ever waited, when its
-     * present wait began, -1 while it is not waiting, and when no frame of the node's own was ahead
-     * of it any more, -1 until then. */
-    bool held;
+    /* Its wait for the airtime budget (budget_track()): the count it was last counted held in
+     * (tsim_net_budget_count_from()), 0 for none; when its present wait began, -1 while it is not
+     * waiting; and when no frame of the node's own was ahead of it any more, -1 until then. */
+    uint32_t held_in;
     tsim_time wait_from;
     tsim_time first_at;
     struct tsim_tx tx;
@@ -105,6 +105,7 @@ struct tsim_net {
     /* One 255-byte frame at the listen modulation: the least a bucket holds. */
     tsim_time budget_frame;
     tsim_time budget_from; /* see tsim_net_budget_count_from() */
+    uint32_t budget_count; /* and how many times it was called, from 1 */
 };
 
 static void kick(struct tsim_node *nd);
@@ -198,6 +199,7 @@ struct tsim_net *tsim_net_create(struct tsim_sched *sched, const struct tsim_net
     net->mac_config = mac_config;
     net->n = nodes;
     net->next_handle = 1;
+    net->budget_count = 1;
     net->nodes = calloc(nodes, sizeof *net->nodes);
     struct tsim_phy_params phy = params->phy;
     phy.fading_seed = params->seed;
@@ -668,7 +670,7 @@ uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
     size_t at = insert_at(nd, tx);
     uint64_t handle = net->next_handle++;
     memmove(&nd->queue[at + 1], &nd->queue[at], (nd->queue_len - at) * sizeof *nd->queue);
-    nd->queue[at] = (struct queued){handle, false, -1, -1, *tx};
+    nd->queue[at] = (struct queued){handle, 0, -1, -1, *tx};
     nd->queue_len++;
     nd->stats.queued++;
     /* The MAC may send or cancel from inside the kick, which moves the queue under `at`. */
@@ -896,8 +898,8 @@ static void budget_track(struct tsim_node *nd) {
         bool held = held_at(nd, stop, i, &q->tx);
         if (held && q->wait_from < 0) {
             q->wait_from = now;
-            nd->stats.budget_held += !q->held;
-            q->held = true;
+            nd->stats.budget_held += q->held_in != nd->net->budget_count;
+            q->held_in = nd->net->budget_count;
         } else if (!held && q->wait_from >= 0) {
             tsim_time end = end_wait(nd, q, ahead);
             ahead = end > ahead ? end : ahead;
@@ -1163,7 +1165,20 @@ uint32_t tsim_net_budget_settle(struct tsim_net *net, uint32_t node) {
     return n;
 }
 
-void tsim_net_budget_count_from(struct tsim_net *net, tsim_time at) { net->budget_from = at; }
+void tsim_net_budget_count_from(struct tsim_net *net, tsim_time at) {
+    net->budget_from = at;
+    net->budget_count++;
+    /* A frame waiting now is held in the count that begins now, and counted so once. */
+    for (uint32_t i = 0; i < net->n; i++) {
+        struct tsim_node *nd = &net->nodes[i];
+        for (size_t k = 0; !nd->off && k < nd->queue_len; k++) {
+            if (nd->queue[k].wait_from >= 0) {
+                nd->queue[k].held_in = net->budget_count;
+                nd->stats.budget_held++;
+            }
+        }
+    }
+}
 
 uint64_t tsim_node_head_handle(const struct tsim_node *nd) {
     size_t at = head_at(nd);

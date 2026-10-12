@@ -1214,6 +1214,34 @@ static void shadow_mode_counts_a_frame_held_when_it_is_first_short(void) {
     rig_close(&r);
 }
 
+/* A frame that waited before the window, could go as it began, and waits again in it - an
+ * acknowledgement having emptied its part - is held in the window: once, with its second wait. */
+static void a_frame_waiting_again_in_the_window_is_held_in_it(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 16);
+    struct tsim_metrics *m = tsim_metrics_create(r.net, TSIM_S(60));
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    tsim_time full = airtime(255);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, full);
+    tsim_node_send(n, &own); /* waits until 100 airtimes */
+    run_for(&r, 200 * full);
+    tsim_metrics_begin(m);
+    struct tsim_tx ack = marked(TSIM_PURPOSE_CONTROL, 3, 255, TSIM_BUDGET_OWN | TSIM_BUDGET_ACK);
+    tsim_node_send(n, &ack);
+    CHECK(tsim_node_transmit(n)); /* the part is empty again: the frame waits again */
+    run_for(&r, 200 * full);
+    struct tsim_report rep;
+    tsim_metrics_report(m, &rep);
+    CHECK_EQ_U64(rep.budget.held, 1);
+    double want = (double)(100 * full) / 1e9;
+    CHECK(rep.budget.wait_mean_s > want - 1e-6 && rep.budget.wait_mean_s < want + 1e-6);
+    tsim_metrics_destroy(m);
+    rig_close(&r);
+}
+
 /* In shadow mode nothing is kicked when a frame's buckets fill, so the report brings its wait up to
  * date itself: a frame free to go but not yet sent has waited, and waits no more. */
 static void a_report_ends_a_wait_nothing_kicked_for(void) {
@@ -1384,6 +1412,7 @@ int main(void) {
     RUN(a_frame_free_to_go_as_the_window_begins_is_not_waiting);
     RUN(a_wait_behind_another_ends_when_that_one_is_gone);
     RUN(a_report_ends_a_wait_nothing_kicked_for);
+    RUN(a_frame_waiting_again_in_the_window_is_held_in_it);
     RUN(a_frame_that_will_wait_takes_no_room_in_the_queue);
     RUN(room_is_decided_where_a_frame_would_land);
     RUN(a_node_keeps_32_of_its_own_however_long_its_queue);
