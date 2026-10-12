@@ -268,6 +268,12 @@ static void params_are_checked(void) {
     p = tsim_budget_defaults();
     p.own_window = TSIM_S(3601);
     CHECK(!tsim_budget_valid(&p));
+    /* A mode out of range either way, as a caller embedding the simulator might pass. */
+    p = tsim_budget_defaults();
+    p.mode = (enum tsim_budget_mode) - 1;
+    CHECK(!tsim_budget_valid(&p));
+    p.mode = (enum tsim_budget_mode)(TSIM_BUDGET_MODE_SHADOW + 1);
+    CHECK(!tsim_budget_valid(&p));
 }
 
 int main(void) {

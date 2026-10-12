@@ -23,8 +23,8 @@ static bool share_ok(uint32_t ppm, tsim_time window) {
 }
 
 bool tsim_budget_valid(const struct tsim_budget_params *p) {
-    return p->mode <= TSIM_BUDGET_MODE_SHADOW && share_ok(p->own_ppm, p->own_window) &&
-           share_ok(p->relayed_ppm, p->relayed_window) &&
+    return (int)p->mode >= TSIM_BUDGET_MODE_OFF && p->mode <= TSIM_BUDGET_MODE_SHADOW &&
+           share_ok(p->own_ppm, p->own_window) && share_ok(p->relayed_ppm, p->relayed_window) &&
            share_ok(p->flood_own_ppm, p->flood_own_window) &&
            share_ok(p->flood_relayed_ppm, p->flood_relayed_window);
 }
