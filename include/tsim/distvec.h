@@ -462,10 +462,11 @@
  * flood is the node's own if it is the message's source and passed on otherwise; an
  * acknowledgement likewise by who made it, and a hop acknowledgement is always its own; a
  * broadcast is a flood, its own or passed on. Announces, requests, probes, solicits and their
- * answers, and route replies are routing's, which the cap pays for, and carry no mark. A frame
- * the network drops for the budget is forgotten as a withdrawn one: a copy sent again goes on
- * again, and the hop before, hearing nothing, tries again or another way. What it measured is in
- * docs/airtime.md.
+ * answers, and route replies are routing's, which the cap pays for, and carry no mark. A data or
+ * acknowledgement frame the network drops for the budget is forgotten as a withdrawn one: the hop
+ * before, hearing nothing, sends it again, and it goes on again, or another way. A flood dropped
+ * so is done with, as draft/flooding.md has it: it stays seen, and later copies are ignored.
+ * What it measured is in docs/airtime.md.
  *
  * Not yet here, and left out of MSH-41 for an issue of its own: the store-and-forward floor,
  * which only shows its worth under mobility and churn. */

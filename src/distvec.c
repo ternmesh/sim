@@ -4338,8 +4338,10 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
 }
 
 /* The network dropped a frame this node was to pass on, which the airtime budget did not pay for
- * (tsim/net.h): it is no longer on its way out, so a copy sent this node again goes on again, and
- * a broadcast relay is no longer held for copies heard. */
+ * (tsim/net.h). A data or acknowledgement frame is no longer on its way out, so when the hop
+ * before, hearing nothing, sends it again, it goes on again. A broadcast or rescue flood is done
+ * with: it stays seen, and a later copy is a copy, ignored, as the specification's
+ * draft/flooding.md has a flooded frame passed on once or dropped, and never offered again. */
 static void router_withdrawn(void *self, uint64_t handle) {
     struct router *r = self;
     for (size_t i = 0; i < r->hop_count; i++) {

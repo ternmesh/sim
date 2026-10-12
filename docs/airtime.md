@@ -64,7 +64,8 @@ routing marks any, so Meshtastic and MeshCore run as they did. A frame of the no
 buckets do not hold is passed over by the MAC with every frame of its own behind it, while frames
 passed on and routing's go by. A frame passed on is dropped if its buckets do not hold it when the
 MAC would send it, after the duty cycle and the routing's own check, and candidate 3 forgets it as
-a withdrawn frame, so the hop before, hearing nothing, sends it again or another way. A node keeps
+a withdrawn frame, so the hop before, hearing nothing, sends it again or another way; a flood
+dropped so stays seen, and its later copies are ignored, as `draft/flooding.md` has it. A node keeps
 at most 32 of its own frames waiting, a board's companion link's worth (LINK_MESSAGES); one more
 is refused. `airtime.budget = shadow` sends everything and counts what would have waited or been
 dropped.
