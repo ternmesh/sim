@@ -25,17 +25,17 @@ Meshtastic and MeshCore, on the town and on the region's fast and deployed prese
   `SALVAGE` in `draft/forwarding.md`). A 60-byte frame takes 0.12 s on the fast preset but
   0.40 s at SF9 in the town and 0.71 s on the deployed preset, so where frames are lost one or two
   messages' retries spend the own part's 6 s. On the deployed preset at the comparison's own
-  traffic it held 3,100 to 4,600 frames an hour for about 2 minutes each, the 95th-percentile
-  unicast delay rising from 73-117 s to 151-291 s. Unicast on time did not move, and deliveries
+  traffic it held frames 3,100 to 4,600 times an hour, about a minute at a time, the
+  95th-percentile unicast delay rising from 73-117 s to 151-291 s. Unicast on time did not move, and deliveries
   per second of airtime rose 12 to 47%: the retries it held back were mostly lost anyway.
 - **Under load the own part collapses delivery.** With a message from every node every 5 minutes,
   six times the comparison's, candidate 3 in the town falls from 19.9% of unicasts on time to
-  5.1%, and on the deployed preset from 2.1-3.7% to 0.3-0.7%, each held message waiting 7 to 20
-  minutes. With 2% the town delivers 18.7% and the deployed preset 1.8-3.0%, near the budget off;
+  4.9%, and on the deployed preset from 2.1-3.7% to 0.2-0.7%, the unicasts it still delivers
+  there arriving up to 31 to 42 minutes late (95th percentile). With 2% the town delivers 18.7% and the deployed preset 1.8-3.0%, near the budget off;
   with 4% nothing in the town is held.
 - **Against nodes that write without pause it does what it is for.** With a twentieth of the
-  nodes sending a message every 10 seconds, the other nodes' unicasts arrive on time 36 to 70% of
-  the time on the fast preset with the budget, against 14 to 19% without, and 10 to 18% against
+  nodes sending a message every 10 seconds, the other nodes' unicasts arrive on time 36 to 69% of
+  the time on the fast preset with the budget, against 14 to 19% without, and 11 to 18% against
   3 to 10% on the deployed preset. The writers pay: their frames wait and nothing drops them, so
   every message they send goes out behind a backlog minutes long. See
   [Writing without pause](#writing-without-pause).
@@ -50,7 +50,7 @@ Meshtastic and MeshCore, on the town and on the region's fast and deployed prese
 
 At the comparison's traffic candidate 3 leads Meshtastic and MeshCore in deliveries per second
 of airtime with the budget on as it did with it off. At six times that traffic on the deployed
-preset, the own part at 1% takes it below both at -5 and 0 dBm (0.25 and 0.11 against MeshCore's
+preset, the own part at 1% takes it below both at -5 and 0 dBm (0.24 and 0.10 against MeshCore's
 0.38 and 0.41); at 2% it stays above them.
 
 ## What was built
@@ -108,8 +108,10 @@ done
 ```
 
 In the tables, per s is on-time deliveries per second of airtime; held, own frames that waited,
-every node, an hour, those waiting as the hour began among them; wait, how long those that went
-waited, counting only their wait within the hour; dropped, frames passed on that were dropped as a share of all relays were
+every node, an hour, those waiting as the hour began among them; wait, how long a wait took,
+counting only its part within the hour - a frame waits while it is short or behind one of its
+own that is, until it could go, and one held behind another and then for its own part waits
+twice; dropped, frames passed on that were dropped as a share of all relays were
 asked to pass on; ten busiest, the same at the ten nodes asked to pass on the most; relay share,
 the busiest relay's airtime passing frames on over the hour.
 
@@ -121,12 +123,12 @@ the busiest relay's airtime passing frames on over the hour.
 | fast | 0 | 4.89 / 2.86 / 34.84 / 34.84 | 91.2 / 91.2 | 66.9 / 66.9 | 0 | 0 | 0 | 2.0% |
 | fast | 20 | 3.79 / 2.48 / 56.01 / 56.01 | 98.6 / 98.6 | 90.2 / 90.2 | 0 | 0 | 0 | 1.0% |
 | deployed | -5 | 0.65 / 0.43 / 2.91 / 3.25 | 22.5 / 22.6 | 20.8 / 22.2 | 3,111 | 1.2% | 3.6% | 5.6% |
-| deployed | 0 | 0.78 / 0.44 / 3.41 / 3.86 | 23.4 / 22.7 | 23.3 / 24.6 | 4,628 | 0.66% | 1.8% | 4.5% |
-| deployed | 20 | 0.18 / 0.34 / 0.94 / 1.38 | 11.9 / 11.5 | 5.7 / 8.4 | 4,409 | 0.07% | 0.4% | 3.0% |
-| town | 20 | 0.55 (flooding 0.88) / - / 3.04 / 3.00 | 99.0 / 99.3 | 95.7 / 94.0 | 4 | 0 | 0 | 0.7% |
+| deployed | 0 | 0.78 / 0.44 / 3.41 / 3.86 | 23.4 / 22.7 | 23.3 / 24.6 | 4,629 | 0.66% | 1.8% | 4.5% |
+| deployed | 20 | 0.18 / 0.34 / 0.94 / 1.38 | 11.9 / 11.5 | 5.7 / 8.4 | 4,410 | 0.07% | 0.4% | 3.0% |
+| town | 20 | 0.55 (flooding 0.88) / - / 3.04 / 3.00 | 99.0 / 99.3 | 95.7 / 94.0 | 5 | 0 | 0 | 0.7% |
 
 On the fast preset the budget changes nothing: no frame waits, none is dropped, and shadow mode
-finds none it would have held or dropped. In the town 4 frames an hour wait, a node whose next hop
+finds none it would have held or dropped. In the town 5 frames an hour wait, a node whose next hop
 kept missing its two messages sending 31 frames in a minute; the differences are within the seeds'
 spread (unicast ±0.4, deliveries per second ±0.13).
 
@@ -136,16 +138,18 @@ On the deployed preset the two parts do different things. Taken apart:
 |---|---|---|---|---|---|---|---|---|---|
 | no budget | -5 / 0 / 20 | 2.91 / 3.41 / 0.94 | 22.5 / 23.4 / 11.9 | 20.8 / 23.3 / 5.7 | - | - | 75 / 73 / 117 | - | - |
 | relayed part only | -5 / 0 / 20 | 2.95 / 3.34 / 0.92 | 22.2 / 23.7 / 12.1 | 20.9 / 22.8 / 5.5 | 0 | - | 76 / 76 / 115 | 1.3 / 0.54 / 0.06% | 3.8 / 1.8 / 0.3% |
-| own 1%, relayed 8% (draft) | -5 / 0 / 20 | 3.25 / 3.86 / 1.38 | 22.6 / 22.7 / 11.5 | 22.2 / 24.6 / 8.4 | 3,111 / 4,628 / 4,409 | 121 / 127 / 128 | 151 / 279 / 291 | 1.2 / 0.66 / 0.07% | 3.6 / 1.8 / 0.4% |
-| own 2%, relayed 8% | -5 / 0 / 20 | 3.04 / 3.50 / 0.91 | 22.8 / 24.8 / 12.0 | 21.4 / 23.6 / 5.4 | 310 / 688 / 432 | 50 / 58 / 59 | 78 / 77 / 121 | 1.1 / 0.50 / 0.05% | 3.5 / 1.4 / 0.2% |
-| own 4%, relayed 8% | -5 / 0 / 20 | 2.94 / 3.36 / 0.91 | 22.9 / 24.1 / 12.2 | 20.8 / 22.9 / 5.5 | 1 / 6 / 0 | 5 / 12 / - | 74 / 77 / 117 | 1.3 / 0.57 / 0.04% | 3.9 / 1.7 / 0.2% |
-| own 2%, relayed 7% | -5 / 0 / 20 | 3.14 / 3.50 / 1.03 | 23.1 / 24.2 / 12.3 | 22.0 / 23.7 / 6.2 | 348 / 665 / 438 | 52 / 57 / 60 | 72 / 77 / 126 | 2.0 / 0.92 / 0.12% | 5.8 / 2.8 / 0.5% |
+| own 1%, relayed 8% (draft) | -5 / 0 / 20 | 3.25 / 3.86 / 1.38 | 22.6 / 22.7 / 11.5 | 22.2 / 24.6 / 8.4 | 3,111 / 4,629 / 4,410 | 63 / 64 / 63 | 151 / 279 / 291 | 1.2 / 0.66 / 0.07% | 3.6 / 1.8 / 0.4% |
+| own 2%, relayed 8% | -5 / 0 / 20 | 3.04 / 3.50 / 0.91 | 22.8 / 24.8 / 12.0 | 21.4 / 23.6 / 5.4 | 310 / 689 / 434 | 27 / 29 / 29 | 78 / 77 / 121 | 1.1 / 0.50 / 0.05% | 3.5 / 1.4 / 0.2% |
+| own 4%, relayed 8% | -5 / 0 / 20 | 2.94 / 3.36 / 0.91 | 22.9 / 24.1 / 12.2 | 20.8 / 22.9 / 5.5 | 1 / 6 / 0 | 3 / 5 / - | 74 / 77 / 117 | 1.3 / 0.57 / 0.04% | 3.9 / 1.7 / 0.2% |
+| own 2%, relayed 7% | -5 / 0 / 20 | 3.14 / 3.50 / 1.03 | 23.1 / 24.2 / 12.3 | 22.0 / 23.7 / 6.2 | 348 / 666 / 441 | 28 / 29 / 28 | 72 / 77 / 126 | 2.0 / 0.92 / 0.12% | 5.8 / 2.8 / 0.5% |
 
-The relayed part alone costs nothing measurable. The own part at 1% holds a frame for two
-minutes, which is past the 60 s deadline: the messages it holds arrive late or not at all, and
-since the channel is full they mostly would not have arrived anyway. What it saves in retries
-goes to broadcasts and lifts deliveries per second of airtime. At 2% it holds a tenth as many,
-for a minute, and delay is back where it was.
+The relayed part alone costs nothing measurable. The own part at 1% holds frames 3,100 to 4,600
+times an hour, about a minute at a time, and a frame may be held more than once: behind one of
+its own that is short, and then for its own part when that one has emptied it. The messages it
+holds arrive late, past the 60 s deadline, or not at all, and since the channel is full they
+mostly would not have arrived anyway. What it saves in retries goes to broadcasts and lifts
+deliveries per second of airtime. At 2% it holds a tenth as many, for under half a minute, and
+delay is back where it was.
 
 ## The relayed part, and the busiest relays
 
@@ -170,10 +174,8 @@ busiest relays drop:
 | 2% | 54.5 / 84.6 / 98.7 | 27.0 / 31.2 / 59.9 | 7.8 / 8.8 / 0.2% | 12.9 / 18.0 / 8.6 | 4.45 / 5.80 / 3.21 | 42 / 35 / 23% | 97.8 |
 | 1% | 35.4 / 58.7 / 94.8 | 27.3 / 34.8 / 59.4 | 25 / 28 / 7.9% | 7.5 / 10.9 / 5.5 | 3.80 / 5.90 / 3.80 | 61 / 60 / 50% | 96.2 |
 
-The 16% row was run before the 32-frame limit on waiting frames was added, which changes no run on
-the deployed preset at this traffic: its 8% and 12% rows are the same to the digit with it and
-without. Every row's own part is the draft's 1%, so the deployed preset's own frames wait as in the
-8% row.
+Every row's own part is the draft's 1%, so the deployed preset's own frames wait as in the 8%
+row.
 
 Read the deployed columns with care: dropping more raises deliveries per second of airtime while
 unicast falls. What relays no longer pass on - mostly retries of frames that would have been lost
@@ -197,15 +199,15 @@ is busy that is every node, and what it holds goes late.
 | a message every 5 min | dBm | unicast on time, % | per s | held | wait, s |
 |---|---|---|---|---|---|
 | town, no budget | 20 | 19.9 | 0.85 | - | - |
-| town, own 1% | 20 | 5.1 | 0.36 | 18,824 | 404 |
-| town, own 2% | 20 | 18.7 | 0.88 | 1,627 | 65 |
+| town, own 1% | 20 | 4.9 | 0.36 | 18,774 | 77 |
+| town, own 2% | 20 | 18.7 | 0.88 | 1,627 | 18 |
 | town, own 4% | 20 | 20.4 | 0.84 | 0 | - |
 | town, flooding / Meshtastic | 20 | 24.8 / 1.5 | 1.08 / 0.11 | - | - |
 | fast, no budget | -5 / 0 / 20 | 24.4 / 21.0 / 27.0 | 16.1 / 26.4 / 5.1 | - | - |
-| fast, own 1% | -5 / 0 / 20 | 24.9 / 21.4 / 27.0 | 15.6 / 26.4 / 5.1 | 0 / 19 / 63 | - / 23 / 23 |
+| fast, own 1% | -5 / 0 / 20 | 24.9 / 21.4 / 27.0 | 15.6 / 26.4 / 5.1 | 0 / 19 / 63 | - / 11 / 10 |
 | deployed, no budget | -5 / 0 / 20 | 3.7 / 3.3 / 2.1 | 0.73 / 0.59 / 0.64 | - | - |
-| deployed, own 1% | -5 / 0 / 20 | 0.6 / 0.3 / 0.7 | 0.25 / 0.11 / 0.18 | 76,506 / 87,192 / 61,836 | 998 / 1,082 / 1,186 |
-| deployed, own 2% | -5 / 0 / 20 | 3.0 / 2.6 / 1.8 | 0.70 / 0.57 / 0.52 | 30,701 / 34,929 / 11,765 | 183 / 189 / 270 |
+| deployed, own 1% | -5 / 0 / 20 | 0.7 / 0.2 / 0.7 | 0.24 / 0.10 / 0.17 | 76,765 / 87,131 / 61,639 | 210 / 219 / 211 |
+| deployed, own 2% | -5 / 0 / 20 | 3.0 / 2.6 / 1.8 | 0.70 / 0.56 / 0.56 | 30,699 / 35,347 / 12,074 | 56 / 56 / 59 |
 | fast, Meshtastic / MeshCore | -5 / 0 / 20 | 6.9 / 12.5 / 1.3 and 10.5 / 14.9 / 8.8 | 4.77 / 6.14 / 0.88 and 2.08 / 2.95 / 2.64 | - | - |
 | deployed, Meshtastic / MeshCore | -5 / 0 / 20 | 2.8 / 1.6 / 0.1 and 2.8 / 2.8 / 1.3 | 0.55 / 0.35 / 0.09 and 0.38 / 0.41 / 0.21 | - | - |
 
@@ -216,7 +218,7 @@ next to nothing is delivered anyway. On the fast preset, where a frame is short,
 almost nothing even at this traffic.
 
 The flood allowances inside the own part are not what binds: the town with `airtime.floods = no`
-held as many frames (18,907) and delivered as little (4.8%).
+held as many frames (18,901) and delivered as little (4.8%).
 
 ## Writing without pause
 
@@ -227,15 +229,15 @@ of the nodes each send a message every 10 seconds, 180 times the others' rate
 | | dBm | the others' unicast on time, % | the others' broadcast, % | all unicast on time, % | per s | held | wait, s |
 |---|---|---|---|---|---|---|---|
 | fast, no budget | -5 / 0 / 20 | 16.7 / 14.1 / 18.6 | 12.1 / 22.2 / 3.0 | 14.2 / 12.1 / 14.9 | 17.7 / 25.6 / 6.7 | - | - |
-| fast, own 1% | -5 / 0 / 20 | 36.2 / 40.7 / 69.8 | 20.2 / 41.9 / 43.2 | 3.5 / 3.9 / 6.7 | 4.0 / 7.8 / 11.4 | 15,212 / 19,010 / 19,780 | 349 / 352 / 358 |
-| fast, own 2% | -5 / 0 / 20 | 24.6 / 25.9 / 54.3 | 14.6 / 34.2 / 24.9 | 4.1 / 2.7 / 5.2 | 5.0 / 6.4 / 5.6 | 29,159 / 37,506 / 39,760 | 161 / 174 / 179 |
+| fast, own 1% | -5 / 0 / 20 | 35.9 / 40.3 / 69.1 | 19.9 / 42.2 / 44.6 | 3.5 / 3.9 / 6.6 | 4.0 / 7.8 / 11.8 | 15,199 / 19,041 / 20,194 | 69 / 68 / 52 |
+| fast, own 2% | -5 / 0 / 20 | 25.1 / 25.4 / 52.3 | 14.9 / 33.9 / 25.4 | 4.0 / 2.7 / 5.0 | 4.9 / 6.4 / 5.7 | 29,273 / 37,421 / 39,695 | 30 / 30 / 16 |
 | deployed, no budget | -5 / 0 / 20 | 8.1 / 10.4 / 3.5 | 7.9 / 9.5 / 0.5 | 1.6 / 1.7 / 1.7 | 1.87 / 1.83 / 1.98 | - | - |
-| deployed, own 1% | -5 / 0 / 20 | 16.8 / 17.8 / 9.8 | 16.2 / 18.8 / 5.8 | 1.6 / 1.7 / 0.9 | 2.04 / 2.54 / 0.86 | 7,701 / 9,226 / 8,861 | 980 / 861 / 876 |
-| deployed, own 2% | -5 / 0 / 20 | 15.3 / 16.1 / 9.8 | 12.6 / 14.2 / 3.0 | 1.5 / 1.5 / 0.9 | 1.43 / 1.68 / 0.43 | 7,698 / 8,132 / 7,736 | 917 / 895 / 919 |
+| deployed, own 1% | -5 / 0 / 20 | 17.3 / 18.0 / 10.5 | 16.6 / 19.7 / 6.7 | 1.7 / 1.7 / 1.0 | 2.08 / 2.67 / 0.97 | 7,721 / 9,296 / 8,942 | 297 / 268 / 276 |
+| deployed, own 2% | -5 / 0 / 20 | 15.6 / 16.5 / 10.0 | 12.9 / 14.5 / 2.6 | 1.5 / 1.6 / 1.0 | 1.45 / 1.72 / 0.37 | 7,739 / 8,229 / 7,992 | 201 / 190 / 162 |
 
 The writers' messages are nine in ten of all, so the columns for every message, the headline among
 them, are theirs, and fall. The other nodes' columns are what the own part is for: with it the
-rest of the mesh delivers 1.7 to 3.8 times as many unicasts on time, because the writers can no
+rest of the mesh delivers 1.7 to 3.7 times as many unicasts on time, because the writers can no
 longer fill the channel. At 2% the writers take more of it back.
 
 A writer's messages come faster than its own part lets them go. They wait in order and none is
@@ -254,8 +256,8 @@ wait, or on how many may, belongs in the specification with the companion protoc
 - `BUDGET_OWN` 1% binds on retries, not only on what a user writes, and at a heavier traffic
   than the comparison's it makes a full network markedly worse. 2% does not; 4% holds next to
   nothing. Against nodes that write without pause 1% protects the rest of the mesh better than
-  2% does (36 to 70% of their unicasts on time on the fast preset against 25 to 54%); 2% still
-  delivers 1.5 to 3 times what no budget does for them.
+  2% does (36 to 69% of their unicasts on time on the fast preset against 25 to 52%); 2% still
+  delivers 1.5 to 2.9 times what no budget does for them.
 - 2% own and 7% relayed keep a relay's whole budget at 9.6875% of its time, within the 10% three
   profiles allow. On the deployed preset they delivered more unicast on time than the draft's
   values and than no budget, at every power, with delay back to no budget's.
