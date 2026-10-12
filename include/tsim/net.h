@@ -130,7 +130,7 @@ struct tsim_net_stats {
     uint64_t budget_gone;    /* of them, those that have gone */
     tsim_time budget_waited; /* how long those waited, all together */
     uint64_t budget_dropped; /* frames it would have passed on, dropped */
-    uint64_t budget_relayed; /* frames passed on that the relayed part paid for, sent */
+    uint64_t budget_relayed; /* frames passed on that their buckets paid for, sent */
     uint64_t budget_short;   /* acknowledgements sent that their buckets did not hold */
 };
 

@@ -997,13 +997,16 @@ bool tsim_node_transmit(struct tsim_node *nd) {
     tsim_time airtime = tsim_lora_airtime(&tx->lora, tx->len);
     if (net->params.budget.mode != TSIM_BUDGET_MODE_OFF) {
         tsim_time now = tsim_sched_now(net->sched);
+        /* Only what the buckets paid for counts as relayed: in shadow mode one they did not is
+         * sent all the same, and was counted as dropped. */
+        if ((tx->budget & TSIM_BUDGET_RELAYED) && !(tx->budget & TSIM_BUDGET_ACK) &&
+            tsim_budget_paid(&nd->budget, now, tx->budget, airtime)) {
+            nd->stats.budget_relayed++;
+        }
         tsim_budget_charge(&nd->budget, now, tx->budget, airtime);
         if (nd->air.held_since >= 0) {
             nd->stats.budget_gone++;
             nd->stats.budget_waited += now - nd->air.held_since;
-        }
-        if ((tx->budget & TSIM_BUDGET_RELAYED) && !(tx->budget & TSIM_BUDGET_ACK)) {
-            nd->stats.budget_relayed++;
         }
     }
     nd->air_end = tsim_sched_now(nd->net->sched) + airtime;

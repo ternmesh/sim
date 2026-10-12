@@ -1075,7 +1075,12 @@ static void the_budget_drops_what_it_does_not_pay_to_pass_on(void) {
         CHECK(tsim_node_transmit(n)); /* shadow: the relayed frame; on: the node's own */
         run_for(&r, TSIM_S(1));
         CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_dropped, 1);
-        CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_relayed, shadow ? 2 : 1);
+        /* Two frames asked to be passed on: one paid for, one dropped - or in shadow mode sent
+         * unpaid, which counts as dropped and not as relayed, so the two add up to what was
+         * asked. */
+        CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_relayed, 1);
+        CHECK_EQ_U64(
+            tsim_net_stats(r.net, 0)->budget_relayed + tsim_net_stats(r.net, 0)->budget_dropped, 2);
         if (shadow) {
             CHECK(tsim_node_transmit(n)); /* the node's own */
             run_for(&r, TSIM_S(1));
