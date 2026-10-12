@@ -127,8 +127,8 @@ struct tsim_net_stats {
     uint64_t held;      /* times the radio held a frame back for the duty cycle */
     /* The airtime budget's books, in shadow mode what it would have done: */
     uint64_t budget_held;    /* frames of its own that waited for their buckets */
-    uint64_t budget_gone;    /* of them, those that have gone */
-    tsim_time budget_waited; /* how long those waited, all together */
+    uint64_t budget_gone;    /* waits that have ended, the frame free to go */
+    tsim_time budget_waited; /* how long those waits took, all together */
     uint64_t budget_dropped; /* frames it would have passed on, dropped */
     uint64_t budget_relayed; /* frames passed on that their buckets paid for, sent */
     uint64_t budget_short;   /* acknowledgements sent that their buckets did not hold */
@@ -136,10 +136,12 @@ struct tsim_net_stats {
 
 const struct tsim_net_stats *tsim_net_stats(const struct tsim_net *net, uint32_t node);
 
-/* For the books (tsim/metrics.h): how many frames of a node's own wait for the airtime budget now;
- * and from `at` on, a frame that waited adds to budget_waited only the part of its wait from `at`,
- * so a window begun while it waited counts no more of its wait than fell in it. */
-uint32_t tsim_net_budget_waiting(const struct tsim_net *net, uint32_t node);
+/* For the books (tsim/metrics.h): brings a node's frames' waits for the airtime budget up to now -
+ * starting those held back, ending those that could go - and returns how many wait; and from `at`
+ * on, a wait adds to budget_waited only its part from `at`, so a window begun while a frame waited
+ * counts no more of its wait than fell in it. budget_held counts a frame the first time it waits,
+ * budget_gone each wait as it ends, and budget_waited how long the waits that ended took. */
+uint32_t tsim_net_budget_settle(struct tsim_net *net, uint32_t node);
 void tsim_net_budget_count_from(struct tsim_net *net, tsim_time at);
 
 /* A drop of a message, as tsim_node_drop() booked it. */

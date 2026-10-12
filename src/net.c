@@ -5,8 +5,12 @@
 
 struct queued {
     uint64_t handle;
-    tsim_time held_since; /* when the budget first held it back, or -1 */
-    tsim_time first_at;   /* when no frame of the node's own was ahead of it any more, or -1 */
+    /* Its wait for the airtime budget (budget_track()): whether it has ever waited, when its
+     * present wait began, -1 while it is not waiting, and when no frame of the node's own was ahead
+     * of it any more, -1 until then. */
+    bool held;
+    tsim_time wait_from;
+    tsim_time first_at;
     struct tsim_tx tx;
 };
 
@@ -645,7 +649,7 @@ uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
     }
     uint64_t handle = net->next_handle++;
     memmove(&nd->queue[at + 1], &nd->queue[at], (nd->queue_len - at) * sizeof *nd->queue);
-    nd->queue[at] = (struct queued){handle, -1, -1, *tx};
+    nd->queue[at] = (struct queued){handle, false, -1, -1, *tx};
     nd->queue_len++;
     nd->stats.queued++;
     /* The MAC may send or cancel from inside the kick, which moves the queue under `at`. */
@@ -797,8 +801,6 @@ static void budget_fire(struct tsim_sched *sched, void *ctx) {
     }
 }
 
-/* Marks the frames waiting for the budget, and sets the kick for when the first of them is paid
- * for: until then nothing behind it can go either, whatever is charged meanwhile. */
 /* Marks when the first frame of the node's own in the queue came to be first: until then a frame
  * of its own ahead of it held it back, whatever its buckets held. */
 static void own_first(struct tsim_node *nd) {
@@ -812,29 +814,65 @@ static void own_first(struct tsim_node *nd) {
     }
 }
 
+/* Ends a frame's wait, and returns when it ended: when it could go - when its buckets came to hold
+ * it, when the frame of its own that held it back ahead of it stopped (`ahead`), or when no frame
+ * of its own was ahead of it any more, whichever was latest - and not when the MAC, drawing a wait
+ * of its own, sends it. One its buckets do not hold now, sent so in shadow mode, waited until now.
+ * Only the part from tsim_net_budget_count_from() on is counted. */
+static tsim_time end_wait(struct tsim_node *nd, struct queued *q, tsim_time ahead) {
+    struct tsim_net *net = nd->net;
+    tsim_time now = tsim_sched_now(net->sched);
+    tsim_time end = tsim_budget_paid_since(&nd->budget, now, q->tx.budget, airtime_of(&q->tx));
+    end = end < 0 ? now : end;
+    end = ahead > end ? ahead : end;
+    end = q->first_at > end ? q->first_at : end;
+    end = end < now ? end : now;
+    tsim_time from = q->wait_from > net->budget_from ? q->wait_from : net->budget_from;
+    nd->stats.budget_gone++;
+    nd->stats.budget_waited += end > from ? end - from : 0;
+    q->wait_from = -1;
+    return end;
+}
+
+/* The one place a frame of the node's own starts or stops waiting for the budget, as things stand
+ * now: it waits while it is held back - with the budget on, while it or a frame of its own ahead
+ * of it is short; in shadow mode the same, though nothing is held back - and stops when it could
+ * go. A frame counts held the first time it waits. */
+static void budget_track(struct tsim_node *nd) {
+    enum tsim_budget_mode mode = nd->net->params.budget.mode;
+    if (mode == TSIM_BUDGET_MODE_OFF) {
+        return;
+    }
+    own_first(nd);
+    size_t stop = mode == TSIM_BUDGET_MODE_SHADOW ? short_at(nd) : blocker(nd);
+    tsim_time now = tsim_sched_now(nd->net->sched);
+    tsim_time ahead = -1; /* when the waits ended this time ahead of the frame came to end */
+    for (size_t i = 0; i < nd->queue_len; i++) {
+        struct queued *q = &nd->queue[i];
+        if (!may_wait(&q->tx)) {
+            continue;
+        }
+        if (i >= stop && q->wait_from < 0) {
+            q->wait_from = now;
+            nd->stats.budget_held += !q->held;
+            q->held = true;
+        } else if (i < stop && q->wait_from >= 0) {
+            tsim_time end = end_wait(nd, q, ahead);
+            ahead = end > ahead ? end : ahead;
+        }
+    }
+}
+
+/* Tracks the frames waiting for the budget, and with it on sets the kick for when the first of
+ * them is paid for: until then nothing behind it can go either, whatever is charged meanwhile. */
 static void budget_arm(struct tsim_node *nd) {
     struct tsim_net *net = nd->net;
-    if (net->params.budget.mode != TSIM_BUDGET_MODE_OFF) {
-        own_first(nd);
-    }
-    /* In shadow mode they are marked as on, the first time their buckets are short, but nothing
-     * waits and nothing is kicked. */
-    bool shadow = net->params.budget.mode == TSIM_BUDGET_MODE_SHADOW;
-    size_t stop = shadow ? short_at(nd) : blocker(nd);
+    budget_track(nd);
+    size_t stop = blocker(nd);
     if (stop == nd->queue_len) {
         return;
     }
     tsim_time now = tsim_sched_now(net->sched);
-    for (size_t i = stop; i < nd->queue_len; i++) {
-        struct queued *q = &nd->queue[i];
-        if (may_wait(&q->tx) && q->held_since < 0) {
-            q->held_since = now;
-            nd->stats.budget_held++;
-        }
-    }
-    if (shadow) {
-        return;
-    }
     const struct tsim_tx *tx = &nd->queue[stop].tx;
     tsim_time when = now + tsim_budget_wait(&nd->budget, now, tx->budget, airtime_of(tx));
     if (tsim_sched_pending(net->sched, nd->budget_kick)) {
@@ -957,12 +995,7 @@ static bool budget_allows(struct tsim_node *nd, size_t at) {
     }
     if (tx->budget & TSIM_BUDGET_OWN) {
         if (mode == TSIM_BUDGET_MODE_SHADOW) {
-            /* Short since it was queued, or only now, after an acknowledgement was charged. */
-            if (nd->queue[at].held_since < 0) {
-                nd->queue[at].held_since = tsim_sched_now(net->sched);
-                nd->stats.budget_held++;
-            }
-            return true;
+            return true; /* budget_track() has it waiting, and it ends as it goes */
         }
         kick(nd); /* it waits now, and whatever is behind it may go */
         return false;
@@ -1027,9 +1060,6 @@ bool tsim_node_transmit(struct tsim_node *nd) {
     }
     remove_at(nd, at);
     nd->sending = true;
-    if (net->params.budget.mode != TSIM_BUDGET_MODE_OFF) {
-        own_first(nd); /* the frame of its own behind it, if any, is first now */
-    }
     nd->ledger.frames[tx->purpose]++;
     tsim_time airtime = tsim_lora_airtime(&tx->lora, tx->len);
     if (net->params.budget.mode != TSIM_BUDGET_MODE_OFF) {
@@ -1040,20 +1070,11 @@ bool tsim_node_transmit(struct tsim_node *nd) {
             tsim_budget_paid(&nd->budget, now, tx->budget, airtime)) {
             nd->stats.budget_relayed++;
         }
-        if (nd->air.held_since >= 0) {
-            /* Its wait ends when it could go: when its buckets came to hold it, or when no frame
-             * of its own was ahead of it any more, whichever was later - not when the MAC,
-             * drawing a wait of its own, sent it. In shadow mode one sent unpaid waited until now
-             * at least. */
-            tsim_time from =
-                nd->air.held_since > net->budget_from ? nd->air.held_since : net->budget_from;
-            tsim_time end = tsim_budget_paid_since(&nd->budget, now, tx->budget, airtime);
-            end = end < 0 ? now : end;
-            end = nd->air.first_at > end ? nd->air.first_at : end;
-            nd->stats.budget_gone++;
-            nd->stats.budget_waited += end > from ? end - from : 0;
+        if (nd->air.wait_from >= 0) {
+            end_wait(nd, &nd->air, -1); /* in shadow mode, sent short */
         }
         tsim_budget_charge(&nd->budget, now, tx->budget, airtime);
+        budget_track(nd); /* the frame of its own behind it, if any, is first now */
     }
     nd->air_end = tsim_sched_now(nd->net->sched) + airtime;
     nd->ledger.airtime[tx->purpose] += airtime;
@@ -1087,10 +1108,15 @@ bool tsim_node_tune(struct tsim_node *nd, uint16_t channel, const struct tsim_lo
     return tsim_phy_tune(nd->net->phy, nd->index, channel, listen);
 }
 
-uint32_t tsim_net_budget_waiting(const struct tsim_net *net, uint32_t node) {
+uint32_t tsim_net_budget_settle(struct tsim_net *net, uint32_t node) {
+    if (node >= net->n || net->nodes[node].off) {
+        return 0;
+    }
+    struct tsim_node *nd = &net->nodes[node];
+    budget_track(nd);
     uint32_t n = 0;
-    for (size_t i = 0; node < net->n && i < net->nodes[node].queue_len; i++) {
-        n += net->nodes[node].queue[i].held_since >= 0;
+    for (size_t i = 0; i < nd->queue_len; i++) {
+        n += nd->queue[i].wait_from >= 0;
     }
     return n;
 }

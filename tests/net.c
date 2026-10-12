@@ -1,5 +1,7 @@
 #include "tsim/net.h"
 
+#include "tsim/metrics.h"
+
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1034,8 +1036,10 @@ static void the_budget_holds_a_nodes_own_frames(void) {
     /* The small one goes once the part holds it again. */
     run_for(&r, TSIM_S(5));
     CHECK_EQ_U64(tsim_net_ledger(r.net, 0)->frames[TSIM_PURPOSE_DATA], 3);
-    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_gone, 2);
-    CHECK(tsim_net_stats(r.net, 0)->budget_waited >= 2 * (100 * full - 2 * full));
+    /* Three waits, two frames held: the small one waited behind the first until that one could
+     * go, at 100 airtimes, and then for its own part, which the first had emptied. */
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_gone, 3);
+    CHECK(tsim_net_stats(r.net, 0)->budget_waited >= 2 * (100 * full - full));
     CHECK(tsim_net_stats(r.net, 0)->budget_held == 2 && r.log.withdrawals == 0);
     rig_close(&r);
 }
@@ -1161,6 +1165,33 @@ static void a_wait_behind_another_ends_when_that_one_is_gone(void) {
     rig_close(&r);
 }
 
+/* A frame its buckets came to hold before the window began, still waiting on the MAC as it began,
+ * no longer waits for the budget: the window counts no frame held and no wait. */
+static void a_frame_free_to_go_as_the_window_begins_is_not_waiting(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 16);
+    struct tsim_metrics *m = tsim_metrics_create(r.net, TSIM_S(60));
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    tsim_time full = airtime(255);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, full);
+    tsim_node_send(n, &own); /* held; free to go at 100 airtimes */
+    run_for(&r, 200 * full);
+    tsim_metrics_begin(m);
+    run_for(&r, TSIM_S(1));
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, TSIM_S(1));
+    struct tsim_report rep;
+    tsim_metrics_report(m, &rep);
+    CHECK_EQ_U64(rep.budget.held, 0);
+    CHECK(rep.budget.wait_mean_s == 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_gone, 1);
+    tsim_metrics_destroy(m);
+    rig_close(&r);
+}
+
 /* In shadow mode a frame of the node's own is counted held the moment its buckets fall short, as
  * one waits with the budget on, though the MAC still sees it - and once only, however late the
  * MAC sends it, when its buckets have filled again. */
@@ -1242,6 +1273,7 @@ int main(void) {
     RUN(frames_waiting_for_the_budget_leave_the_queue_room);
     RUN(shadow_mode_counts_a_frame_held_when_it_is_first_short);
     RUN(a_wait_ends_when_the_buckets_hold_the_frame);
+    RUN(a_frame_free_to_go_as_the_window_begins_is_not_waiting);
     RUN(a_wait_behind_another_ends_when_that_one_is_gone);
     RUN(with_the_budget_off_marks_change_nothing);
     return CHECK_DONE();

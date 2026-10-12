@@ -420,10 +420,12 @@ void tsim_metrics_begin(struct tsim_metrics *m) {
         tsim_net_ledger_now(m->net, i, &base[i].ledger);
         base[i].dropped = tsim_net_stats(m->net, i)->dropped;
         base[i].held = tsim_net_stats(m->net, i)->held;
-        base[i].stats = *tsim_net_stats(m->net, i);
         /* A frame waiting as the window begins waits in it too: it counts as held in the window,
-         * and only its wait from now on (tsim_net_budget_count_from()). */
-        base[i].stats.budget_held -= tsim_net_budget_waiting(m->net, i);
+         * and only its wait from now on (tsim_net_budget_count_from()). One that could go but
+         * has not yet gone is not waiting. */
+        uint32_t waiting = tsim_net_budget_settle(m->net, i);
+        base[i].stats = *tsim_net_stats(m->net, i);
+        base[i].stats.budget_held -= waiting;
         base[i].phy = *tsim_phy_stats(phy, i);
         m->warmup_ns += (double)tsim_ledger_airtime(&base[i].ledger);
     }
