@@ -89,11 +89,16 @@ static void print_counts(const char *const *names, const uint64_t *counts, int c
 }
 
 static void print_budget(const struct tsim_budget_report *b) {
-    printf("  \"budget\": {\"mode\": \"%s\", \"held\": %" PRIu64 ", \"wait_mean_s\": %.6g, "
+    /* Shadow mode models no wait: null. */
+    char wait[32] = "null";
+    if (b->mode != TSIM_BUDGET_MODE_SHADOW) {
+        snprintf(wait, sizeof wait, "%.6g", b->wait_mean_s);
+    }
+    printf("  \"budget\": {\"mode\": \"%s\", \"held\": %" PRIu64 ", \"wait_mean_s\": %s, "
            "\"dropped\": %" PRIu64 ", \"relayed\": %" PRIu64 ", \"short_acks\": %" PRIu64
            ", \"dropping\": %" PRIu32 ",\n",
-           b->mode == TSIM_BUDGET_MODE_SHADOW ? "shadow" : "on", b->held, b->wait_mean_s,
-           b->dropped, b->relayed, b->short_acks, b->dropping);
+           b->mode == TSIM_BUDGET_MODE_SHADOW ? "shadow" : "on", b->held, wait, b->dropped,
+           b->relayed, b->short_acks, b->dropping);
     printf("             \"unicast_hit\": %" PRIu64 ", \"unicast_hit_on_time\": %" PRIu64
            ", \"broadcast_hit\": %" PRIu64 ", \"busiest_drop\": %.6g,\n",
            b->unicast_hit, b->unicast_hit_on_time, b->broadcast_hit, b->busiest_drop);

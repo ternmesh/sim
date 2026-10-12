@@ -156,7 +156,7 @@ def run(tsim, scenario, power, seed, sets):
                     if bd["unicast_hit"] else None),
             "busiest": bd["busiest"],
             "short_acks": bd["short_acks"],
-            "wait_mean_s": bd["wait_mean_s"],
+            "wait_mean_s": bd["wait_mean_s"],  # null in shadow mode: no wait is modelled
             "unicast_hit": bd["unicast_hit"],
         })
     return out

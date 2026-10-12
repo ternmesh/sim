@@ -1017,6 +1017,7 @@ static void a_run_keeps_the_airtime_budget(void) {
     CHECK(shadow.budget.dropped > 0 && shadow.losses.drops[TSIM_DROP_BUDGET] == 0);
     CHECK(shadow.budget.unicast_hit > 0 && shadow.budget.broadcast_hit > 0);
     CHECK(shadow.unicast.on_time == off.unicast.on_time);
+    CHECK(isnan(shadow.budget.wait_mean_s) && !isnan(on.budget.wait_mean_s));
 }
 
 /* With chatty nodes, the rest's messages are reported apart: those made in the window only, though

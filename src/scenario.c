@@ -2719,6 +2719,9 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     tsim_sched_run_until(sched, s->warmup + s->duration + s->deadline);
     tsim_metrics_report(metrics, report);
     report->budget.mode = s->net.budget.mode;
+    if (s->net.budget.mode == TSIM_BUDGET_MODE_SHADOW) {
+        report->budget.wait_mean_s = NAN; /* shadow mode models no wait */
+    }
     if (window.dv) {
         health(&window, tsim_sched_now(sched), &report->health);
     }
