@@ -155,6 +155,8 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
     file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/route.h" TSIM_ROUTE_COUNTS
          REGEX "struct tern_route_counts \\{")
     if(TSIM_ROUTE_COUNTS)
+        # Kept only in a build that asks for them: a board has no room for them.
+        target_compile_definitions(terncore PUBLIC TERN_ROUTE_COUNTS)
         target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_ROUTE_COUNTS)
     endif()
     set(TSIM_HAVE_CORE ON)
