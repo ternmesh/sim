@@ -698,7 +698,23 @@ static void chatty_nodes_write_at_their_own_interval(void) {
         }
     }
     CHECK(chatty >= 4 && chatty <= 18);
+    int flagged = 0;
+    for (uint32_t i = 0; i < 50; i++) {
+        flagged += tsim_traffic_chatty(b.traffic, i);
+        CHECK(!tsim_traffic_chatty(a.traffic, i));
+    }
+    CHECK(flagged == chatty);
     rig_close(&a);
+    rig_close(&b);
+    /* Which nodes are chatty is their draw, not their interval: at the others' interval they are
+     * still told apart. */
+    q.chatty_interval = p.interval;
+    rig_open(&b, 50, &refuser, false, &q);
+    int same = 0;
+    for (uint32_t i = 0; i < 50; i++) {
+        same += tsim_traffic_chatty(b.traffic, i);
+    }
+    CHECK(same == chatty);
     rig_close(&b);
     q.chatty_interval = 0;
     struct tsim_sched *sched = tsim_sched_create();

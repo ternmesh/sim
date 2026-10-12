@@ -6,6 +6,7 @@
 struct queued {
     uint64_t handle;
     tsim_time held_since; /* when the budget first held it back, or -1 */
+    tsim_time first_at;   /* when no frame of the node's own was ahead of it any more, or -1 */
     struct tsim_tx tx;
 };
 
@@ -644,7 +645,7 @@ uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
     }
     uint64_t handle = net->next_handle++;
     memmove(&nd->queue[at + 1], &nd->queue[at], (nd->queue_len - at) * sizeof *nd->queue);
-    nd->queue[at] = (struct queued){handle, -1, *tx};
+    nd->queue[at] = (struct queued){handle, -1, -1, *tx};
     nd->queue_len++;
     nd->stats.queued++;
     /* The MAC may send or cancel from inside the kick, which moves the queue under `at`. */
@@ -798,8 +799,24 @@ static void budget_fire(struct tsim_sched *sched, void *ctx) {
 
 /* Marks the frames waiting for the budget, and sets the kick for when the first of them is paid
  * for: until then nothing behind it can go either, whatever is charged meanwhile. */
+/* Marks when the first frame of the node's own in the queue came to be first: until then a frame
+ * of its own ahead of it held it back, whatever its buckets held. */
+static void own_first(struct tsim_node *nd) {
+    for (size_t i = 0; i < nd->queue_len; i++) {
+        if (may_wait(&nd->queue[i].tx)) {
+            if (nd->queue[i].first_at < 0) {
+                nd->queue[i].first_at = tsim_sched_now(nd->net->sched);
+            }
+            return;
+        }
+    }
+}
+
 static void budget_arm(struct tsim_node *nd) {
     struct tsim_net *net = nd->net;
+    if (net->params.budget.mode != TSIM_BUDGET_MODE_OFF) {
+        own_first(nd);
+    }
     /* In shadow mode they are marked as on, the first time their buckets are short, but nothing
      * waits and nothing is kicked. */
     bool shadow = net->params.budget.mode == TSIM_BUDGET_MODE_SHADOW;
@@ -1010,6 +1027,9 @@ bool tsim_node_transmit(struct tsim_node *nd) {
     }
     remove_at(nd, at);
     nd->sending = true;
+    if (net->params.budget.mode != TSIM_BUDGET_MODE_OFF) {
+        own_first(nd); /* the frame of its own behind it, if any, is first now */
+    }
     nd->ledger.frames[tx->purpose]++;
     tsim_time airtime = tsim_lora_airtime(&tx->lora, tx->len);
     if (net->params.budget.mode != TSIM_BUDGET_MODE_OFF) {
@@ -1021,12 +1041,15 @@ bool tsim_node_transmit(struct tsim_node *nd) {
             nd->stats.budget_relayed++;
         }
         if (nd->air.held_since >= 0) {
-            /* Its wait ends when its buckets came to hold it, not when the MAC, drawing a wait of
-             * its own, sent it; in shadow mode one sent unpaid waited until now at least. */
+            /* Its wait ends when it could go: when its buckets came to hold it, or when no frame
+             * of its own was ahead of it any more, whichever was later - not when the MAC,
+             * drawing a wait of its own, sent it. In shadow mode one sent unpaid waited until now
+             * at least. */
             tsim_time from =
                 nd->air.held_since > net->budget_from ? nd->air.held_since : net->budget_from;
             tsim_time end = tsim_budget_paid_since(&nd->budget, now, tx->budget, airtime);
             end = end < 0 ? now : end;
+            end = nd->air.first_at > end ? nd->air.first_at : end;
             nd->stats.budget_gone++;
             nd->stats.budget_waited += end > from ? end - from : 0;
         }

@@ -11,6 +11,7 @@ struct source {
     uint32_t node;
     struct tsim_rng rng;
     tsim_time interval; /* its mean gap: the process's, or a chatty node's */
+    bool chatty;        /* one of the chatty share */
     struct tsim_event next;
     uint32_t *peers; /* into tsim_traffic.peer_list */
     uint32_t peer_count;
@@ -354,7 +355,8 @@ struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
         if (p->chatty_share > 0) {
             struct tsim_rng pick;
             tsim_rng_init(&pick, p->seed, UINT64_C(0xC8) << 56 | i);
-            s->interval = tsim_rng_unit(&pick) < p->chatty_share ? p->chatty_interval : p->interval;
+            s->chatty = tsim_rng_unit(&pick) < p->chatty_share;
+            s->interval = s->chatty ? p->chatty_interval : p->interval;
         }
         if (s->interval > 0) {
             plan(s, from);
@@ -413,7 +415,5 @@ uint64_t tsim_traffic_made(const struct tsim_traffic *t) { return t->made; }
 uint64_t tsim_traffic_cards(const struct tsim_traffic *t) { return t->cards; }
 
 bool tsim_traffic_chatty(const struct tsim_traffic *t, uint32_t node) {
-    return node < t->n && t->params.chatty_share > 0 &&
-           t->sources[node].interval == t->params.chatty_interval &&
-           t->params.chatty_interval != t->params.interval;
+    return node < t->n && t->sources[node].chatty;
 }

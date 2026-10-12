@@ -1138,6 +1138,29 @@ static void a_wait_ends_when_the_buckets_hold_the_frame(void) {
     rig_close(&r);
 }
 
+/* A frame its buckets could pay for, held only behind one of its own they could not, waits until
+ * that one is out of its way: here until the routing takes the first back. */
+static void a_wait_behind_another_ends_when_that_one_is_gone(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 16);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n)); /* empties the part at 0 */
+    run_for(&r, airtime(255));
+    uint64_t big = tsim_node_send(n, &own);
+    run_for(&r, TSIM_S(1) - airtime(255));
+    struct tsim_tx small = marked(TSIM_PURPOSE_DATA, 1, 10, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &small); /* held from 1 s; its buckets hold it from about 4 s */
+    run_for(&r, TSIM_S(19));
+    CHECK(tsim_node_head(n) == NULL);
+    CHECK(tsim_node_cancel(n, big));
+    CHECK(tsim_node_transmit(n)); /* at 20 s */
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_gone, 1);
+    CHECK_EQ_I64(tsim_net_stats(r.net, 0)->budget_waited, TSIM_S(19));
+    rig_close(&r);
+}
+
 /* In shadow mode a frame of the node's own is counted held the moment its buckets fall short, as
  * one waits with the budget on, though the MAC still sees it - and once only, however late the
  * MAC sends it, when its buckets have filled again. */
@@ -1219,6 +1242,7 @@ int main(void) {
     RUN(frames_waiting_for_the_budget_leave_the_queue_room);
     RUN(shadow_mode_counts_a_frame_held_when_it_is_first_short);
     RUN(a_wait_ends_when_the_buckets_hold_the_frame);
+    RUN(a_wait_behind_another_ends_when_that_one_is_gone);
     RUN(with_the_budget_off_marks_change_nothing);
     return CHECK_DONE();
 }
