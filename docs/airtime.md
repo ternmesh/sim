@@ -86,8 +86,8 @@ candidate on SF7 at 125 kHz over the same 200 sites; `--deployed` each on its ow
 candidate 3 on SF8 at 62.5 kHz with coding rate 4/8. Both hold every radio to the sub-band's 10%
 as well. Release build, the core from the firmware commit CI pins (e300726). The budget-off rows
 reproduce sensitivity.md's default rows to the digit. The runs were made when `airtime.budget=on`
-meant own 1% and relayed 8%; it now means 2% and 7%, so the rows run at 1% and 8% need
-`-s airtime.own=1% -s airtime.relayed=8%` beside it, and `c3 on` below is those.
+meant own 1% and relayed 8%; it now means 2% and 7%, so the commands below name the shares the
+rows were run at, and `c3 on` below is those.
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DTSIM_FIRMWARE_DIR=../firmware
@@ -95,14 +95,15 @@ cmake --build build
 tools/density.py --tsim build/tsim --fast --quick --seeds 3 --power=-5,0,20 \
     --candidates 1,2,3 --json fast.json
 tools/density.py --tsim build/tsim --fast --quick --seeds 3 --power=-5,0,20 \
-    --candidates 3 --json fast-on.json -s airtime.budget=on
+    --candidates 3 --json fast-on.json -s airtime.budget=on \
+    -s airtime.own=1% -s airtime.relayed=8%
 ```
 
-and the same with `--deployed`. Each row below adds its settings to the second command, with
-1% and 8% for whichever share it does not name: `-s airtime.relayed=4%`, `-s airtime.own=2%`,
+and the same with `--deployed`. Each row below adds its settings to the second command, a share
+it names replacing the 1% or 8% there: `-s airtime.relayed=4%`, `-s airtime.own=2%`,
 `-s 'traffic.interval=5 min'` for the heavier traffic, `-s traffic.chatty=0.05
--s 'traffic.chatty_interval=10 s'` for nodes writing without pause. The town's runs below are
-the same: `-s airtime.budget=on` there is now 2% and 7%. density.py prints `held`, `drop`, `busy` and `hit` where a run keeps the budget; the
+-s 'traffic.chatty_interval=10 s'` for nodes writing without pause. The town's runs below name
+the shares the same way. density.py prints `held`, `drop`, `busy` and `hit` where a run keeps the budget; the
 busiest relay's own figures are in its `--json`, under `busiest`.
 
 The town is `scenarios/town-distvec.tsim`, every one of its 200 nodes a relay, at SF9 and 20 dBm,
@@ -110,7 +111,8 @@ with `town.tsim` (flooding) and `town-meshtastic.tsim` beside it, 5 seeds:
 
 ```bash
 for seed in 1 2 3 4 5; do
-    build/tsim -s seed=$seed -s airtime.budget=on scenarios/town-distvec.tsim
+    build/tsim -s seed=$seed -s airtime.budget=on -s airtime.own=1% -s airtime.relayed=8% \
+        scenarios/town-distvec.tsim
 done
 ```
 
