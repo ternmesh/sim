@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "tsim/budget.h"
 #include "tsim/lora.h"
 #include "tsim/node.h"
 #include "tsim/phy.h"
@@ -28,9 +29,22 @@ struct tsim_net_params {
      * than the whole share is refused when queued, as a full queue refuses one. Its frames are
      * remembered across a power cycle, as the airtime is spent all the same. */
     double duty_cycle;
+    /* Tern's airtime budget (tsim/budget.h), kept for every node as its routing marks its frames;
+     * off by default. Each node's buckets start full when it is made or powered up again, and
+     * hold at least one 255-byte frame at `listen`'s modulation. On, a frame of a node's own that
+     * its buckets do not hold is passed over - the MAC sees the frame behind it as the head - and
+     * so is every frame of its own behind it, but acknowledgements, until they do, when the MAC is
+     * kicked; a frame passed on that they do not hold when the MAC would transmit it, after
+     * net.duty_cycle and the routing's `sending` have let it go, is taken out of the queue,
+     * booked as TSIM_DROP_BUDGET, and handed to the routing's `withdrawn`. Frames waiting for the
+     * budget are the node's to keep, as a companion keeps the messages it is handed, and do not
+     * count against queue_limit; but it keeps no more than 32, a board's companion link's worth,
+     * and one more of its own while they wait is refused as a full queue refuses one. */
+    struct tsim_budget_params budget;
 };
 
-/* tsim_phy_defaults(), every radio on channel 0 at SF7/125 kHz, and 16 frames of queue. */
+/* tsim_phy_defaults(), every radio on channel 0 at SF7/125 kHz, 16 frames of queue, and the
+ * budget off. */
 struct tsim_net_params tsim_net_defaults(uint64_t seed);
 
 struct tsim_net;
@@ -111,6 +125,13 @@ struct tsim_net_stats {
     uint64_t refused;   /* messages originated here that its routing could not carry */
     uint64_t delivered; /* messages delivered to this node's application */
     uint64_t held;      /* times the radio held a frame back for the duty cycle */
+    /* The airtime budget's books, in shadow mode what it would have done: */
+    uint64_t budget_held;    /* frames of its own that waited for their buckets */
+    uint64_t budget_gone;    /* of them, those that have gone */
+    tsim_time budget_waited; /* how long those waited, all together */
+    uint64_t budget_dropped; /* frames it would have passed on, dropped */
+    uint64_t budget_relayed; /* frames passed on that the relayed part paid for, sent */
+    uint64_t budget_short;   /* acknowledgements sent that their buckets did not hold */
 };
 
 const struct tsim_net_stats *tsim_net_stats(const struct tsim_net *net, uint32_t node);

@@ -669,6 +669,46 @@ static void cards_move_none_of_the_message_draws(void) {
     rig_close(&b);
 }
 
+/* A chatty share of the nodes write at their own interval, and the rest as they would have: the
+ * same messages at the same times, from the same draws. */
+static void chatty_nodes_write_at_their_own_interval(void) {
+    struct tsim_traffic_params p = params();
+    struct tsim_traffic_params q = p;
+    q.chatty_share = 0.2;
+    q.chatty_interval = TSIM_S(6);
+    struct rig a, b;
+    rig_open(&a, 50, &refuser, false, &p);
+    rig_open(&b, 50, &refuser, false, &q);
+    tsim_sched_run_until(a.sched, p.stop);
+    tsim_sched_run_until(b.sched, p.stop);
+    uint64_t made[2][50] = {{0}};
+    for (int k = 0; k < 2; k++) {
+        struct tsim_net *net = k ? b.net : a.net;
+        for (uint64_t id = 1; id <= tsim_net_message_count(net); id++) {
+            made[k][tsim_net_message(net, id)->msg.src]++;
+        }
+    }
+    /* A chatty node makes ten times as many in the hour: 600 against 60. */
+    int chatty = 0;
+    for (int i = 0; i < 50; i++) {
+        if (made[1][i] > 300) {
+            chatty++;
+        } else {
+            CHECK_EQ_U64(made[1][i], made[0][i]);
+        }
+    }
+    CHECK(chatty >= 4 && chatty <= 18);
+    rig_close(&a);
+    rig_close(&b);
+    q.chatty_interval = 0;
+    struct tsim_sched *sched = tsim_sched_create();
+    struct tsim_net_params np = tsim_net_defaults(1);
+    struct tsim_net *net = tsim_net_create(sched, &np, 2, &refuser, &flood, &tsim_aloha, &aloha);
+    CHECK(tsim_traffic_create(net, &q) == NULL);
+    tsim_net_destroy(net);
+    tsim_sched_destroy(sched);
+}
+
 static void invalid_cards_are_refused(void) {
     struct tsim_traffic_params p = params();
     struct rig r;
@@ -709,5 +749,6 @@ int main(void) {
     RUN(cards_come_from_the_share_at_the_interval);
     RUN(cards_move_none_of_the_message_draws);
     RUN(invalid_cards_are_refused);
+    RUN(chatty_nodes_write_at_their_own_interval);
     return CHECK_DONE();
 }

@@ -66,6 +66,9 @@ struct tsim_tx {
      * the report reads it, to book what became of the frame there (tsim/metrics.h). */
     bool addressed;
     uint32_t to;
+    /* Not on the air: which part of Tern's airtime budget pays for this frame, as TSIM_BUDGET_*
+     * bits (tsim/budget.h), or 0 for none. Read only where the network keeps the budget. */
+    uint8_t budget;
     /* The message this frame carries, whose content is at bytes[carries_at], or 0 for none. The
      * sender must hold it. Receivers that decode the frame then hold it too. */
     uint64_t carries;
@@ -118,6 +121,10 @@ struct tsim_routing {
      * instead, as tsim_node_cancel() would have - for a protocol that decides whether a frame is
      * still wanted only once it is due. It must not send, cancel or transmit from inside. */
     bool (*sending)(void *self, uint64_t handle);
+    /* Optional: the network took this queued frame out of the queue without sending it - one passed
+     * on that the airtime budget did not pay for when it was due (tsim/net.h). The routing forgets
+     * it as though it had withdrawn it itself. It must not send, cancel or transmit from inside. */
+    void (*withdrawn)(void *self, uint64_t handle);
     /* Whether it calls tsim_node_finished() for every message it originates and does not refuse.
      * If not, a message is finished as soon as originate() returns. */
     bool reports_finished;
@@ -211,7 +218,8 @@ enum tsim_drop {
     TSIM_DROP_HOP_LIMIT, /* it had come as many hops as it was allowed */
     TSIM_DROP_QUEUE,     /* the queue was full: booked by the network, see below */
     TSIM_DROP_OTHER,
-    TSIM_DROP_DUTY, /* sending it would have gone over the protocol's own duty-cycle limit */
+    TSIM_DROP_DUTY,   /* sending it would have gone over the protocol's own duty-cycle limit */
+    TSIM_DROP_BUDGET, /* passed on, it was due when the airtime budget did not pay for it */
     TSIM_DROP_COUNT,
 };
 

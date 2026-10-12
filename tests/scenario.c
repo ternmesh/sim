@@ -954,6 +954,73 @@ static void duty_cycle_settings_read(void) {
     CHECK(s.net.duty_cycle == 0);
 }
 
+/* The airtime budget's settings (tsim/budget.h): off until asked for, and each part's share and
+ * window. */
+static void budget_settings_read(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 2\nrouting = flood\nmac = aloha\n"));
+    CHECK(s.net.budget.mode == TSIM_BUDGET_MODE_OFF && s.net.budget.relayed_ppm == 80000);
+    CHECK(parse(&s, "nodes = 2\nrouting = flood\nmac = aloha\nairtime.budget = shadow\n"
+                    "airtime.own = 0.5%\nairtime.own_window = 10 min\nairtime.relayed = 12%\n"
+                    "airtime.relayed_window = 2 min\nairtime.floods = no\n"
+                    "airtime.flood_relayed = 4%\nairtime.flood_own_window = 30 s\n"));
+    CHECK(s.net.budget.mode == TSIM_BUDGET_MODE_SHADOW && s.net.budget.own_ppm == 5000);
+    CHECK(s.net.budget.own_window == TSIM_S(600) && s.net.budget.relayed_ppm == 120000);
+    CHECK(s.net.budget.relayed_window == TSIM_S(120) && !s.net.budget.floods);
+    CHECK(s.net.budget.flood_relayed_ppm == 40000 && s.net.budget.flood_own_window == TSIM_S(30));
+    struct tsim_scenario_error err;
+    const char *bad[] = {"airtime.budget = yes\n",     "airtime.relayed = 8\n",
+                         "airtime.own_window = 2 h\n", "airtime.relayed_window = 0 s\n",
+                         "airtime.shared = 1%\n",      "airtime.own = 0.00001%\n"};
+    for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
+        char buf[256];
+        snprintf(buf, sizeof buf, "nodes = 2\nrouting = flood\nmac = aloha\n%s", bad[i]);
+        CHECK(!tsim_scenario_parse(&s, buf, &err) && err.line == 4);
+    }
+}
+
+/* Candidate 3 on a line, its relays given a sliver of relayed share: they drop what they cannot
+ * pay to pass on, the run goes on, and the report says who dropped what and what it cost. */
+static void a_run_keeps_the_airtime_budget(void) {
+    const char *text = "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
+                       "routing = distvec\nmac = meshcore\nrouting.links = sensed\n"
+                       "traffic.interval = 30 s\ntraffic.broadcast = 0.25\nwarmup = 30 min\n"
+                       "duration = 10 min\nairtime.budget = %s\nairtime.relayed = 0.2%%\n";
+    char buf[512];
+    struct tsim_scenario s;
+    struct tsim_report on, off;
+    snprintf(buf, sizeof buf, text, "on");
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &on));
+    snprintf(buf, sizeof buf, text, "off");
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &off));
+    CHECK(on.budget.mode == TSIM_BUDGET_MODE_ON && off.budget.mode == TSIM_BUDGET_MODE_OFF);
+    CHECK(on.budget.dropped > 0 && on.budget.dropping > 0 && on.budget.relayed > 0);
+    CHECK(on.losses.drops[TSIM_DROP_BUDGET] > 0 && on.budget.unicast_hit > 0);
+    CHECK(on.budget.busiest_count > 0 && on.budget.busiest[0].dropped > 0);
+    CHECK(on.budget.busiest_drop > 0 && on.budget.busiest_drop < 1);
+    CHECK(on.unicast.on_time < off.unicast.on_time);
+    CHECK(off.budget.dropped == 0 && off.losses.drops[TSIM_DROP_BUDGET] == 0);
+}
+
+/* With chatty nodes, the rest's messages are reported apart. */
+static void chatty_nodes_are_reported_apart(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
+                    "routing = distvec\nmac = meshcore\nrouting.links = sensed\n"
+                    "traffic.interval = 2 min\ntraffic.broadcast = 0.25\ntraffic.chatty = 0.5\n"
+                    "traffic.chatty_interval = 20 s\nwarmup = 30 min\nduration = 10 min\n"));
+    struct tsim_report rep;
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK(rep.quiet.present && rep.quiet.unicast_wanted > 0);
+    CHECK(rep.quiet.unicast_wanted < rep.unicast.wanted);
+    CHECK(rep.quiet.unicast_on_time <= rep.quiet.unicast_wanted);
+    CHECK(rep.quiet.broadcast_on_time <= rep.quiet.broadcast_wanted);
+    CHECK(parse(&s, "nodes = 2\nrouting = flood\nmac = aloha\n"));
+    CHECK(tsim_scenario_run(&s, &rep) && !rep.quiet.present);
+}
+
 int main(void) {
     RUN(the_documented_example_parses);
     RUN(every_value_kind_reads);
@@ -981,6 +1048,9 @@ int main(void) {
     RUN(meshcore_settings_read);
     RUN(background_settings_read);
     RUN(duty_cycle_settings_read);
+    RUN(budget_settings_read);
+    RUN(a_run_keeps_the_airtime_budget);
+    RUN(chatty_nodes_are_reported_apart);
     RUN(sends_add_up_and_interval_none_stops_the_process);
     RUN(links_read_from_text);
     RUN(a_run_with_links_uses_them);

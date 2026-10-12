@@ -5,6 +5,7 @@
 
 struct queued {
     uint64_t handle;
+    tsim_time held_since; /* when the budget first held it back, or -1 */
     struct tsim_tx tx;
 };
 
@@ -33,6 +34,11 @@ struct tsim_node {
     size_t sent_len;
     size_t sent_cap;
     struct tsim_event duty_kick;
+    /* The airtime budget: its buckets, and the kick waiting for the frame of its own they hold
+     * back, due at budget_at. */
+    struct tsim_budget budget;
+    struct tsim_event budget_kick;
+    tsim_time budget_at;
 };
 
 struct burst {
@@ -41,6 +47,10 @@ struct burst {
 };
 
 #define DUTY_WINDOW TSIM_S(3600)
+
+/* The most frames of its own a node keeps waiting for the airtime budget: what a board's companion
+ * link holds of the messages it is handed (LINK_MESSAGES in the firmware's ports/node/link.h). */
+#define BUDGET_WAITING_MAX 32
 
 struct tsim_timer {
     struct tsim_node *node;
@@ -87,7 +97,11 @@ struct tsim_net {
     void *hop_ctx;
     tsim_net_heard_fn heard;
     void *heard_ctx;
+    tsim_time
+        budget_frame; /* one 255-byte frame at the listen modulation: the least a bucket holds */
 };
+
+static void kick(struct tsim_node *nd);
 
 static void on_rx(void *ctx, uint32_t node, const struct tsim_frame *frame, double rssi_dbm,
                   double snr_db) {
@@ -106,7 +120,7 @@ static void on_rx(void *ctx, uint32_t node, const struct tsim_frame *frame, doub
     }
     struct tsim_node *nd = &net->nodes[node];
     net->routing->rx(nd->routing, &rx);
-    net->mac->kick(nd->mac);
+    kick(nd);
 }
 
 static void on_marked(void *ctx, uint32_t node, const struct tsim_frame *frame,
@@ -135,14 +149,14 @@ static void on_tx_done(void *ctx, uint32_t node, const struct tsim_frame *frame)
     if (nd->air_orphaned || nd->off) {
         nd->air_orphaned = false; /* sent by plugins since gone */
         if (!nd->off) {
-            net->mac->kick(nd->mac);
+            kick(nd);
         }
         return;
     }
     if (net->routing->tx_done) {
         net->routing->tx_done(nd->routing, nd->air.handle);
     }
-    net->mac->kick(nd->mac);
+    kick(nd);
 }
 
 struct tsim_net_params tsim_net_defaults(uint64_t seed) {
@@ -152,6 +166,7 @@ struct tsim_net_params tsim_net_defaults(uint64_t seed) {
         .listen = tsim_lora_default(7, 125000),
         .queue_limit = 16,
         .seed = seed,
+        .budget = tsim_budget_defaults(),
     };
 }
 
@@ -159,7 +174,10 @@ struct tsim_net *tsim_net_create(struct tsim_sched *sched, const struct tsim_net
                                  uint32_t nodes, const struct tsim_routing *routing,
                                  const void *routing_config, const struct tsim_mac *mac,
                                  const void *mac_config) {
-    if (nodes == 0 || !routing || !mac || !(params->duty_cycle >= 0 && params->duty_cycle <= 1)) {
+    tsim_time frame = tsim_lora_airtime(&params->listen, TSIM_FRAME_MAX);
+    if (nodes == 0 || !routing || !mac || !(params->duty_cycle >= 0 && params->duty_cycle <= 1) ||
+        (params->budget.mode != TSIM_BUDGET_MODE_OFF &&
+         (!tsim_budget_valid(&params->budget) || frame < 0 || frame > TSIM_S(3600)))) {
         return NULL;
     }
     struct tsim_net *net = calloc(1, sizeof *net);
@@ -183,9 +201,13 @@ struct tsim_net *tsim_net_create(struct tsim_sched *sched, const struct tsim_net
         tsim_net_destroy(net);
         return NULL;
     }
+    net->budget_frame = frame;
     for (uint32_t i = 0; i < nodes; i++) {
         net->nodes[i].net = net;
         net->nodes[i].index = i;
+        if (params->budget.mode != TSIM_BUDGET_MODE_OFF) {
+            tsim_budget_init(&net->nodes[i].budget, &params->budget, frame, tsim_sched_now(sched));
+        }
     }
     /* MACs first, so a routing plugin can send from start(). */
     for (uint32_t i = 0; i < nodes; i++) {
@@ -235,6 +257,7 @@ void tsim_net_destroy(struct tsim_net *net) {
         free(net->nodes[i].queue);
         free(net->nodes[i].sent);
         tsim_sched_cancel(net->sched, net->nodes[i].duty_kick);
+        tsim_sched_cancel(net->sched, net->nodes[i].budget_kick);
         while (net->nodes[i].timers) {
             tsim_timer_destroy(net->nodes[i].timers);
         }
@@ -270,6 +293,8 @@ bool tsim_net_power(struct tsim_net *net, uint32_t node, bool on) {
         nd->air_orphaned = nd->sending;
         tsim_sched_cancel(net->sched, nd->duty_kick);
         nd->duty_kick = (struct tsim_event){0};
+        tsim_sched_cancel(net->sched, nd->budget_kick);
+        nd->budget_kick = (struct tsim_event){0};
         net->routing->destroy(nd->routing);
         nd->routing = NULL;
         net->mac->destroy(nd->mac);
@@ -286,6 +311,11 @@ bool tsim_net_power(struct tsim_net *net, uint32_t node, bool on) {
             }
         }
         return true;
+    }
+    /* It starts again with every bucket full. */
+    if (net->params.budget.mode != TSIM_BUDGET_MODE_OFF) {
+        tsim_budget_init(&nd->budget, &net->params.budget, net->budget_frame,
+                         tsim_sched_now(net->sched));
     }
     nd->mac = net->mac->create(nd, net->mac_config);
     nd->routing = nd->mac ? net->routing->create(nd, net->routing_config) : NULL;
@@ -572,6 +602,9 @@ static bool carries_what_it_claims(const struct tsim_node *nd, const struct tsim
            memcmp(tx->bytes + tx->carries_at, rec->content, len) == 0;
 }
 
+static size_t budget_waiting(const struct tsim_node *nd);
+static bool may_wait(const struct tsim_tx *tx);
+
 uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
     struct tsim_net *net = nd->net;
     if ((int)tx->purpose < 0 || tx->purpose >= TSIM_PURPOSE_COUNT || tx->len > TSIM_FRAME_MAX ||
@@ -583,7 +616,11 @@ uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
     bool too_long =
         net->params.duty_cycle > 0 && tsim_lora_airtime(&tx->lora, tx->len) >
                                           (tsim_time)(net->params.duty_cycle * (double)DUTY_WINDOW);
-    if (too_long || (net->params.queue_limit && nd->queue_len >= net->params.queue_limit)) {
+    size_t waiting = budget_waiting(nd);
+    /* One more of its own behind those waiting would wait too, and there is room for so many. */
+    bool no_room = may_wait(tx) && waiting >= BUDGET_WAITING_MAX;
+    if (too_long || no_room ||
+        (net->params.queue_limit && nd->queue_len - waiting >= net->params.queue_limit)) {
         nd->stats.dropped++;
         if (tx->carries) {
             tsim_node_drop(nd, tx->carries, TSIM_DROP_QUEUE,
@@ -606,11 +643,11 @@ uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
     }
     uint64_t handle = net->next_handle++;
     memmove(&nd->queue[at + 1], &nd->queue[at], (nd->queue_len - at) * sizeof *nd->queue);
-    nd->queue[at] = (struct queued){handle, *tx};
+    nd->queue[at] = (struct queued){handle, -1, *tx};
     nd->queue_len++;
     nd->stats.queued++;
     /* The MAC may send or cancel from inside the kick, which moves the queue under `at`. */
-    net->mac->kick(nd->mac);
+    kick(nd);
     return handle;
 }
 
@@ -624,7 +661,7 @@ bool tsim_node_cancel(struct tsim_node *nd, uint64_t handle) {
         if (nd->queue[i].handle == handle) {
             remove_at(nd, i);
             nd->stats.cancelled++;
-            nd->net->mac->kick(nd->mac);
+            kick(nd);
             return true;
         }
     }
@@ -698,8 +735,100 @@ bool tsim_node_finished(struct tsim_node *nd, uint64_t msg) {
     return finish(net, msg);
 }
 
+/* --- The airtime budget --- */
+
+static tsim_time airtime_of(const struct tsim_tx *tx) {
+    return tsim_lora_airtime(&tx->lora, tx->len);
+}
+
+/* Whether this is a frame of the node's own that the budget can hold back. */
+static bool may_wait(const struct tsim_tx *tx) {
+    return (tx->budget & TSIM_BUDGET_OWN) && !(tx->budget & TSIM_BUDGET_ACK);
+}
+
+/* Where the frame of the node's own its buckets do not hold now is in the queue, or queue_len if
+ * none is: it and every frame of its own behind it wait, and the rest go as they would. */
+static size_t blocker(const struct tsim_node *nd) {
+    if (nd->net->params.budget.mode != TSIM_BUDGET_MODE_ON) {
+        return nd->queue_len;
+    }
+    tsim_time now = tsim_sched_now(nd->net->sched);
+    for (size_t i = 0; i < nd->queue_len; i++) {
+        const struct tsim_tx *tx = &nd->queue[i].tx;
+        if (may_wait(tx) && !tsim_budget_paid(&nd->budget, now, tx->budget, airtime_of(tx))) {
+            return i;
+        }
+    }
+    return nd->queue_len;
+}
+
+/* The frame the MAC is shown: the first in the queue that is not waiting for the budget, or
+ * queue_len for none. */
+static size_t head_at(const struct tsim_node *nd) {
+    size_t stop = blocker(nd);
+    for (size_t i = 0; i < nd->queue_len; i++) {
+        if (i < stop || !may_wait(&nd->queue[i].tx)) {
+            return i;
+        }
+    }
+    return nd->queue_len;
+}
+
+/* How many frames of its own wait for the budget. */
+static size_t budget_waiting(const struct tsim_node *nd) {
+    size_t n = 0;
+    for (size_t i = blocker(nd); i < nd->queue_len; i++) {
+        n += may_wait(&nd->queue[i].tx);
+    }
+    return n;
+}
+
+static void budget_fire(struct tsim_sched *sched, void *ctx) {
+    (void)sched;
+    struct tsim_node *nd = ctx;
+    nd->budget_kick = (struct tsim_event){0};
+    if (!nd->off && nd->mac) {
+        kick(nd);
+    }
+}
+
+/* Marks the frames waiting for the budget, and sets the kick for when the first of them is paid
+ * for: until then nothing behind it can go either, whatever is charged meanwhile. */
+static void budget_arm(struct tsim_node *nd) {
+    struct tsim_net *net = nd->net;
+    size_t stop = blocker(nd);
+    if (stop == nd->queue_len) {
+        return;
+    }
+    tsim_time now = tsim_sched_now(net->sched);
+    for (size_t i = stop; i < nd->queue_len; i++) {
+        struct queued *q = &nd->queue[i];
+        if (may_wait(&q->tx) && q->held_since < 0) {
+            q->held_since = now;
+            nd->stats.budget_held++;
+        }
+    }
+    const struct tsim_tx *tx = &nd->queue[stop].tx;
+    tsim_time when = now + tsim_budget_wait(&nd->budget, now, tx->budget, airtime_of(tx));
+    if (tsim_sched_pending(net->sched, nd->budget_kick)) {
+        if (nd->budget_at <= when) {
+            return;
+        }
+        tsim_sched_cancel(net->sched, nd->budget_kick);
+    }
+    nd->budget_at = when;
+    nd->budget_kick = tsim_sched_at(net->sched, when, budget_fire, nd);
+}
+
+/* Tells the MAC the queue or the radio may have changed. */
+static void kick(struct tsim_node *nd) {
+    budget_arm(nd);
+    nd->net->mac->kick(nd->mac);
+}
+
 const struct tsim_tx *tsim_node_head(const struct tsim_node *nd) {
-    return nd->queue_len ? &nd->queue[0].tx : NULL;
+    size_t at = head_at(nd);
+    return at < nd->queue_len ? &nd->queue[at].tx : NULL;
 }
 
 size_t tsim_node_queue_length(const struct tsim_node *nd) { return nd->queue_len; }
@@ -717,7 +846,7 @@ static void duty_fire(struct tsim_sched *sched, void *ctx) {
     struct tsim_node *nd = ctx;
     nd->duty_kick = (struct tsim_event){0};
     if (!nd->off && nd->mac) {
-        nd->net->mac->kick(nd->mac);
+        kick(nd);
     }
 }
 
@@ -783,12 +912,54 @@ static void duty_remember(struct tsim_node *nd, tsim_time start, tsim_time end) 
     nd->sent[nd->sent_at + nd->sent_len++] = (struct burst){start, end};
 }
 
+/* Whether the frame at `at`, due now, goes as far as the budget is concerned. One of the node's
+ * own that its buckets no longer hold - an acknowledgement has been charged since the MAC chose it
+ * - waits; one passed on is dropped. In shadow mode every frame goes, and what would not is
+ * counted. */
+static bool budget_allows(struct tsim_node *nd, size_t at) {
+    struct tsim_net *net = nd->net;
+    const struct tsim_tx *tx = &nd->queue[at].tx;
+    enum tsim_budget_mode mode = net->params.budget.mode;
+    if (mode == TSIM_BUDGET_MODE_OFF || !tsim_budget_payers(&nd->budget, tx->budget) ||
+        tsim_budget_paid(&nd->budget, tsim_sched_now(net->sched), tx->budget, airtime_of(tx))) {
+        return true;
+    }
+    if (tx->budget & TSIM_BUDGET_ACK) {
+        nd->stats.budget_short++;
+        return true;
+    }
+    if (tx->budget & TSIM_BUDGET_OWN) {
+        if (mode == TSIM_BUDGET_MODE_SHADOW) {
+            nd->stats.budget_held++;
+            return true;
+        }
+        kick(nd); /* it waits now, and whatever is behind it may go */
+        return false;
+    }
+    nd->stats.budget_dropped++;
+    if (mode == TSIM_BUDGET_MODE_SHADOW) {
+        return true;
+    }
+    struct queued q = nd->queue[at];
+    remove_at(nd, at);
+    if (q.tx.carries) {
+        tsim_node_drop(nd, q.tx.carries, TSIM_DROP_BUDGET,
+                       q.tx.addressed ? q.tx.to : TSIM_BROADCAST);
+    }
+    if (net->routing->withdrawn) {
+        net->routing->withdrawn(nd->routing, q.handle);
+    }
+    kick(nd);
+    return false;
+}
+
 bool tsim_node_transmit(struct tsim_node *nd) {
-    if (nd->sending || nd->queue_len == 0) {
+    size_t at = head_at(nd);
+    if (nd->sending || at == nd->queue_len) {
         return false;
     }
     if (nd->net->params.duty_cycle > 0) {
-        const struct tsim_tx *head = &nd->queue[0].tx;
+        const struct tsim_tx *head = &nd->queue[at].tx;
         tsim_time airtime = tsim_lora_airtime(&head->lora, head->len);
         if (!duty_allows(nd, airtime)) {
             nd->stats.held++;
@@ -796,13 +967,16 @@ bool tsim_node_transmit(struct tsim_node *nd) {
         }
     }
     const struct tsim_routing *routing = nd->net->routing;
-    if (routing->sending && !routing->sending(nd->routing, nd->queue[0].handle)) {
-        remove_at(nd, 0);
+    if (routing->sending && !routing->sending(nd->routing, nd->queue[at].handle)) {
+        remove_at(nd, at);
         nd->stats.cancelled++;
-        nd->net->mac->kick(nd->mac);
+        kick(nd);
         return false;
     }
-    nd->air = nd->queue[0];
+    if (!budget_allows(nd, at)) {
+        return false;
+    }
+    nd->air = nd->queue[at];
     const struct tsim_tx *tx = &nd->air.tx;
     struct tsim_net *net = nd->net;
     uint64_t frame = tsim_phy_transmit(net->phy, nd->index, tx->channel, &tx->lora, tx->len,
@@ -817,10 +991,21 @@ bool tsim_node_transmit(struct tsim_node *nd) {
             r->sent = tsim_sched_now(net->sched);
         }
     }
-    remove_at(nd, 0);
+    remove_at(nd, at);
     nd->sending = true;
     nd->ledger.frames[tx->purpose]++;
     tsim_time airtime = tsim_lora_airtime(&tx->lora, tx->len);
+    if (net->params.budget.mode != TSIM_BUDGET_MODE_OFF) {
+        tsim_time now = tsim_sched_now(net->sched);
+        tsim_budget_charge(&nd->budget, now, tx->budget, airtime);
+        if (nd->air.held_since >= 0) {
+            nd->stats.budget_gone++;
+            nd->stats.budget_waited += now - nd->air.held_since;
+        }
+        if ((tx->budget & TSIM_BUDGET_RELAYED) && !(tx->budget & TSIM_BUDGET_ACK)) {
+            nd->stats.budget_relayed++;
+        }
+    }
     nd->air_end = tsim_sched_now(nd->net->sched) + airtime;
     nd->ledger.airtime[tx->purpose] += airtime;
     if (net->params.duty_cycle > 0) {
@@ -854,7 +1039,8 @@ bool tsim_node_tune(struct tsim_node *nd, uint16_t channel, const struct tsim_lo
 }
 
 uint64_t tsim_node_head_handle(const struct tsim_node *nd) {
-    return nd->queue_len ? nd->queue[0].handle : 0;
+    size_t at = head_at(nd);
+    return at < nd->queue_len ? nd->queue[at].handle : 0;
 }
 
 tsim_time tsim_node_tx_airtime(const struct tsim_node *nd) {

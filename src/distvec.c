@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "tsim/budget.h"
 #include "tsim/channel.h"
 #include "tsim/metrics.h"
 #include "tsim/nodeset.h"
@@ -643,6 +644,13 @@ static struct tsim_tx frame(const struct router *r, enum tsim_purpose purpose, u
         .purpose = purpose,
         .priority = priority,
     };
+}
+
+/* The part of the airtime budget (tsim/budget.h) that pays for a frame of a message from `src`:
+ * this node's own, or one it passes on. Announces, requests, probes and the frames of
+ * re-attachment are routing's, which the cap pays for, and carry no mark. */
+static uint8_t budget_part(const struct router *r, uint32_t src) {
+    return src == r->self ? TSIM_BUDGET_OWN : TSIM_BUDGET_RELAYED;
 }
 
 /* --- Spreading factors --- */
@@ -3570,6 +3578,7 @@ static struct tsim_tx hop_ack(const struct router *r, const struct answer *a) {
     tx.bytes[18] = power_byte(tx.tx_dbm);
     tx.bytes[19] = a->b[0];
     tx.len = HOP_ACK_LEN;
+    tx.budget = TSIM_BUDGET_OWN | TSIM_BUDGET_ACK;
     return tx;
 }
 
@@ -3601,6 +3610,9 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
                                                                     : PRIORITY_RELAY);
     tx.addressed = true;
     tx.to = next;
+    tx.budget = type == TYPE_DATA  ? budget_part(r, src)
+                : type == TYPE_ACK ? (uint8_t)(budget_part(r, src) | TSIM_BUDGET_ACK)
+                                   : 0;
     tx.bytes[0] = type;
     put32(tx.bytes + 1, next);
     put32(tx.bytes + 5, src);
@@ -3698,6 +3710,7 @@ static uint64_t flood_out(struct router *r, uint32_t src, uint32_t id, uint32_t 
     struct tsim_tx tx =
         frame(r, purpose, purpose == TSIM_PURPOSE_DATA ? PRIORITY_DATA : PRIORITY_RELAY);
     tx.tx_dbm = r->config.tx_dbm; /* its links may be stale: as loud as it may, to find a relay */
+    tx.budget = (uint8_t)(budget_part(r, src) | TSIM_BUDGET_FLOOD);
     tx.bytes[0] = TYPE_FLOOD;
     put32(tx.bytes + 1, src);
     put32(tx.bytes + 5, id);
@@ -3929,6 +3942,7 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
         }
         struct tsim_tx tx = frame(r, TSIM_PURPOSE_DATA, PRIORITY_DATA);
         tx.tx_dbm = bcast_dbm(r);
+        tx.budget = TSIM_BUDGET_OWN | TSIM_BUDGET_FLOOD;
         tx.bytes[0] = TYPE_BCAST;
         put32(tx.bytes + 1, r->self);
         put32(tx.bytes + 5, (uint32_t)msg->id);
@@ -4104,6 +4118,7 @@ static void on_flood(struct router *r, const uint8_t *b, uint32_t len, uint8_t h
     }
     struct tsim_tx tx = frame(r, TSIM_PURPOSE_RELAY, PRIORITY_RELAY);
     tx.tx_dbm = bcast_dbm(r);
+    tx.budget = TSIM_BUDGET_RELAYED | TSIM_BUDGET_FLOOD;
     memcpy(tx.bytes, b, len);
     tx.bytes[9] = (uint8_t)(hops - 1);
     tx.len = len;
@@ -4139,6 +4154,7 @@ static void on_bcast(struct router *r, const uint8_t *b, uint32_t len, uint8_t h
     }
     struct tsim_tx tx = frame(r, TSIM_PURPOSE_RELAY, PRIORITY_RELAY);
     tx.tx_dbm = bcast_dbm(r);
+    tx.budget = TSIM_BUDGET_RELAYED | TSIM_BUDGET_FLOOD;
     memcpy(tx.bytes, b, len);
     tx.bytes[9] = (uint8_t)(spends ? hops - 1 : hops);
     tx.len = len;
@@ -4319,6 +4335,27 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
     default:
         return;
     }
+}
+
+/* The network dropped a frame this node was to pass on, which the airtime budget did not pay for
+ * (tsim/net.h): it is no longer on its way out, so a copy sent this node again goes on again, and
+ * a broadcast relay is no longer held for copies heard. */
+static void router_withdrawn(void *self, uint64_t handle) {
+    struct router *r = self;
+    for (size_t i = 0; i < r->hop_count; i++) {
+        if (r->hops[i].handle == handle) {
+            drop_hop(r, i);
+            arm_hops(r);
+            return;
+        }
+    }
+    for (size_t i = 0; i < r->held_count; i++) {
+        if (r->held[i].handle == handle) {
+            r->held[i] = r->held[--r->held_count];
+            return;
+        }
+    }
+    withdrawn(r, handle);
 }
 
 static void router_tx_done(void *self, uint64_t handle) {
@@ -4591,6 +4628,7 @@ const struct tsim_routing tsim_distvec = {
     .originate = router_originate,
     .rx = router_rx,
     .tx_done = router_tx_done,
+    .withdrawn = router_withdrawn,
     .reports_finished = true,
     .next_hop = router_next_hop,
 };

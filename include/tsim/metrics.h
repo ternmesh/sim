@@ -177,6 +177,48 @@ struct tsim_losses {
     uint64_t progress[TSIM_PROGRESS_COUNT];
 };
 
+/* What the airtime budget (tsim/budget.h) did over the window, every node, or in shadow mode what
+ * it would have done; all 0 with it off. */
+#define TSIM_BUDGET_BUSIEST 10
+struct tsim_budget_node {
+    uint32_t node;
+    uint64_t relayed;  /* frames passed on that the relayed part paid for */
+    uint64_t dropped;  /* frames it would have passed on, dropped */
+    double relay_duty; /* its airtime charged as relay (tsim_purpose) over the window */
+    double duty;       /* all its airtime over the window */
+};
+
+struct tsim_budget_report {
+    /* Set by tsim_scenario_run(); tsim_metrics_report() leaves it off. */
+    enum tsim_budget_mode mode;
+    uint64_t held;       /* frames of nodes' own that waited for their buckets */
+    double wait_mean_s;  /* how long those that went waited, on average */
+    uint64_t dropped;    /* frames passed on, dropped */
+    uint64_t relayed;    /* frames passed on that the relayed part paid for */
+    uint64_t short_acks; /* acknowledgements sent that their buckets did not hold */
+    uint32_t dropping;   /* nodes that dropped any */
+    /* Unicasts counted, with a frame of theirs dropped for the budget somewhere on the way; and of
+     * those, how many were delivered on time all the same, another way or on another try. */
+    uint64_t unicast_hit;
+    uint64_t unicast_hit_on_time;
+    uint64_t broadcast_hit; /* broadcasts counted, with a copy dropped for the budget */
+    /* The nodes that passed on the most, by frames relayed and dropped together, the most first,
+     * and the share of what those were asked to pass on that they dropped. */
+    uint32_t busiest_count;
+    struct tsim_budget_node busiest[TSIM_BUDGET_BUSIEST];
+    double busiest_drop;
+};
+
+/* With chatty nodes (tsim/traffic.h), the messages of the rest: what writing without pause costs
+ * those that do not. */
+struct tsim_quiet {
+    bool present;
+    uint64_t unicast_wanted;
+    uint64_t unicast_on_time;
+    uint64_t broadcast_wanted;
+    uint64_t broadcast_on_time;
+};
+
 struct tsim_report {
     tsim_time elapsed; /* the measured window so far, which every duty cycle is a fraction of */
     tsim_time deadline;
@@ -233,6 +275,8 @@ struct tsim_report {
     struct tsim_churn churn;
     struct tsim_announces announces;
     struct tsim_losses losses;
+    struct tsim_budget_report budget;
+    struct tsim_quiet quiet;
 };
 
 struct tsim_metrics;
@@ -256,6 +300,10 @@ bool tsim_metrics_churn(struct tsim_metrics *metrics);
  * tsim_churn, readying it if need be. Returns false when memory runs out, leaving the churn
  * report short of it. */
 bool tsim_metrics_power(struct tsim_metrics *metrics, uint32_t node, bool on);
+
+/* Marks the nodes, one byte each, whose messages struct tsim_quiet leaves out; copied. Returns
+ * false when memory runs out, leaving it unreported. */
+bool tsim_metrics_apart(struct tsim_metrics *metrics, const uint8_t *chatty);
 
 /* Stops watching and frees it. */
 void tsim_metrics_destroy(struct tsim_metrics *metrics);
