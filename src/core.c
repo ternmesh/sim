@@ -428,6 +428,42 @@ bool tsim_core_relay(const struct tsim_core_config *c, uint32_t node) {
     return c->relay_pick == 0 || (c->relay_set && c->relay_set[node]);
 }
 
+bool tsim_core_route_counts(const void *router, struct tsim_routing_books *out) {
+    *out = (struct tsim_routing_books){0};
+#ifdef TSIM_FIRMWARE_ROUTE_COUNTS
+    _Static_assert(TSIM_ROUTING_FIRES == TERN_ROUTE_FIRE_COUNT, "the fires tern/route.h counts");
+    _Static_assert(TSIM_ROUTING_RESETS == TERN_ROUTE_RESET_COUNT, "the resets tern/route.h counts");
+    const struct tern_route_counts *c = &((const struct router *)router)->route.counts;
+    out->fires = c->fires;
+    out->suppressed = c->suppressed;
+    for (int k = 0; k < TSIM_ROUTING_FIRES; k++) {
+        out->fired[k] = c->fired[k];
+    }
+    for (int k = 0; k < TSIM_ROUTING_RESETS; k++) {
+        out->resets[k] = c->resets[k];
+    }
+    _Static_assert(TSIM_ROUTING_CHANGES == TERN_ROUTE_CHANGE_COUNT, "the changes it counts");
+    for (int k = 0; k < TSIM_ROUTING_CHANGES; k++) {
+        out->queued[k] = c->queued[k];
+    }
+    out->reattached = c->reattached;
+    out->raised = c->raised;
+    out->announces = c->announces;
+    out->burst = c->burst;
+    out->at_max = c->at_max;
+    out->bytes = c->bytes;
+    out->routes = c->routes;
+    out->changed = c->changed;
+    out->named = c->named;
+    out->addressed = c->addressed;
+    out->requests = c->requests;
+    return true;
+#else
+    (void)router;
+    return false;
+#endif
+}
+
 static struct tern_lora lora_of(const struct tsim_lora *l) {
     return (struct tern_lora){
         .sf = l->sf,

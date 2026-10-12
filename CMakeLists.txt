@@ -151,6 +151,14 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
     if(TSIM_ROUTE_REATTACH)
         target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_REATTACH)
     endif()
+    # A firmware whose router counts what its announces are for (MSH-103) has them reported.
+    file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/route.h" TSIM_ROUTE_COUNTS
+         REGEX "struct tern_route_counts \\{")
+    if(TSIM_ROUTE_COUNTS)
+        # Kept only in a build that asks for them: a board has no room for them.
+        target_compile_definitions(terncore PUBLIC TERN_ROUTE_COUNTS)
+        target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_ROUTE_COUNTS)
+    endif()
     # A firmware whose flooder sends a node's own frame again when no relay is heard passing it on
     # (MSH-104) has it measured on and off.
     file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/flood.h" TSIM_FLOOD_RESENDS

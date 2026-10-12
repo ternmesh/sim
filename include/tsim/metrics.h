@@ -128,6 +128,55 @@ struct tsim_announces {
     uint32_t sensed[2][3];
 };
 
+/* A router's books (MSH-103), as the core keeps them with a firmware that counts them
+ * (tsim/core.h): Trickle intervals that reached their time, those kept quiet and, of the rest,
+ * why they announced - fewer than REDUNDANCY consistent announces heard, kept quiet QUIET_MAX
+ * intervals running, changed routes of its own waiting, asked for its seq, starting, moved and
+ * re-attached; intervals cut short to I_MIN, by why - a route selected or lost, a link up or down,
+ * a neighbour out of use or back, one forgotten, a starved destination retracted, done starting,
+ * asked, moved; routes queued to
+ * go first as changed, by why - never announced, a newer seq, the metric moved by more than
+ * CHANGE, whether it is a leaf changed, retracted, asked for; its own seq raised, having moved
+ * and re-attached, and asked by a request; announce frames
+ * built, those after the first of a burst, those with the interval at I_MAX, their bytes, the
+ * routes they carried and of those the changed ones sent first, the neighbours they named, those
+ * carrying the address; and request frames. */
+#define TSIM_ROUTING_FIRES 6
+#define TSIM_ROUTING_RESETS 8
+#define TSIM_ROUTING_CHANGES 6
+struct tsim_routing_books {
+    uint64_t fires;
+    uint64_t suppressed;
+    uint64_t fired[TSIM_ROUTING_FIRES];
+    uint64_t resets[TSIM_ROUTING_RESETS];
+    uint64_t queued[TSIM_ROUTING_CHANGES];
+    uint64_t reattached;
+    uint64_t raised;
+    uint64_t announces;
+    uint64_t burst;
+    uint64_t at_max;
+    uint64_t bytes;
+    uint64_t routes;
+    uint64_t changed;
+    uint64_t named;
+    uint64_t addressed;
+    uint64_t requests;
+};
+
+/* What the core's routing spent over the window, leaves [0] and relays [1] apart (MSH-103): how
+ * many there are, their announce frames sent and announce and control airtime, and their routers'
+ * books summed, kept through power cycles. Present with the core and a firmware that counts. */
+struct tsim_routing_costs {
+    bool present;
+    struct {
+        uint32_t nodes;
+        uint64_t announce_frames; /* announce frames sent, from the ledger */
+        double announce_s;
+        double control_s;
+        struct tsim_routing_books books;
+    } kind[2];
+};
+
 /* Broadcasts over the window and where they went missing (MSH-104), with report.floods: for every
  * broadcast but a card, each node that wanted it - every other, or those within its reach - and
  * what reached it. A wanted node that decoded no frame carrying it is `missed`, and is one of:
@@ -313,6 +362,7 @@ struct tsim_report {
     struct tsim_relay_tier relays;
     struct tsim_churn churn;
     struct tsim_announces announces;
+    struct tsim_routing_costs routing;
     struct tsim_floods floods;
     struct tsim_losses losses;
     struct tsim_budget_report budget;

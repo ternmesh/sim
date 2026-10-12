@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "tsim/lora.h"
+#include "tsim/metrics.h"
 #include "tsim/node.h"
 
 /* The firmware's protocol core (ternmesh/firmware, src/route.c), run as a routing plugin: the code
@@ -548,6 +549,11 @@ const char *tsim_core_check(const struct tsim_core_config *config);
 
 /* Whether `node` is a relay under `config`. */
 bool tsim_core_relay(const struct tsim_core_config *config, uint32_t node);
+
+/* The router's books at one node since it last started (tern/route.h's counts), with a firmware
+ * that keeps them (MSH-103), as struct tsim_routing_books has them. False, and `out` zero, with a
+ * firmware without them. `router` is tsim_net_routing()'s. */
+bool tsim_core_route_counts(const void *router, struct tsim_routing_books *out);
 
 /* The flooder's books at one node since it last started (tern/flood.h's counts), for
  * report.floods: frames heard new and copies heard, frames taken to pass on and, of them, those

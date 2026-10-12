@@ -2225,6 +2225,115 @@ static void announces_free(struct announces *a) {
     free(a->pairs);
 }
 
+/* What the core's routing spends over the window (MSH-103): each node's routing books as the window
+ * began, or as it last came up since, and its ledger as the window began. */
+struct costs {
+    uint32_t n;
+    bool *relay; /* [node] */
+    struct tsim_routing_books *begun;
+    struct tsim_ledger *ledger;
+    struct tsim_routing_costs report;
+};
+
+#ifdef TSIM_HAVE_CORE
+/* Adds a's books less b's to sum, field by field: every field is a count. */
+static void books_add(struct tsim_routing_books *sum, const struct tsim_routing_books *a,
+                      const struct tsim_routing_books *b) {
+#define BOOK(f) sum->f += a->f - b->f
+    BOOK(fires);
+    BOOK(suppressed);
+    for (int k = 0; k < TSIM_ROUTING_FIRES; k++) {
+        BOOK(fired[k]);
+    }
+    for (int k = 0; k < TSIM_ROUTING_RESETS; k++) {
+        BOOK(resets[k]);
+    }
+    for (int k = 0; k < TSIM_ROUTING_CHANGES; k++) {
+        BOOK(queued[k]);
+    }
+    BOOK(reattached);
+    BOOK(raised);
+    BOOK(announces);
+    BOOK(burst);
+    BOOK(at_max);
+    BOOK(bytes);
+    BOOK(routes);
+    BOOK(changed);
+    BOOK(named);
+    BOOK(addressed);
+    BOOK(requests);
+#undef BOOK
+    /* A field added to the books is added here too. */
+    _Static_assert(sizeof *sum ==
+                       (11 + 2 + TSIM_ROUTING_FIRES + TSIM_ROUTING_RESETS + TSIM_ROUTING_CHANGES) *
+                           sizeof(uint64_t),
+                   "books_add() names every field");
+}
+#endif
+
+/* Books what a node's router has counted since it was last counted from: at the window's end,
+ * and as the node powers down, its books going with its router. */
+static void costs_book(struct costs *c, uint32_t node, const void *router) {
+#ifdef TSIM_HAVE_CORE
+    if (!c->begun || !router) {
+        return;
+    }
+    struct tsim_routing_books now;
+    tsim_core_route_counts(router, &now);
+    books_add(&c->report.kind[c->relay[node]].books, &now, &c->begun[node]);
+    c->begun[node] = (struct tsim_routing_books){0}; /* it comes up again from nothing */
+#else
+    (void)c;
+    (void)node;
+    (void)router;
+#endif
+}
+
+static bool costs_start(struct costs *c, struct tsim_net *net) {
+    c->n = tsim_net_nodes(net);
+    c->begun = calloc(c->n, sizeof *c->begun);
+    c->ledger = calloc(c->n, sizeof *c->ledger);
+    if (!c->begun || !c->ledger) {
+        return false;
+    }
+    for (uint32_t i = 0; i < c->n; i++) {
+#ifdef TSIM_HAVE_CORE
+        const void *r = tsim_net_routing(net, i);
+        if (r) {
+            tsim_core_route_counts(r, &c->begun[i]);
+        }
+#endif
+        tsim_net_ledger_now(net, i, &c->ledger[i]);
+    }
+    return true;
+}
+
+static void costs_report(struct costs *c, struct tsim_net *net, struct tsim_routing_costs *out) {
+    for (uint32_t i = 0; i < c->n; i++) {
+        costs_book(c, i, tsim_net_routing(net, i));
+        struct tsim_ledger now;
+        tsim_net_ledger_now(net, i, &now);
+        int k = c->relay[i];
+        c->report.kind[k].nodes++;
+        c->report.kind[k].announce_frames +=
+            now.frames[TSIM_PURPOSE_ANNOUNCE] - c->ledger[i].frames[TSIM_PURPOSE_ANNOUNCE];
+        c->report.kind[k].announce_s += (double)(now.airtime[TSIM_PURPOSE_ANNOUNCE] -
+                                                 c->ledger[i].airtime[TSIM_PURPOSE_ANNOUNCE]) /
+                                        1e9;
+        c->report.kind[k].control_s += (double)(now.airtime[TSIM_PURPOSE_CONTROL] -
+                                                c->ledger[i].airtime[TSIM_PURPOSE_CONTROL]) /
+                                       1e9;
+    }
+    *out = c->report;
+    out->present = true;
+}
+
+static void costs_free(struct costs *c) {
+    free(c->relay);
+    free(c->begun);
+    free(c->ledger);
+}
+
 /* Broadcasts over the window (MSH-104): at every node, each frame carrying one, from the window
  * on. A message's state at a node: FLOOD_DECODED, FLOOD_NEAR, the count of frames that came in
  * above the floor, saturating, and above those a bit for each fate one of them met. */
@@ -2463,6 +2572,7 @@ struct window {
     bool *relay;                              /* [node], with dv */
     const struct tsim_distvec_stats *retired; /* books of routers since powered down */
     struct announces *announces;              /* with report.announces */
+    struct costs *costs;                      /* with the core and a firmware that counts */
     struct floods *floods;                    /* with report.floods */
     bool failed;
     tsim_time begun;
@@ -2556,6 +2666,9 @@ static void begin_window(struct tsim_sched *sched, void *ctx) {
     } else if (w->announces) {
         sensed_links(w->announces, w->net, w->announces->report.sensed[0]);
     }
+    if (w->costs && !costs_start(w->costs, w->net)) {
+        w->failed = true;
+    }
     if (w->floods && !floods_start(w->floods, w->net)) {
         w->failed = true;
     }
@@ -2635,6 +2748,7 @@ struct churn {
     tsim_time down;
     bool dv;
     struct tsim_distvec_stats retired; /* what routers powered down had booked */
+    struct costs *costs;               /* with the core and a firmware that counts */
     struct floods *floods;             /* with report.floods */
     struct churner *churners;
     uint32_t count;
@@ -2651,6 +2765,9 @@ static void churn_flip(struct tsim_sched *sched, void *ctx) {
     struct churner *ch = ctx;
     struct churn *c = ch->churn;
     bool on = ch->down;
+    if (!on && c->costs) {
+        costs_book(c->costs, ch->node, tsim_net_routing(c->net, ch->node));
+    }
     if (!on && c->floods) {
         floods_book(c->floods, ch->node, tsim_net_routing(c->net, ch->node));
     }
@@ -2898,6 +3015,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     struct churn churn = {0};
     struct moving moving = {0};
     struct announces announces = {0};
+    struct costs costs = {0};
     struct floods floods = {0};
     bool *flood_relay = NULL;
     bool ok = false;
@@ -3023,6 +3141,18 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         window.dv = dv;
         window.announces = s->report_announces ? &announces : NULL;
     }
+#if defined(TSIM_HAVE_CORE) && defined(TSIM_FIRMWARE_ROUTE_COUNTS)
+    if (metrics && s->routing->routing == &tsim_core) {
+        costs.relay = malloc(s->nodes * sizeof *costs.relay);
+        if (!costs.relay) {
+            goto done;
+        }
+        for (uint32_t i = 0; i < s->nodes; i++) {
+            costs.relay[i] = tsim_core_relay((const struct tsim_core_config *)routing_config, i);
+        }
+        window.costs = &costs;
+    }
+#endif
     if (metrics && s->report_floods) {
         flood_relay = malloc(s->nodes * sizeof *flood_relay);
         if (!flood_relay) {
@@ -3100,6 +3230,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
                                .up = s->churn_up,
                                .down = s->churn_down,
                                .dv = dv != NULL,
+                               .costs = window.costs,
                                .floods = window.floods};
         window.retired = &churn.retired;
         if (!tsim_metrics_churn(metrics) || !churn_start(&churn, s, routing_config, sched)) {
@@ -3123,6 +3254,9 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     if (window.announces && !window.failed) {
         sensed_links(&announces, net, announces.report.sensed[1]);
         announces_report(&announces, net, window.begun, tsim_sched_now(sched), &report->announces);
+    }
+    if (window.costs && !window.failed) {
+        costs_report(&costs, net, &report->routing);
     }
     if (window.floods && !window.failed && !floods_report(&floods, net, &report->floods)) {
         window.failed = true;
@@ -3154,6 +3288,7 @@ done:
     free(churn.churners);
     move_free(&moving);
     announces_free(&announces); /* the network that called into it is gone */
+    costs_free(&costs);
     floods_free(&floods);
     free(flood_relay);
     free(window.relay);
