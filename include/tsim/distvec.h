@@ -310,7 +310,9 @@
  * reach of that position. Every node that hears it delivers it, wherever it stands: a relay just
  * outside reaches the nodes on the edge, and stops there. A node's own position is what it was
  * configured with (`pos`), as a relay on a mast is, and a leaf's is what it reports; neither
- * moves. Off by default: no section of the specification has a scoped flood yet.
+ * moves. A run whose nodes stand further than TSIM_DISTVEC_GEO_MAX metres from the origin either
+ * way, which the frame cannot carry, is refused. Off by default: no section of the specification
+ * has a scoped flood yet.
  *
  * How loud a broadcast goes, with power control (MSH-67): bcast_power. Broadcasts went as announces
  * do, loud enough for the power_k neighbours with the lowest floors. At high power those are near
@@ -604,6 +606,8 @@ enum tsim_distvec_pick {
 };
 
 struct tsim_distvec_oracle;
+
+#define TSIM_DISTVEC_GEO_MAX 8388607.0 /* metres a scoped broadcast's position holds */
 
 struct tsim_pos;
 

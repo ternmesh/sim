@@ -2715,8 +2715,15 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         }
         *pk.set = relay_set;
     }
-    /* Each node knows where it stands, for a broadcast scoped by place: where it was placed. */
+    /* Each node knows where it stands, for a broadcast scoped by place: where it was placed. A
+     * position its frame cannot carry, in 24 bits of metres each way, is refused, not clamped. */
     if (dv && dv->bcast_geo) {
+        for (uint32_t i = 0; i < s->nodes; i++) {
+            if (!(fabs(pos[i].x) <= TSIM_DISTVEC_GEO_MAX &&
+                  fabs(pos[i].y) <= TSIM_DISTVEC_GEO_MAX)) {
+                goto done;
+            }
+        }
         dv->pos = pos;
     }
     /* A node that moves knows it does, as a handheld would: the same nodes move_start() picks. */

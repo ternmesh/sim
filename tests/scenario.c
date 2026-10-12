@@ -1,6 +1,7 @@
 #include "tsim/scenario.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1039,8 +1040,60 @@ static void chatty_nodes_are_reported_apart(void) {
     CHECK(tsim_scenario_run(&s, &rep) && !rep.quiet.present);
 }
 
+/* Flows parse field by field, in the order first named, and what cannot be refused. */
+static void flows_parse_and_are_checked(void) {
+    struct tsim_scenario s;
+    CHECK(parse(&s, "nodes = 10\nrouting = flood\nmac = aloha\ntraffic.peers = 2\n"
+                    "flow.position.interval = 15 min\nflow.position.timer = yes\n"
+                    "flow.position.len = 28\nflow.position.reach = 1500\nflow.position.hops = 2\n"
+                    "flow.dm.interval = 4 h\nflow.dm.to = peer\nflow.dm.reply = 0.7\n"
+                    "flow.dm.len = 8..50\nflow.dm.share = 0.5\n"));
+    CHECK_EQ_U64(s.flow_count, 2);
+    CHECK(strcmp(s.flows[0].name, "position") == 0 && strcmp(s.flows[1].name, "dm") == 0);
+    CHECK_EQ_I64(s.flows[0].interval, TSIM_S(900));
+    CHECK(s.flows[0].timer && s.flows[0].to == TSIM_FLOW_ALL && s.flows[0].len_min == 28);
+    CHECK(s.flows[0].reach_m == 1500 && s.flows[0].hops == 2);
+    CHECK(s.flows[1].to == TSIM_FLOW_PEER && s.flows[1].reply == 0.7 && s.flows[1].share == 0.5);
+    CHECK(s.flows[1].len_min == 8 && s.flows[1].len_max == 50);
+    static const char *const bad[] = {
+        "flow.x.len = 32\n",                                         /* no interval */
+        "flow.x.interval = 1 h\nflow.x.to = peer\n",                 /* no peers */
+        "flow.x.interval = 1 h\nflow.x.reply = 0.5\n",               /* a broadcast answered */
+        "flow.x.interval = 1 h\nflow.x.to = any\nflow.x.hops = 1\n", /* a unicast scoped */
+        "flow.x.interval = 1 h\nflow.x.hops = 255\n",
+        "flow.x.interval = 1 h\nflow.x.reach = 700000\n",
+        "flow.x.interval = 1 h\nflow.x.colour = red\n",
+        "flow.a-b.interval = 1 h\n",
+        "flow.x.interval = 1 h\ntraffic.closed = yes\n",
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
+        char text[256];
+        snprintf(text, sizeof text, "nodes = 10\nrouting = flood\nmac = aloha\n%s", bad[i]);
+        CHECK(!parse(&s, text));
+    }
+}
+
+/* A broadcast scoped by place carries 24 bits of metres each way: a node further out does not
+ * start a run that would clamp it. */
+static void a_scope_by_place_refuses_a_position_it_cannot_carry(void) {
+    struct tsim_scenario s;
+    const char *text = "nodes = 2\nplacement = line\nspacing = %s\nchannel.sigma = 0\n"
+                       "routing = distvec\nmac = aloha\nrouting.bcast_geo = yes\n"
+                       "traffic.interval = none\nduration = 1 min\n";
+    char buf[256];
+    struct tsim_report rep;
+    snprintf(buf, sizeof buf, text, "9000000");
+    CHECK(parse(&s, buf));
+    CHECK(!tsim_scenario_run(&s, &rep));
+    snprintf(buf, sizeof buf, text, "1000");
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &rep));
+}
+
 int main(void) {
     RUN(the_documented_example_parses);
+    RUN(flows_parse_and_are_checked);
+    RUN(a_scope_by_place_refuses_a_position_it_cannot_carry);
     RUN(every_value_kind_reads);
     RUN(plugin_settings_may_come_first);
     RUN(the_listening_mac_follows_the_radio);

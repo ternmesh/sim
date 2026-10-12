@@ -26,11 +26,12 @@ MSH-34 asked to be measured:
   core             the firmware's routing, with a board's tables: the flood of draft/flooding.md
   core, 1 hop      the core with presence, position and telemetry asking for one relay hop, the
                    scope the flood's head already carries
+  core, 2 hops     the same, two relay hops
   core, geo        not run: the firmware has no scope by place
 
 Each run's report is kept in --out, so the table can be printed again with --only and no runs.
 --only takes the candidates' ids, their names without commas or spaces: meshtastic, meshcore,
-distvec, distvec-geo, core and core-1hop; empty for all of them.
+distvec, distvec-geo, core, core-1hop and core-2hops; empty for all of them.
 """
 
 import argparse
@@ -54,6 +55,7 @@ CANDIDATES = [
     ("distvec, geo", ["routing=distvec", "mac=meshcore", "routing.bcast_geo=yes"]),
     ("core", []),
     ("core, 1 hop", ["flow.%s.hops=1" % f for f in LOCAL]),
+    ("core, 2 hops", ["flow.%s.hops=2" % f for f in LOCAL]),
 ]
 
 
