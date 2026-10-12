@@ -59,7 +59,7 @@ struct tsim_budget_params {
     tsim_time flood_relayed_window;
 };
 
-/* Off, with the specification's values for when it is on: own 1% of 600 s, relayed 8% of 60 s,
+/* Off, with the specification's values for when it is on: own 2% of 600 s, relayed 7% of 60 s,
  * and the flood allowances, 0.5% of 600 s and 3% of 60 s. */
 struct tsim_budget_params tsim_budget_defaults(void);
 
