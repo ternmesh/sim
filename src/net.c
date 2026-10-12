@@ -747,12 +747,10 @@ static bool may_wait(const struct tsim_tx *tx) {
     return (tx->budget & TSIM_BUDGET_OWN) && !(tx->budget & TSIM_BUDGET_ACK);
 }
 
-/* Where the frame of the node's own its buckets do not hold now is in the queue, or queue_len if
- * none is: it and every frame of its own behind it wait, and the rest go as they would. */
-static size_t blocker(const struct tsim_node *nd) {
-    if (nd->net->params.budget.mode != TSIM_BUDGET_MODE_ON) {
-        return nd->queue_len;
-    }
+/* Where the first frame of the node's own that its buckets do not hold now is in the queue, or
+ * queue_len if none is: with the budget on, it and every frame of its own behind it wait, and the
+ * rest go as they would. */
+static size_t short_at(const struct tsim_node *nd) {
     tsim_time now = tsim_sched_now(nd->net->sched);
     for (size_t i = 0; i < nd->queue_len; i++) {
         const struct tsim_tx *tx = &nd->queue[i].tx;
@@ -761,6 +759,11 @@ static size_t blocker(const struct tsim_node *nd) {
         }
     }
     return nd->queue_len;
+}
+
+/* As short_at(), where the budget is kept: on, only there do those frames wait. */
+static size_t blocker(const struct tsim_node *nd) {
+    return nd->net->params.budget.mode == TSIM_BUDGET_MODE_ON ? short_at(nd) : nd->queue_len;
 }
 
 /* The frame the MAC is shown: the first in the queue that is not waiting for the budget, or
@@ -797,7 +800,10 @@ static void budget_fire(struct tsim_sched *sched, void *ctx) {
  * for: until then nothing behind it can go either, whatever is charged meanwhile. */
 static void budget_arm(struct tsim_node *nd) {
     struct tsim_net *net = nd->net;
-    size_t stop = blocker(nd);
+    /* In shadow mode they are marked as on, the first time their buckets are short, but nothing
+     * waits and nothing is kicked. */
+    bool shadow = net->params.budget.mode == TSIM_BUDGET_MODE_SHADOW;
+    size_t stop = shadow ? short_at(nd) : blocker(nd);
     if (stop == nd->queue_len) {
         return;
     }
@@ -808,6 +814,9 @@ static void budget_arm(struct tsim_node *nd) {
             q->held_since = now;
             nd->stats.budget_held++;
         }
+    }
+    if (shadow) {
+        return;
     }
     const struct tsim_tx *tx = &nd->queue[stop].tx;
     tsim_time when = now + tsim_budget_wait(&nd->budget, now, tx->budget, airtime_of(tx));
@@ -931,7 +940,11 @@ static bool budget_allows(struct tsim_node *nd, size_t at) {
     }
     if (tx->budget & TSIM_BUDGET_OWN) {
         if (mode == TSIM_BUDGET_MODE_SHADOW) {
-            nd->stats.budget_held++;
+            /* Short since it was queued, or only now, after an acknowledgement was charged. */
+            if (nd->queue[at].held_since < 0) {
+                nd->queue[at].held_since = tsim_sched_now(net->sched);
+                nd->stats.budget_held++;
+            }
             return true;
         }
         kick(nd); /* it waits now, and whatever is behind it may go */

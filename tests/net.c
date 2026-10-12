@@ -1119,6 +1119,28 @@ static void frames_waiting_for_the_budget_leave_the_queue_room(void) {
     rig_close(&r);
 }
 
+/* In shadow mode a frame of the node's own is counted held the moment its buckets fall short, as
+ * one waits with the budget on, though the MAC still sees it - and once only, however late the
+ * MAC sends it, when its buckets have filled again. */
+static void shadow_mode_counts_a_frame_held_when_it_is_first_short(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_SHADOW, 16);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, TSIM_S(1));
+    uint64_t second = tsim_node_send(n, &own);
+    CHECK(tsim_node_head_handle(n) == second); /* not hidden */
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_held, 1);
+    run_for(&r, 200 * airtime(255)); /* the part has filled */
+    CHECK(tsim_node_transmit(n));
+    run_for(&r, TSIM_S(1));
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_held, 1);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_gone, 1);
+    rig_close(&r);
+}
+
 /* Off, the marks change nothing. */
 static void with_the_budget_off_marks_change_nothing(void) {
     struct rig r;
@@ -1173,6 +1195,7 @@ int main(void) {
     RUN(the_budget_holds_a_nodes_own_frames);
     RUN(the_budget_drops_what_it_does_not_pay_to_pass_on);
     RUN(frames_waiting_for_the_budget_leave_the_queue_room);
+    RUN(shadow_mode_counts_a_frame_held_when_it_is_first_short);
     RUN(with_the_budget_off_marks_change_nothing);
     return CHECK_DONE();
 }

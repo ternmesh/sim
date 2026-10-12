@@ -1699,6 +1699,9 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
                   "traffic.reply needs traffic.closed = no: an answer would start no gap, and "
                   "the closed loop has no gap for it to wait on");
     }
+    if (ok && s->chatty_share > 0 && s->chatty_interval == 0) {
+        ok = fail(err, 0, "traffic.chatty needs traffic.chatty_interval: how often they write");
+    }
     if (ok && !(extent(s) / s->channel.decorrelation_m <= 1e9)) {
         ok = fail(err, 0,
                   "the map is over a billion channel.decorrelation cells across, too many for a "

@@ -977,6 +977,12 @@ static void budget_settings_read(void) {
         snprintf(buf, sizeof buf, "nodes = 2\nrouting = flood\nmac = aloha\n%s", bad[i]);
         CHECK(!tsim_scenario_parse(&s, buf, &err) && err.line == 4);
     }
+    /* Chatty nodes need their interval, said when the scenario is read, not when it is run. */
+    CHECK(!tsim_scenario_parse(
+              &s, "nodes = 2\nrouting = flood\nmac = aloha\ntraffic.chatty = 0.1\n", &err) &&
+          err.line == 0 && strstr(err.message, "traffic.chatty_interval"));
+    CHECK(parse(&s, "nodes = 2\nrouting = flood\nmac = aloha\ntraffic.chatty = 0.1\n"
+                    "traffic.chatty_interval = 10 s\n"));
 }
 
 /* Candidate 3 on a line, its relays given a sliver of relayed share: they drop what they cannot
