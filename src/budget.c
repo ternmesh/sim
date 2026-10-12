@@ -122,23 +122,6 @@ void tsim_budget_charge(struct tsim_budget *bd, tsim_time at, uint8_t mark, tsim
     }
 }
 
-tsim_time tsim_budget_paid_since(const struct tsim_budget *bd, tsim_time at, uint8_t mark,
-                                 tsim_time airtime) {
-    if (!tsim_budget_paid(bd, at, mark, airtime)) {
-        return -1;
-    }
-    unsigned payers = tsim_budget_payers(bd, mark);
-    tsim_time since = INT64_MIN;
-    for (int i = 0; i < TSIM_BUCKET_COUNT; i++) {
-        if (payers >> i & 1) {
-            const struct tsim_bucket *b = &bd->bucket[i];
-            tsim_time t = b->at + tsim_bucket_wait(b, b->at, airtime);
-            since = t > since ? t : since;
-        }
-    }
-    return since;
-}
-
 tsim_time tsim_budget_wait(const struct tsim_budget *bd, tsim_time at, uint8_t mark,
                            tsim_time airtime) {
     unsigned payers = tsim_budget_payers(bd, mark);

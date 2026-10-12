@@ -1242,6 +1242,30 @@ static void a_frame_waiting_again_in_the_window_is_held_in_it(void) {
     rig_close(&r);
 }
 
+/* A frame free to go comes to wait when one of its own its part cannot pay for is queued ahead of
+ * it, and waits until that one is taken back. */
+static void a_frame_waits_while_one_queued_ahead_of_it_is_short(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 16);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n)); /* the own part is empty */
+    run_for(&r, TSIM_S(10));      /* and holds 100 ms */
+    struct tsim_tx small = marked(TSIM_PURPOSE_DATA, 1, 10, TSIM_BUDGET_OWN);
+    uint64_t free = tsim_node_send(n, &small);
+    CHECK(tsim_node_head_handle(n) == free && tsim_net_stats(r.net, 0)->budget_held == 0);
+    struct tsim_tx big = marked(TSIM_PURPOSE_DATA, 3, 255, TSIM_BUDGET_OWN);
+    uint64_t ahead = tsim_node_send(n, &big);
+    CHECK(tsim_node_head(n) == NULL && tsim_net_stats(r.net, 0)->budget_held == 2);
+    run_for(&r, TSIM_S(5));
+    CHECK(tsim_node_cancel(n, ahead));
+    CHECK(tsim_node_head_handle(n) == free);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_gone, 1);
+    CHECK_EQ_I64(tsim_net_stats(r.net, 0)->budget_waited, TSIM_S(5));
+    rig_close(&r);
+}
+
 /* In shadow mode nothing is kicked when a frame's buckets fill, so the report brings its wait up to
  * date itself: a frame free to go but not yet sent has waited, and waits no more. */
 static void a_report_ends_a_wait_nothing_kicked_for(void) {
@@ -1412,6 +1436,7 @@ int main(void) {
     RUN(a_frame_free_to_go_as_the_window_begins_is_not_waiting);
     RUN(a_wait_behind_another_ends_when_that_one_is_gone);
     RUN(a_report_ends_a_wait_nothing_kicked_for);
+    RUN(a_frame_waits_while_one_queued_ahead_of_it_is_short);
     RUN(a_frame_waiting_again_in_the_window_is_held_in_it);
     RUN(a_frame_that_will_wait_takes_no_room_in_the_queue);
     RUN(room_is_decided_where_a_frame_would_land);
