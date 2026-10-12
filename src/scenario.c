@@ -2233,8 +2233,8 @@ static void announces_free(struct announces *a) {
 #define FLOOD_AUDIBLE 0x3f
 struct floods {
     uint32_t n;
-    bool *watch;       /* [node]: every one */
-    const bool *relay; /* [node] */
+    bool *watch; /* [node]: every one */
+    bool *relay; /* [node]: elected ones as the window begins */
     const struct tsim_pos *pos;
     const struct tsim_phy *phy;
     double full_dbm; /* the radio's full power, less the floor */
@@ -2242,7 +2242,8 @@ struct floods {
     uint16_t *state; /* [(id - first) * n + node] */
     uint64_t held;   /* messages state has room for */
     struct tsim_floods report;
-    struct tsim_core_floods *begun; /* [node], with the core */
+    /* With the core: each node's books as the window began, or as it last came up since. */
+    struct tsim_core_floods *begun; /* [node] */
     bool failed;
 };
 
@@ -2324,6 +2325,33 @@ static bool flood_wanted(const struct floods *f, const struct tsim_message *msg,
     return hypot(a.x - b.x, a.y - b.y) <= msg->reach_m;
 }
 
+/* Adds what a node's flooder has booked since it was last counted from to the report: at the
+ * window's end, and as the node powers down, its books going with its router. */
+static void floods_book(struct floods *f, uint32_t node, const void *router) {
+#ifdef TSIM_HAVE_CORE
+    if (!f->begun || !router) {
+        return;
+    }
+    struct tsim_core_floods c, *b = &f->begun[node];
+    tsim_core_flood_counts(router, &c);
+    f->report.core.heard += c.heard - b->heard;
+    f->report.core.copies += c.copies - b->copies;
+    f->report.core.passed_on += c.passed_on - b->passed_on;
+    f->report.core.cancelled += c.cancelled - b->cancelled;
+    f->report.core.unpaid += c.unpaid - b->unpaid;
+    f->report.core.busy += c.busy - b->busy;
+    f->report.core.hop_limit += c.hop_limit - b->hop_limit;
+    f->report.core.no_room += c.no_room - b->no_room;
+    f->report.core.echoed += c.echoed - b->echoed;
+    f->report.core.resent += c.resent - b->resent;
+    *b = (struct tsim_core_floods){0}; /* it comes up again from nothing */
+#else
+    (void)f;
+    (void)node;
+    (void)router;
+#endif
+}
+
 static bool floods_report(struct floods *f, struct tsim_net *net, struct tsim_floods *out) {
     tsim_net_observe_heard(net, NULL, NULL, NULL);
     if (f->failed) {
@@ -2373,20 +2401,7 @@ static bool floods_report(struct floods *f, struct tsim_net *net, struct tsim_fl
             if (!rt) {
                 continue;
             }
-            struct tsim_core_floods c, *b = &f->begun[i];
-            tsim_core_flood_counts(rt, &c);
-            /* A node that restarted in the window counts from its restart. */
-            bool fresh = c.heard < b->heard;
-            r->core.heard += c.heard - (fresh ? 0 : b->heard);
-            r->core.copies += c.copies - (fresh ? 0 : b->copies);
-            r->core.passed_on += c.passed_on - (fresh ? 0 : b->passed_on);
-            r->core.cancelled += c.cancelled - (fresh ? 0 : b->cancelled);
-            r->core.unpaid += c.unpaid - (fresh ? 0 : b->unpaid);
-            r->core.busy += c.busy - (fresh ? 0 : b->busy);
-            r->core.hop_limit += c.hop_limit - (fresh ? 0 : b->hop_limit);
-            r->core.no_room += c.no_room - (fresh ? 0 : b->no_room);
-            r->core.echoed += c.echoed - (fresh ? 0 : b->echoed);
-            r->core.resent += c.resent - (fresh ? 0 : b->resent);
+            floods_book(f, i, rt);
         }
     }
 #endif
@@ -2490,6 +2505,9 @@ static void begin_window(struct tsim_sched *sched, void *ctx) {
     tsim_metrics_begin(w->metrics);
     w->begun = tsim_sched_now(sched);
     elected(w);
+    if (w->floods && w->relay && w->dv->relay_pick == TSIM_DISTVEC_PICK_ELECT) {
+        memcpy(w->floods->relay, w->relay, tsim_net_nodes(w->net) * sizeof *w->relay);
+    }
     if (w->dv) {
         distvec_sum(w->net, w->retired, &w->stats);
         w->relay_reach = relay_reach(w->net, w->relay);
@@ -2578,6 +2596,7 @@ struct churn {
     tsim_time down;
     bool dv;
     struct tsim_distvec_stats retired; /* what routers powered down had booked */
+    struct floods *floods;             /* with report.floods */
     struct churner *churners;
     uint32_t count;
     bool failed;
@@ -2593,6 +2612,9 @@ static void churn_flip(struct tsim_sched *sched, void *ctx) {
     struct churner *ch = ctx;
     struct churn *c = ch->churn;
     bool on = ch->down;
+    if (!on && c->floods) {
+        floods_book(c->floods, ch->node, tsim_net_routing(c->net, ch->node));
+    }
     if (!on && c->dv) {
         /* Its books go with it, but what it did stays done. */
         struct tsim_distvec_stats st;
@@ -3031,7 +3053,8 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
                                .metrics = metrics,
                                .up = s->churn_up,
                                .down = s->churn_down,
-                               .dv = dv != NULL};
+                               .dv = dv != NULL,
+                               .floods = window.floods};
         window.retired = &churn.retired;
         if (!tsim_metrics_churn(metrics) || !churn_start(&churn, s, routing_config, sched)) {
             goto done;

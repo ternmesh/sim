@@ -398,8 +398,8 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
     }
 #endif
 #ifndef TSIM_FIRMWARE_RESENDS
-    if (c->flood_resends) {
-        return "flood_resends needs a firmware whose flooder sends again";
+    if (c->flood_resends || c->flood_echo) {
+        return "flood_resends and flood_echo need a firmware whose flooder sends again";
     }
 #endif
     if (c->flood_resends > 255 || c->flood_echo > 255) {

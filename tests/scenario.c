@@ -1090,6 +1090,52 @@ static void a_scope_by_place_refuses_a_position_it_cannot_carry(void) {
     CHECK(tsim_scenario_run(&s, &rep));
 }
 
+/* report.floods books every wanted node that missed a broadcast once, as far, quiet or lost, and
+ * the lost by how many copies came in. On a line whose last node is out of everyone's range, a
+ * broadcast from the first misses it, and nothing sent came near it. */
+static void floods_say_why_a_broadcast_was_missed(void) {
+    struct tsim_scenario s;
+    char buf[512];
+    snprintf(buf, sizeof buf, "%sreport.floods = yes\n", line_text);
+    CHECK(parse(&s, buf));
+    struct tsim_report rep;
+    CHECK(tsim_scenario_run(&s, &rep));
+    const struct tsim_floods *f = &rep.floods;
+    CHECK(f->present && !f->has_core);
+    CHECK_EQ_U64(f->messages, rep.broadcast.messages);
+    CHECK_EQ_U64(f->wanted, rep.broadcast.wanted);
+    CHECK_EQ_U64(f->missed, rep.broadcast.wanted - rep.broadcast.delivered);
+    CHECK_EQ_U64(f->far + f->quiet + f->lost, f->missed);
+    CHECK_EQ_U64(f->copies[0] + f->copies[1] + f->copies[2] + f->copies[3], f->lost);
+    CHECK(f->relays_reached <= f->relays_wanted);
+
+    CHECK(parse(&s, "nodes = 3\nplacement = file\npositions = far.positions\n"
+                    "channel.sigma = 0\nrouting = flood\nmac = aloha\ntraffic.interval = none\n"
+                    "warmup = 1 s\nduration = 1 min\ntraffic.send = 2 s, 0, all, 40\n"
+                    "report.floods = yes\n"));
+    struct tsim_pos pos[3];
+    struct tsim_scenario_error err;
+    CHECK(tsim_scenario_read_positions(&s, "0 0\n100 0\n90000 0\n", pos, &err));
+    s.positions = pos;
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK_EQ_U64(f->messages, 1);
+    CHECK_EQ_U64(f->wanted, 2);
+    CHECK_EQ_U64(f->missed, 1);
+    CHECK_EQ_U64(f->far, 1);
+
+    /* Elected relays are the ones elected as the window begins. */
+    CHECK(parse(&s, "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
+                    "routing = distvec\nmac = meshcore\nrouting.relay_pick = elect\n"
+                    "traffic.interval = 5 min\ntraffic.broadcast = 1\nwarmup = 2 h\n"
+                    "duration = 30 min\nreport.floods = yes\n"));
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK(f->relays_wanted > 0 && f->relays_wanted < f->wanted);
+
+    /* Each follows every frame, so they go one at a time. */
+    snprintf(buf, sizeof buf, "%sreport.floods = yes\nreport.announces = yes\n", line_text);
+    CHECK(!tsim_scenario_parse(&s, buf, &err));
+}
+
 int main(void) {
     RUN(the_documented_example_parses);
     RUN(flows_parse_and_are_checked);
@@ -1102,6 +1148,7 @@ int main(void) {
     RUN(problems_say_where_they_are);
     RUN(meshtastic_settings_read_in_any_order);
     RUN(a_run_relays_across_its_map);
+    RUN(floods_say_why_a_broadcast_was_missed);
     RUN(a_warmup_is_reported_apart);
     RUN(a_send_as_the_warmup_ends_is_in_the_window);
     RUN(traffic_in_the_warmup_is_not_counted);
