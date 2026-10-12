@@ -2216,6 +2216,91 @@ static void announces_free(struct announces *a) {
     free(a->pairs);
 }
 
+/* What the core's routing spends over the window (MSH-103): each node's routing books as the window
+ * began, or as it last came up since, and its ledger as the window began. */
+struct costs {
+    uint32_t n;
+    bool *relay; /* [node] */
+    struct tsim_routing_books *begun;
+    struct tsim_ledger *ledger;
+    struct tsim_routing_costs report;
+};
+
+#ifdef TSIM_HAVE_CORE
+/* Adds a's books less b's to sum, field by field: every field is a count. */
+static void books_add(struct tsim_routing_books *sum, const struct tsim_routing_books *a,
+                      const struct tsim_routing_books *b) {
+    uint64_t *s = (uint64_t *)sum;
+    const uint64_t *x = (const uint64_t *)a, *y = (const uint64_t *)b;
+    for (size_t k = 0; k < sizeof *sum / sizeof *s; k++) {
+        s[k] += x[k] - y[k];
+    }
+}
+#endif
+
+/* Books what a node's router has counted since it was last counted from: at the window's end,
+ * and as the node powers down, its books going with its router. */
+static void costs_book(struct costs *c, uint32_t node, const void *router) {
+#ifdef TSIM_HAVE_CORE
+    if (!c->begun || !router) {
+        return;
+    }
+    struct tsim_routing_books now;
+    tsim_core_route_counts(router, &now);
+    books_add(&c->report.kind[c->relay[node]].books, &now, &c->begun[node]);
+    c->begun[node] = (struct tsim_routing_books){0}; /* it comes up again from nothing */
+#else
+    (void)c;
+    (void)node;
+    (void)router;
+#endif
+}
+
+static bool costs_start(struct costs *c, struct tsim_net *net) {
+    c->n = tsim_net_nodes(net);
+    c->begun = calloc(c->n, sizeof *c->begun);
+    c->ledger = calloc(c->n, sizeof *c->ledger);
+    if (!c->begun || !c->ledger) {
+        return false;
+    }
+    for (uint32_t i = 0; i < c->n; i++) {
+#ifdef TSIM_HAVE_CORE
+        const void *r = tsim_net_routing(net, i);
+        if (r) {
+            tsim_core_route_counts(r, &c->begun[i]);
+        }
+#endif
+        tsim_net_ledger_now(net, i, &c->ledger[i]);
+    }
+    return true;
+}
+
+static void costs_report(struct costs *c, struct tsim_net *net, struct tsim_routing_costs *out) {
+    for (uint32_t i = 0; i < c->n; i++) {
+        costs_book(c, i, tsim_net_routing(net, i));
+        struct tsim_ledger now;
+        tsim_net_ledger_now(net, i, &now);
+        int k = c->relay[i];
+        c->report.kind[k].nodes++;
+        c->report.kind[k].announce_frames +=
+            now.frames[TSIM_PURPOSE_ANNOUNCE] - c->ledger[i].frames[TSIM_PURPOSE_ANNOUNCE];
+        c->report.kind[k].announce_s += (double)(now.airtime[TSIM_PURPOSE_ANNOUNCE] -
+                                                 c->ledger[i].airtime[TSIM_PURPOSE_ANNOUNCE]) /
+                                        1e9;
+        c->report.kind[k].control_s += (double)(now.airtime[TSIM_PURPOSE_CONTROL] -
+                                                c->ledger[i].airtime[TSIM_PURPOSE_CONTROL]) /
+                                       1e9;
+    }
+    *out = c->report;
+    out->present = true;
+}
+
+static void costs_free(struct costs *c) {
+    free(c->relay);
+    free(c->begun);
+    free(c->ledger);
+}
+
 /* What the window's start leaves for its end to be measured against. */
 struct window {
     struct tsim_metrics *metrics;
@@ -2224,6 +2309,7 @@ struct window {
     bool *relay;                              /* [node], with dv */
     const struct tsim_distvec_stats *retired; /* books of routers since powered down */
     struct announces *announces;              /* with report.announces */
+    struct costs *costs;                      /* with the core and a firmware that counts */
     bool failed;
     tsim_time begun;
     struct tsim_distvec_stats stats;
@@ -2313,6 +2399,9 @@ static void begin_window(struct tsim_sched *sched, void *ctx) {
     } else if (w->announces) {
         sensed_links(w->announces, w->net, w->announces->report.sensed[0]);
     }
+    if (w->costs && !costs_start(w->costs, w->net)) {
+        w->failed = true;
+    }
 }
 
 /* Candidate 3's health over the window, from its books now against the window's start. */
@@ -2389,6 +2478,7 @@ struct churn {
     tsim_time down;
     bool dv;
     struct tsim_distvec_stats retired; /* what routers powered down had booked */
+    struct costs *costs;               /* with the core and a firmware that counts */
     struct churner *churners;
     uint32_t count;
     bool failed;
@@ -2404,6 +2494,9 @@ static void churn_flip(struct tsim_sched *sched, void *ctx) {
     struct churner *ch = ctx;
     struct churn *c = ch->churn;
     bool on = ch->down;
+    if (!on && c->costs) {
+        costs_book(c->costs, ch->node, tsim_net_routing(c->net, ch->node));
+    }
     if (!on && c->dv) {
         /* Its books go with it, but what it did stays done. */
         struct tsim_distvec_stats st;
@@ -2648,6 +2741,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     struct churn churn = {0};
     struct moving moving = {0};
     struct announces announces = {0};
+    struct costs costs = {0};
     bool ok = false;
     /* The oracle's routes are the driver's to hand down: the plugin is given where they will be,
      * and they are built once the links are laid. So is the table leaves' parents are kept in. */
@@ -2771,6 +2865,18 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         window.dv = dv;
         window.announces = s->report_announces ? &announces : NULL;
     }
+#if defined(TSIM_HAVE_CORE) && defined(TSIM_FIRMWARE_ROUTE_COUNTS)
+    if (metrics && s->routing->routing == &tsim_core) {
+        costs.relay = malloc(s->nodes * sizeof *costs.relay);
+        if (!costs.relay) {
+            goto done;
+        }
+        for (uint32_t i = 0; i < s->nodes; i++) {
+            costs.relay[i] = tsim_core_relay((const struct tsim_core_config *)routing_config, i);
+        }
+        window.costs = &costs;
+    }
+#endif
     /* Scheduled before the traffic, so it runs first of what happens as the warmup ends: a
      * message sent at that instant is all in the window. */
     if (metrics && tsim_sched_at(sched, s->warmup, begin_window, &window).slot == 0) {
@@ -2827,7 +2933,8 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
                                .metrics = metrics,
                                .up = s->churn_up,
                                .down = s->churn_down,
-                               .dv = dv != NULL};
+                               .dv = dv != NULL,
+                               .costs = window.costs};
         window.retired = &churn.retired;
         if (!tsim_metrics_churn(metrics) || !churn_start(&churn, s, routing_config, sched)) {
             goto done;
@@ -2850,6 +2957,9 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     if (window.announces && !window.failed) {
         sensed_links(&announces, net, announces.report.sensed[1]);
         announces_report(&announces, net, window.begun, tsim_sched_now(sched), &report->announces);
+    }
+    if (window.costs && !window.failed) {
+        costs_report(&costs, net, &report->routing);
     }
     ok = !churn.failed && !moving.failed && !window.failed &&
          tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);
@@ -2878,6 +2988,7 @@ done:
     free(churn.churners);
     move_free(&moving);
     announces_free(&announces); /* the network that called into it is gone */
+    costs_free(&costs);
     free(window.relay);
     tsim_sched_destroy(sched);
     free(pos);

@@ -203,6 +203,37 @@ static void print_report(const char *path, const struct tsim_scenario *s,
                r->relays.count, r->relays.components, r->relays.largest, r->relays.pairs,
                r->relays.covered);
     }
+    if (r->routing.present) {
+        static const char *fires[TSIM_ROUTING_FIRES] = {"heard_few", "quiet_max", "changes",
+                                                        "asked", "starting"};
+        static const char *resets[TSIM_ROUTING_RESETS] = {
+            "routes", "link", "neighbour", "forgotten", "retract", "started", "asked"};
+        static const char *changes[TSIM_ROUTING_CHANGES] = {"new",  "seq",     "metric",
+                                                            "leaf", "retract", "asked"};
+        printf("  \"routing\": {");
+        for (int k = 0; k < 2; k++) {
+            const struct tsim_routing_books *b = &r->routing.kind[k].books;
+            printf("%s\"%s\": {\"nodes\": %" PRIu32 ", \"announce_frames\": %" PRIu64
+                   ", \"announce_s\": %.6g, \"control_s\": %.6g, "
+                   "\"fires\": %" PRIu64 ", \"suppressed\": %" PRIu64 ", \"fired\": ",
+                   k ? ",\n              " : "", k ? "relays" : "leaves", r->routing.kind[k].nodes,
+                   r->routing.kind[k].announce_frames, r->routing.kind[k].announce_s,
+                   r->routing.kind[k].control_s, b->fires, b->suppressed);
+            print_counts(fires, b->fired, TSIM_ROUTING_FIRES);
+            printf(", \"resets\": ");
+            print_counts(resets, b->resets, TSIM_ROUTING_RESETS);
+            printf(", \"queued\": ");
+            print_counts(changes, b->queued, TSIM_ROUTING_CHANGES);
+            printf(", \"reattached\": %" PRIu64 ", \"raised\": %" PRIu64, b->reattached, b->raised);
+            printf(",\n                \"announces\": %" PRIu64 ", \"burst\": %" PRIu64
+                   ", \"at_max\": %" PRIu64 ", \"bytes\": %" PRIu64 ", \"routes\": %" PRIu64
+                   ", \"changed\": %" PRIu64 ", \"named\": %" PRIu64 ", \"addressed\": %" PRIu64
+                   ", \"requests\": %" PRIu64 "}",
+                   b->announces, b->burst, b->at_max, b->bytes, b->routes, b->changed, b->named,
+                   b->addressed, b->requests);
+        }
+        printf("},\n");
+    }
     if (r->announces.present) {
         static const char *fates[TSIM_PHY_FATE_COUNT] = {"decoded", "weak", "interfered",
                                                          "taken",   "busy", "deaf"};

@@ -7,6 +7,7 @@
 #include "tsim/meshcore.h"
 #include "tsim/net.h"
 #include "tsim/phy.h"
+#include "tsim/scenario.h"
 
 #include "check.h"
 
@@ -489,7 +490,44 @@ static void a_config_out_of_range_is_refused(void) {
     CHECK(tsim_core_check(&c) != NULL);
 }
 
+/* With a firmware that counts, a core run reports what its routing spent over the window, leaves
+ * and relays apart, every node in one of them, through power cycles: every interval that reached
+ * its time was kept quiet or announced for one reason, and announces cost airtime. */
+static void the_routing_costs_are_reported(void) {
+#ifdef TSIM_FIRMWARE_ROUTE_COUNTS
+    struct tsim_scenario s;
+    struct tsim_scenario_error err;
+    CHECK(tsim_scenario_parse(&s,
+                              "nodes = 30\nplacement = grid\nspacing = 1500\nrouting = core\n"
+                              "mac = listen\nrouting.relay_pick = cds\nrouting.relay_count = 8\n"
+                              "traffic.interval = 5 min\nwarmup = 20 min\nduration = 40 min\n"
+                              "churn.share = 0.3\nchurn.up = 10 min\nchurn.down = 5 min\n",
+                              &err));
+    struct tsim_report rep;
+    CHECK(tsim_scenario_run(&s, &rep));
+    const struct tsim_routing_costs *c = &rep.routing;
+    CHECK(c->present);
+    CHECK_EQ_U64(c->kind[0].nodes + c->kind[1].nodes, 30);
+    CHECK(c->kind[1].nodes > 0 && c->kind[0].nodes > 0);
+    for (int k = 0; k < 2; k++) {
+        const struct tsim_routing_books *b = &c->kind[k].books;
+        uint64_t fired = 0;
+        for (int f = 0; f < TSIM_ROUTING_FIRES; f++) {
+            fired += b->fired[f];
+        }
+        CHECK(b->fires > 0 && b->fires < 1000000);
+        CHECK_EQ_U64(b->fires, b->suppressed + fired);
+        CHECK(b->announces > 0 && c->kind[k].announce_s > 0);
+        CHECK(b->bytes >= b->announces);
+        /* Every announce sent was built, by a router whose books are kept as it powers down. */
+        CHECK(b->announces >= c->kind[k].announce_frames && c->kind[k].announce_frames > 0);
+    }
+    CHECK_EQ_U64(c->kind[0].books.routes, 0); /* a leaf announces no routes */
+#endif
+}
+
 int main(void) {
+    RUN(the_routing_costs_are_reported);
     RUN(a_line_learns_every_route);
     RUN(without_messages_its_frames_are_announces_and_requests);
     RUN(a_message_goes_hop_by_hop_and_is_acknowledged);

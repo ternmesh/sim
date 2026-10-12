@@ -151,6 +151,12 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
     if(TSIM_ROUTE_REATTACH)
         target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_REATTACH)
     endif()
+    # A firmware whose router counts what its announces are for (MSH-103) has them reported.
+    file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/route.h" TSIM_ROUTE_COUNTS
+         REGEX "struct tern_route_counts \\{")
+    if(TSIM_ROUTE_COUNTS)
+        target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_ROUTE_COUNTS)
+    endif()
     set(TSIM_HAVE_CORE ON)
     message(STATUS "Core routing: from ${TSIM_FIRMWARE_DIR}")
 elseif(TSIM_REQUIRE_CORE)
