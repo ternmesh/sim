@@ -131,7 +131,9 @@ struct tsim_announces {
 /* Broadcasts over the window and where they went missing (MSH-104), with report.floods: for every
  * broadcast but a card, each node that wanted it - every other, or those within its reach - and
  * what reached it. A wanted node that decoded no frame carrying it is `missed`, and is one of:
- * `far`, no node that sent such a frame could have reached it even at the radio's full power;
+ * `far`, no node that sent such a frame could have reached it even at the radio's full power -
+ * over the link's own loss, at the frame's modulation, fading aside: a gap in coverage, not a
+ * frame's bad luck;
  * `quiet`, one could have, and every frame came in under the floor as sent; or `lost`, one or more
  * came in above the floor and none was decoded, `copies` of them: 1, 2, 3, and 4 or more. `fates`:
  * of the lost, those one of whose frames met each fate, in the order of enum tsim_phy_fate - so a
