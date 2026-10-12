@@ -2414,8 +2414,10 @@ static bool floods_report(struct floods *f, struct tsim_net *net, struct tsim_fl
             r->missed++;
             r->missed_relays += f->relay[i];
             uint8_t audible = st & FLOOD_AUDIBLE;
-            if (!slot) {
+            if (!slot && rec->sent < 0) {
                 r->unsent++; /* nothing carrying it ever went on the air */
+            } else if (!slot) {
+                r->on_air++; /* it went, and no frame of it had ended as the run did */
             } else if (audible) {
                 r->lost++;
                 r->copies[audible < 4 ? audible - 1 : 3]++;

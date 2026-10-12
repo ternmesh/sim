@@ -1105,7 +1105,7 @@ static void floods_say_why_a_broadcast_was_missed(void) {
     CHECK_EQ_U64(f->messages, rep.broadcast.messages);
     CHECK_EQ_U64(f->wanted, rep.broadcast.wanted);
     CHECK_EQ_U64(f->missed, rep.broadcast.wanted - rep.broadcast.delivered);
-    CHECK_EQ_U64(f->unsent + f->far + f->quiet + f->lost, f->missed);
+    CHECK_EQ_U64(f->unsent + f->on_air + f->far + f->quiet + f->lost, f->missed);
     CHECK_EQ_U64(f->copies[0] + f->copies[1] + f->copies[2] + f->copies[3], f->lost);
     CHECK(f->relays_reached <= f->relays_wanted);
 
@@ -1134,6 +1134,16 @@ static void floods_say_why_a_broadcast_was_missed(void) {
     CHECK_EQ_U64(f->missed, 2);
     CHECK_EQ_U64(f->unsent, 2);
     CHECK_EQ_U64(f->far, 0);
+
+    /* One on the air as the run ends is neither unsent nor out of reach. */
+    CHECK(parse(&s, "nodes = 3\nplacement = line\nspacing = 100\nchannel.sigma = 0\n"
+                    "radio.sf = 12\nrouting = flood\nmac = aloha\nmac.max_delay = 0 s\n"
+                    "traffic.interval = none\nwarmup = 1 s\nduration = 1 min\ndeadline = 0 s\n"
+                    "traffic.send = 60 s, 0, all, 200\nreport.floods = yes\n"));
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK_EQ_U64(f->messages, 1);
+    CHECK_EQ_U64(f->on_air, 2);
+    CHECK_EQ_U64(f->unsent + f->far, 0);
 
     /* Elected relays are the ones elected as the window begins. */
     CHECK(parse(&s, "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
