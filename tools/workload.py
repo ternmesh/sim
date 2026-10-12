@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runs every candidate over the field-derived workloads (MSH-34) and tabulates each flow.
 
-    workload.py --tsim PATH [--seeds N] [--jobs N] [--out DIR] [--only NAME,...]
+    workload.py --tsim PATH [--seeds N] [--jobs N] [--out DIR] [--only ID,...]
 
 The workloads are scenarios/workload/{metro,event,dm}.tsim, whose rates and sources are in
 docs/workload.md. Each is run with every candidate below, on the same nodes, sites and messages,
@@ -29,6 +29,8 @@ MSH-34 asked to be measured:
   core, geo        not run: the firmware has no scope by place
 
 Each run's report is kept in --out, so the table can be printed again with --only and no runs.
+--only takes the candidates' ids, their names without commas or spaces: meshtastic, meshcore,
+distvec, distvec-geo, core and core-1hop; empty for all of them.
 """
 
 import argparse
@@ -75,11 +77,11 @@ def run(tsim, out, workload, name, settings, seed):
     return path
 
 
-def table(out, seeds, names):
+def table(out, seeds, ids):
     for workload in WORKLOADS:
         reports = {}
         for name, _ in CANDIDATES:
-            if name not in names:
+            if slug(name) not in ids:
                 continue
             got = []
             for seed in range(1, seeds + 1):
@@ -121,9 +123,12 @@ def main():
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     if args.only is not None:
-        names = [n.strip() for n in args.only.split(",")] if args.only else \
-            [n for n, _ in CANDIDATES]
-        table(args.out, args.seeds, names)
+        ids = [n.strip() for n in args.only.split(",")] if args.only else \
+            [slug(n) for n, _ in CANDIDATES]
+        unknown = set(ids) - {slug(n) for n, _ in CANDIDATES}
+        if unknown:
+            ap.error("unknown candidates: %s" % ", ".join(sorted(unknown)))
+        table(args.out, args.seeds, ids)
         return 0
     jobs = [(w, n, s, seed) for seed in range(1, args.seeds + 1) for w in WORKLOADS
             for n, s in CANDIDATES]
@@ -139,7 +144,7 @@ def main():
                 failed += 1
                 print("FAILED %s %s seed %d: %s" % (w, n, seed, e.stderr.strip()),
                       file=sys.stderr, flush=True)
-    table(args.out, args.seeds, [n for n, _ in CANDIDATES])
+    table(args.out, args.seeds, [slug(n) for n, _ in CANDIDATES])
     return 1 if failed else 0
 
 

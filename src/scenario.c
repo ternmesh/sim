@@ -1248,8 +1248,8 @@ static const char *set_flow(struct tsim_scenario *s, const char *rest, const cha
     }
     if (strcmp(field, "hops") == 0) {
         uint64_t hops;
-        if (!parse_u64(v, UINT8_MAX, &hops)) {
-            return "expected relay hops up to 255, 0 for the routing's own";
+        if (!parse_u64(v, TSIM_FLOW_HOPS_MAX, &hops)) {
+            return "expected relay hops up to 254, 0 for the routing's own";
         }
         f->hops = (uint8_t)hops;
         return NULL;
@@ -1259,9 +1259,9 @@ static const char *set_flow(struct tsim_scenario *s, const char *rest, const cha
             f->reach_m = 0;
             return NULL;
         }
-        return parse_double(v, &f->reach_m) && f->reach_m > 0 && f->reach_m <= 1e9
+        return parse_double(v, &f->reach_m) && f->reach_m > 0 && f->reach_m <= TSIM_FLOW_REACH_MAX
                    ? NULL
-                   : "expected metres above 0, or none";
+                   : "expected metres above 0 and up to 655350, or none";
     }
     return "unknown flow setting: interval, timer, len, to, share, reply, hops or reach";
 }

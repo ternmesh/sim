@@ -898,6 +898,12 @@ static void invalid_flows_are_refused(void) {
     bad.flows[0].reach_m = -1;
     CHECK(!tsim_traffic_create(r.net, &bad));
     bad = p;
+    bad.flows[0].hops = TSIM_FLOW_HOPS_MAX + 1;
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    bad = p;
+    bad.flows[0].reach_m = TSIM_FLOW_REACH_MAX + 1;
+    CHECK(!tsim_traffic_create(r.net, &bad));
+    bad = p;
     bad.closed = true;
     CHECK(!tsim_traffic_create(r.net, &bad));
     bad = p;

@@ -65,6 +65,11 @@ enum tsim_flow_to {
     TSIM_FLOW_ANY,  /* another node, chosen uniformly */
 };
 
+/* The most a flow's broadcast may ask for: relay hops, one fewer than a hop byte holds, since a
+ * routing counts its sender's send as one; and metres, what two bytes of tens of metres hold. */
+#define TSIM_FLOW_HOPS_MAX 254
+#define TSIM_FLOW_REACH_MAX 655350.0
+
 struct tsim_flow {
     char name[16];
     tsim_time interval; /* mean gap between one sending node's messages, above 0 */
@@ -121,11 +126,11 @@ struct tsim_traffic;
  * reply fraction outside 0..1 or with closed, a negative reply delay, a negative card interval, a
  * card share outside 0..1, a card over TSIM_FRAME_MAX, a flow whose interval is not above 0,
  * whose lengths are out of order or over TSIM_FRAME_MAX, whose share or reply is outside 0..1,
- * that goes to peers with none, that answers broadcasts, that scopes unicasts, whose reach is
- * negative, or any flow with closed, a send from or to a node
- * that is not there, to its own node or over TSIM_FRAME_MAX - or when memory runs out. A send is
- * made whenever it falls, whatever start and stop say, and in the closed loop its finishing starts
- * no gap. */
+ * that goes to peers with none, that answers broadcasts, that scopes unicasts, whose hops are
+ * over TSIM_FLOW_HOPS_MAX or reach negative or over TSIM_FLOW_REACH_MAX, or any flow with closed, a
+ * send from or to a node that is not there, to its own node or over TSIM_FRAME_MAX - or when memory
+ * runs out. A send is made whenever it falls, whatever start and stop say, and in the closed loop
+ * its finishing starts no gap. */
 struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
                                          const struct tsim_traffic_params *params);
 

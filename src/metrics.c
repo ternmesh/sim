@@ -642,7 +642,7 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
         }
         if (m->chatty && !m->chatty[rec->msg.src] && !rec->msg.card) {
             *(rec->msg.dst == TSIM_BROADCAST ? &r->quiet.broadcast_wanted
-                                             : &r->quiet.unicast_wanted) += rec->wanted;
+                                             : &r->quiet.unicast_wanted) += wanted;
         }
         /* Hit: a frame carrying it dropped for the budget, or in shadow mode one that would have
          * been. */

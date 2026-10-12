@@ -387,7 +387,8 @@ struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
         bool bcast = f->to == TSIM_FLOW_ALL;
         if (f->interval <= 0 || f->len_min > f->len_max || f->len_max > TSIM_FRAME_MAX ||
             f->to > TSIM_FLOW_ANY || !(f->share >= 0.0 && f->share <= 1.0) ||
-            !(f->reply >= 0.0 && f->reply <= 1.0) || !(f->reach_m >= 0) ||
+            !(f->reply >= 0.0 && f->reply <= 1.0) || f->hops > TSIM_FLOW_HOPS_MAX ||
+            !(f->reach_m >= 0 && f->reach_m <= TSIM_FLOW_REACH_MAX) ||
             (f->to == TSIM_FLOW_PEER && !p->peers) || (bcast && f->reply > 0) ||
             (!bcast && (f->hops || f->reach_m > 0))) {
             return NULL;
