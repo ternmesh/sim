@@ -210,7 +210,7 @@ static void print_report(const char *path, const struct tsim_scenario *s,
             "routes", "link", "neighbour", "forgotten", "retract", "started", "asked"};
         static const char *changes[TSIM_ROUTING_CHANGES] = {"new",  "seq",     "metric",
                                                             "leaf", "retract", "asked"};
-        printf("  \"routing\": {");
+        printf("  \"routing_costs\": {");
         for (int k = 0; k < 2; k++) {
             const struct tsim_routing_books *b = &r->routing.kind[k].books;
             printf("%s\"%s\": {\"nodes\": %" PRIu32 ", \"announce_frames\": %" PRIu64
