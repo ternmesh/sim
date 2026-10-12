@@ -2237,10 +2237,16 @@ struct floods {
     bool *relay; /* [node]: elected ones as the window begins */
     const struct tsim_pos *pos;
     const struct tsim_phy *phy;
-    double full_dbm; /* the radio's full power, less the floor */
+    struct tsim_net *net;
+    double full_dbm; /* the radio's full power */
     uint64_t first;  /* the window's first message id */
-    uint16_t *state; /* [(id - first) * n + node] */
-    uint64_t held;   /* messages state has room for */
+    /* Each message of the window's slot in state, by id - first: 0 not yet seen, UINT32_MAX not a
+     * broadcast the report counts, and otherwise one more than its slot. */
+    uint32_t *slot;
+    uint64_t ids;    /* ids slot has room for */
+    uint16_t *state; /* [slot * n + node] */
+    uint32_t used;   /* slots taken */
+    uint32_t held;   /* slots state has room for */
     struct tsim_floods report;
     /* With the core: each node's books as the window began, or as it last came up since. */
     struct tsim_core_floods *begun; /* [node] */
@@ -2252,27 +2258,53 @@ static void flood_heard(void *ctx, const struct tsim_net_heard *h) {
     if (h->carries < f->first || f->failed) {
         return;
     }
-    uint64_t k = h->carries - f->first;
-    if (k >= f->held) {
-        uint64_t held = f->held ? f->held : 64;
-        while (held <= k) {
-            held *= 2;
+    uint64_t id = h->carries - f->first;
+    if (id >= f->ids) {
+        uint64_t ids = f->ids ? f->ids : 256;
+        while (ids <= id) {
+            ids *= 2;
         }
-        uint16_t *grown = realloc(f->state, held * f->n * sizeof *grown);
+        uint32_t *grown = realloc(f->slot, ids * sizeof *grown);
         if (!grown) {
             f->failed = true;
             return;
         }
-        memset(grown + f->held * f->n, 0, (held - f->held) * f->n * sizeof *grown);
-        f->state = grown;
-        f->held = held;
+        memset(grown + f->ids, 0, (ids - f->ids) * sizeof *grown);
+        f->slot = grown;
+        f->ids = ids;
     }
-    uint16_t *st = &f->state[k * f->n + h->to];
+    if (f->slot[id] == 0) {
+        /* Only broadcasts the report counts take room for every node. */
+        const struct tsim_message *msg = &tsim_net_message(f->net, h->carries)->msg;
+        if (msg->dst != TSIM_BROADCAST || msg->card) {
+            f->slot[id] = UINT32_MAX;
+        } else {
+            if (f->used == f->held) {
+                uint32_t held = f->held ? 2 * f->held : 64;
+                uint16_t *grown = realloc(f->state, (size_t)held * f->n * sizeof *grown);
+                if (!grown) {
+                    f->failed = true;
+                    return;
+                }
+                memset(grown + (size_t)f->held * f->n, 0,
+                       (size_t)(held - f->held) * f->n * sizeof *grown);
+                f->state = grown;
+                f->held = held;
+            }
+            f->slot[id] = ++f->used;
+        }
+    }
+    if (f->slot[id] == UINT32_MAX) {
+        return;
+    }
+    uint16_t *st = &f->state[(size_t)(f->slot[id] - 1) * f->n + h->to];
     if (h->fate == TSIM_PHY_DECODED) {
         *st |= FLOOD_DECODED;
         return;
     }
-    if (f->full_dbm - tsim_phy_loss(f->phy, h->from, h->to) >= 0) {
+    /* Near: in reach at the radio's full power, at the modulation this frame went at. */
+    if (f->full_dbm - tsim_phy_loss(f->phy, h->from, h->to) >=
+        tsim_phy_floor_dbm(f->phy, &h->lora)) {
         *st |= FLOOD_NEAR;
     }
     if (h->fate != TSIM_PHY_WEAK) {
@@ -2287,6 +2319,7 @@ static void flood_heard(void *ctx, const struct tsim_net_heard *h) {
 static bool floods_start(struct floods *f, struct tsim_net *net) {
     uint32_t n = tsim_net_nodes(net);
     f->n = n;
+    f->net = net;
     f->phy = tsim_net_phy(net);
     f->first = tsim_net_message_count(net) + 1;
     f->watch = malloc(n * sizeof *f->watch);
@@ -2366,11 +2399,12 @@ static bool floods_report(struct floods *f, struct tsim_net *net, struct tsim_fl
         }
         r->messages++;
         uint64_t k = id - f->first;
+        uint32_t slot = k < f->ids ? f->slot[k] : 0; /* 0 for one never on the air */
         for (uint32_t i = 0; i < f->n; i++) {
             if (!flood_wanted(f, &rec->msg, i)) {
                 continue;
             }
-            uint16_t st = k < f->held ? f->state[k * f->n + i] : 0;
+            uint16_t st = slot ? f->state[(size_t)(slot - 1) * f->n + i] : 0;
             r->wanted++;
             r->relays_wanted += f->relay[i];
             if (st & FLOOD_DECODED) {
@@ -2413,6 +2447,7 @@ static bool floods_report(struct floods *f, struct tsim_net *net, struct tsim_fl
 static void floods_free(struct floods *f) {
     free(f->watch);
     free(f->state);
+    free(f->slot);
     free(f->begun);
 }
 
@@ -2994,7 +3029,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         }
         floods.relay = flood_relay;
         floods.pos = pos;
-        floods.full_dbm = s->radio.tx_dbm - tsim_phy_floor_dbm(tsim_net_phy(net), &s->radio.lora);
+        floods.full_dbm = s->radio.tx_dbm;
         window.floods = &floods;
     }
     /* Scheduled before the traffic, so it runs first of what happens as the warmup ends: a
