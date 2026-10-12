@@ -1,0 +1,75 @@
+# The broadcast-heavy workload (MSH-34): an event - DEF CON, a festival - where a thousand
+# handhelds share a few square kilometres and most of what they send is for everyone. See
+# docs/workload.md for every rate's source. 1000 nodes over 4 km at 14 dBm, as handhelds send,
+# 100 relays on the shared sites, with the firmware's core routing it; tools/workload.py runs
+# every candidate over it.
+#
+# Against metro.tsim: people walk about, so positions come every 15 minutes, Meshtastic's old
+# default and three times the smart position's floor; nodes come and go, so presence every hour;
+# and everyone is on the channel, three lines a node a day from a third of them - four times
+# Burning Man's busiest day (0.74 a node). What is of local interest is wanted within 1.5 km.
+nodes = 1000
+placement = uniform
+area      = 4000 x 4000
+
+radio.sf       = 7
+radio.bw       = 125000
+radio.cr       = 1
+radio.preamble = 16
+radio.tx_dbm   = 14
+
+routing             = core
+mac                 = listen
+routing.relay_pick  = cds
+routing.relay_count = 100
+sites.sf            = 7
+sites.bw            = 125000
+
+duty_cycle = 10%
+
+# No plain process: the flows below are the whole workload.
+traffic.interval = none
+traffic.peers    = 4
+traffic.reply_delay = 2 min
+
+# Who is about: every hour, nodes arriving and leaving.
+flow.presence.interval = 1 h
+flow.presence.timer    = yes
+flow.presence.len      = 96
+flow.presence.reach    = 1500
+
+# Position every 15 minutes, people walking, 28 bytes.
+flow.position.interval = 15 min
+flow.position.timer    = yes
+flow.position.len      = 28
+flow.position.reach    = 1500
+
+# Device telemetry about 3 a node a day (Bay Mesh), 28 bytes.
+flow.telemetry.interval = 8 h
+flow.telemetry.timer    = yes
+flow.telemetry.len      = 28
+flow.telemetry.reach    = 1500
+
+# The public channel: three lines a node a day from a third of them, 8 to 50 bytes.
+flow.chat.interval = 8 h
+flow.chat.share    = 0.33
+flow.chat.len      = 8..50
+
+# Direct messages to regular correspondents, half of them answered: one a node a day, which the
+# field does not measure; at most the 12% of Bay Mesh's packets that were not decoded, 3 a day.
+flow.dm.interval = 24 h
+flow.dm.to       = peer
+flow.dm.reply    = 0.5
+flow.dm.len      = 8..50
+
+# Emergency: an alert to every node from 2% of them, one each every 2 h. A probe, not a rate -
+# the field's are too rare to measure in an hour - to see whether an alert gets through the load.
+flow.emergency.interval = 2 h
+flow.emergency.share    = 0.02
+flow.emergency.len      = 40
+
+# As the region: six hours to settle, the last three carrying traffic, and one measured.
+warmup       = 6 h
+traffic.lead = 3 h
+duration     = 1 h
+deadline     = 60 s
