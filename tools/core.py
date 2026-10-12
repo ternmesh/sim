@@ -97,6 +97,7 @@ def compare(args):
             ("core, unbounded", core, UNBOUNDED),
             ("core, unbounded, no re-attachment", core, UNBOUNDED + ["routing.reattach=0"]),
             ("core, 32 neighbours", core, N32),
+            ("core, 32 neighbours, no re-attachment", core, N32 + ["routing.reattach=0"]),
             ("core, a board's tables", core, []),
         ]
         for label, scenario, settings in rows:
