@@ -128,6 +128,42 @@ struct tsim_announces {
     uint32_t sensed[2][3];
 };
 
+/* Broadcasts over the window and where they went missing (MSH-104), with report.floods: for every
+ * broadcast but a card, each node that wanted it - every other, or those within its reach - and
+ * what reached it. A wanted node that decoded no frame carrying it is `missed`, and is one of:
+ * `unsent`, no frame carrying it ever went on the air - its source never sent it; `on_air`, one
+ * went, and none had ended when the run did; `far`, no node
+ * that sent such a frame could have reached it even at the radio's full power - over the link's own
+ * loss, at the frame's modulation, fading aside: a gap in coverage, not a frame's bad luck;
+ * `quiet`, one could have, and every frame came in under the floor as sent; or `lost`, one or more
+ * came in above the floor and none was decoded, `copies` of them: 1, 2, 3, and 4 or more. `fates`:
+ * of the lost, those one of whose frames met each fate, in the order of enum tsim_phy_fate - so a
+ * node is in one for each fate its frames met, and decoded and weak are zero.
+ * `missed_relays`: of the missed, relays. `relays_reached`: for each broadcast, the relays that
+ * decoded it, summed; `relays_wanted`, the relays that wanted it. With the core (tsim/core.h),
+ * `core` is its flooders' books over the window, summed over every node. */
+struct tsim_floods {
+    bool present;
+    uint64_t messages;
+    uint64_t wanted;
+    uint64_t missed;
+    uint64_t missed_relays;
+    uint64_t unsent;
+    uint64_t on_air;
+    uint64_t far;
+    uint64_t quiet;
+    uint64_t lost;
+    uint64_t copies[4];
+    uint64_t fates[TSIM_PHY_FATE_COUNT];
+    uint64_t relays_wanted;
+    uint64_t relays_reached;
+    bool has_core;
+    struct {
+        uint64_t heard, copies, passed_on, cancelled, unpaid, busy, hop_limit, no_room, echoed,
+            resent;
+    } core;
+};
+
 /* Where a message was dropped: at its source, at the hop before its destination - meant for the
  * destination itself - or between. */
 enum tsim_place {
@@ -277,6 +313,7 @@ struct tsim_report {
     struct tsim_relay_tier relays;
     struct tsim_churn churn;
     struct tsim_announces announces;
+    struct tsim_floods floods;
     struct tsim_losses losses;
     struct tsim_budget_report budget;
     struct tsim_quiet quiet;

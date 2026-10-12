@@ -151,6 +151,13 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
     if(TSIM_ROUTE_REATTACH)
         target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_REATTACH)
     endif()
+    # A firmware whose flooder sends a node's own frame again when no relay is heard passing it on
+    # (MSH-104) has it measured on and off.
+    file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/flood.h" TSIM_FLOOD_RESENDS
+         REGEX "uint8_t resends;")
+    if(TSIM_FLOOD_RESENDS)
+        target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_RESENDS)
+    endif()
     set(TSIM_HAVE_CORE ON)
     message(STATUS "Core routing: from ${TSIM_FIRMWARE_DIR}")
 elseif(TSIM_REQUIRE_CORE)
