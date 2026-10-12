@@ -131,17 +131,18 @@ struct tsim_announces {
 /* A router's books (MSH-103), as the core keeps them with a firmware that counts them
  * (tsim/core.h): Trickle intervals that reached their time, those kept quiet and, of the rest,
  * why they announced - fewer than REDUNDANCY consistent announces heard, kept quiet QUIET_MAX
- * intervals running, changed routes of its own waiting, asked for its seq, starting; intervals cut
- * short to I_MIN, by why - a route selected or lost, a link up or down, a neighbour out of use or
- * back, one forgotten, a starved destination retracted, done starting, asked; routes queued to
+ * intervals running, changed routes of its own waiting, asked for its seq, starting, moved and
+ * re-attached; intervals cut short to I_MIN, by why - a route selected or lost, a link up or down,
+ * a neighbour out of use or back, one forgotten, a starved destination retracted, done starting,
+ * asked, moved; routes queued to
  * go first as changed, by why - never announced, a newer seq, the metric moved by more than
  * CHANGE, whether it is a leaf changed, retracted, asked for; its own seq raised, having moved
  * and re-attached, and asked by a request; announce frames
  * built, those after the first of a burst, those with the interval at I_MAX, their bytes, the
  * routes they carried and of those the changed ones sent first, the neighbours they named, those
  * carrying the address; and request frames. */
-#define TSIM_ROUTING_FIRES 5
-#define TSIM_ROUTING_RESETS 7
+#define TSIM_ROUTING_FIRES 6
+#define TSIM_ROUTING_RESETS 8
 #define TSIM_ROUTING_CHANGES 6
 struct tsim_routing_books {
     uint64_t fires;

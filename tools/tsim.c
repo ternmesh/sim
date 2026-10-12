@@ -205,9 +205,9 @@ static void print_report(const char *path, const struct tsim_scenario *s,
     }
     if (r->routing.present) {
         static const char *fires[TSIM_ROUTING_FIRES] = {"heard_few", "quiet_max", "changes",
-                                                        "asked", "starting"};
+                                                        "asked",     "starting",  "moved"};
         static const char *resets[TSIM_ROUTING_RESETS] = {
-            "routes", "link", "neighbour", "forgotten", "retract", "started", "asked"};
+            "routes", "link", "neighbour", "forgotten", "retract", "started", "asked", "moved"};
         static const char *changes[TSIM_ROUTING_CHANGES] = {"new",  "seq",     "metric",
                                                             "leaf", "retract", "asked"};
         printf("  \"routing_costs\": {");
