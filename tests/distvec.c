@@ -1497,6 +1497,56 @@ static void a_broadcast_spends_no_hop_where_relays_are_few(void) {
     CHECK_EQ_U64(line_reached(2), 5);
 }
 
+/* A broadcast whose sender sets fewer hops goes only as far: along a line, 3 - two relays -
+ * reach three nodes, where bcast_hops would take it to all five. */
+static void a_broadcast_goes_as_many_hops_as_its_sender_asks(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.bcast_hops = 10;
+    r.rc.bcast_sparse = 0;
+    line(&r, 6, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(60));
+    uint64_t b = tsim_net_originate_flow(r.net, 0, TSIM_BROADCAST, 20, 1, 3, 0);
+    tsim_sched_run_until(r.sched, TSIM_S(120));
+    CHECK_EQ_U64(tsim_net_message(r.net, b)->delivered, 3);
+    rig_close(&r);
+}
+
+/* With bcast_geo, a broadcast with a reach is passed on only by relays within it of where it
+ * began: along a line 1000 m apart, a reach of 2500 m is passed on by 1 and 2, and 3, beyond it,
+ * hears it from 2 and keeps it. Without bcast_geo the reach is ignored. */
+static uint64_t geo_reached(bool geo, uint64_t *relayed) {
+    static struct tsim_pos pos[6];
+    for (int i = 0; i < 6; i++) {
+        pos[i] = (struct tsim_pos){1000.0 * i, -500.0};
+    }
+    struct rig r;
+    rig_init(&r);
+    r.rc.bcast_hops = 10;
+    r.rc.bcast_geo = geo;
+    r.rc.pos = pos;
+    line(&r, 6, 1);
+    tsim_sched_run_until(r.sched, TSIM_S(60));
+    uint64_t b = tsim_net_originate_flow(r.net, 0, TSIM_BROADCAST, 20, 1, 0, 2500);
+    tsim_sched_run_until(r.sched, TSIM_S(120));
+    uint64_t got = tsim_net_message(r.net, b)->delivered;
+    for (uint32_t i = 0; i < 6; i++) {
+        relayed[i] = frames(&r, i, TSIM_PURPOSE_RELAY);
+    }
+    rig_close(&r);
+    return got;
+}
+
+static void a_broadcast_scoped_by_place_stops_at_its_reach(void) {
+    uint64_t relayed[6];
+    CHECK_EQ_U64(geo_reached(true, relayed), 3);
+    CHECK_EQ_U64(relayed[1], 1);
+    CHECK_EQ_U64(relayed[2], 1);
+    CHECK_EQ_U64(relayed[3], 0);
+    CHECK_EQ_U64(geo_reached(false, relayed), 5);
+    CHECK_EQ_U64(relayed[3], 1);
+}
+
 static void the_config_is_checked(void) {
     struct tsim_lora l = tsim_lora_default(7, 125000);
     struct tsim_distvec_config c = tsim_distvec_default(0, &l, 14.0);
@@ -2580,6 +2630,8 @@ int main(void) {
     RUN(routes_stay_loop_free_while_links_change);
     RUN(a_broadcast_reaches_the_line_once_per_relay);
     RUN(a_broadcast_spends_no_hop_where_relays_are_few);
+    RUN(a_broadcast_goes_as_many_hops_as_its_sender_asks);
+    RUN(a_broadcast_scoped_by_place_stops_at_its_reach);
     RUN(the_config_is_checked);
     return CHECK_DONE();
 }

@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "tsim/channel.h"
 #include "tsim/net.h"
 #include "tsim/node.h"
 #include "tsim/phy.h"
@@ -279,6 +280,13 @@ struct tsim_report {
     struct tsim_losses losses;
     struct tsim_budget_report budget;
     struct tsim_quiet quiet;
+    /* With flows (tsim/traffic.h, tsim_metrics_flows()), each one's messages - which are in the
+     * unicast and broadcast above as well - and, of a flow's broadcasts with a reach, how many
+     * nodes beyond it were reached all the same: the airtime a scope would save, or a flood
+     * spent. A broadcast with a reach is wanted only within it, there and above. */
+    uint32_t flow_count;
+    struct tsim_delivery flow[TSIM_FLOWS_MAX];
+    uint64_t flow_beyond[TSIM_FLOWS_MAX];
 };
 
 struct tsim_metrics;
@@ -306,6 +314,12 @@ bool tsim_metrics_power(struct tsim_metrics *metrics, uint32_t node, bool on);
 /* Marks the nodes, one byte each, whose messages struct tsim_quiet leaves out; copied. Returns
  * false when memory runs out, leaving it unreported. */
 bool tsim_metrics_apart(struct tsim_metrics *metrics, const uint8_t *chatty);
+
+/* Readies a report for each of `count` flows (struct tsim_report.flow), and gives the nodes'
+ * positions, [node] and copied, that a broadcast's reach is judged from; NULL with no reach in
+ * any message. Called before the first message. Returns false when memory runs out, or for a count
+ * over TSIM_FLOWS_MAX, leaving them unreported. Nodes that move are judged where they began. */
+bool tsim_metrics_flows(struct tsim_metrics *metrics, uint32_t count, const struct tsim_pos *pos);
 
 /* Stops watching and frees it. */
 void tsim_metrics_destroy(struct tsim_metrics *metrics);

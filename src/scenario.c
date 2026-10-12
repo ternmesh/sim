@@ -819,6 +819,9 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "bcast_cancel") == 0) {
         return distvec_count(value, 0, UINT8_MAX, &c->bcast_cancel);
     }
+    if (strcmp(key, "bcast_geo") == 0) {
+        return parse_yes_no(value, &c->bcast_geo) ? NULL : "expected yes or no";
+    }
     if (strcmp(key, "power") == 0) {
         return parse_yes_no(value, &c->power) ? NULL : "expected yes or no";
     }
@@ -1189,6 +1192,80 @@ static const char *set_budget(struct tsim_budget_params *b, const char *key, con
     return "is not a setting of the airtime budget";
 }
 
+/* flow.<name>.<field>: `rest` is <name>.<field>. A flow is made the first time its name is. */
+static const char *set_flow(struct tsim_scenario *s, const char *rest, const char *v) {
+    const char *dot = strchr(rest, '.');
+    size_t len = dot ? (size_t)(dot - rest) : 0;
+    if (!dot || len == 0 || len >= sizeof s->flows[0].name) {
+        return "expected flow.<name>.<setting>, with a name of 1 to 15 characters";
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (!isalnum((unsigned char)rest[i]) && rest[i] != '_') {
+            return "a flow's name is letters, digits and _";
+        }
+    }
+    struct tsim_flow *f = NULL;
+    for (uint32_t i = 0; i < s->flow_count; i++) {
+        if (strlen(s->flows[i].name) == len && strncmp(s->flows[i].name, rest, len) == 0) {
+            f = &s->flows[i];
+        }
+    }
+    if (!f) {
+        if (s->flow_count == TSIM_FLOWS_MAX) {
+            return "too many flows: 8 at most";
+        }
+        f = &s->flows[s->flow_count++];
+        *f = (struct tsim_flow){.len_min = 32, .len_max = 32, .share = 1.0};
+        memcpy(f->name, rest, len);
+    }
+    const char *field = dot + 1;
+    if (strcmp(field, "interval") == 0) {
+        return parse_time(v, &f->interval) && f->interval > 0 ? NULL : "expected a time above 0";
+    }
+    if (strcmp(field, "timer") == 0) {
+        return parse_yes_no(v, &f->timer) ? NULL : "expected yes or no";
+    }
+    if (strcmp(field, "len") == 0) {
+        return parse_range(v, TSIM_FRAME_MAX, &f->len_min, &f->len_max)
+                   ? NULL
+                   : "expected bytes up to 255, as 32 or 16..64";
+    }
+    if (strcmp(field, "to") == 0) {
+        static const char *const to[] = {"all", "peer", "any"};
+        for (uint8_t i = 0; i < 3; i++) {
+            if (strcmp(v, to[i]) == 0) {
+                f->to = i;
+                return NULL;
+            }
+        }
+        return "expected all, peer or any";
+    }
+    if (strcmp(field, "share") == 0) {
+        return parse_fraction(v, &f->share) ? NULL : "expected a fraction from 0 to 1";
+    }
+    if (strcmp(field, "reply") == 0) {
+        return parse_fraction(v, &f->reply) ? NULL : "expected a fraction from 0 to 1";
+    }
+    if (strcmp(field, "hops") == 0) {
+        uint64_t hops;
+        if (!parse_u64(v, UINT8_MAX, &hops)) {
+            return "expected hops up to 255, 0 for the routing's own";
+        }
+        f->hops = (uint8_t)hops;
+        return NULL;
+    }
+    if (strcmp(field, "reach") == 0) {
+        if (strcmp(v, "none") == 0) {
+            f->reach_m = 0;
+            return NULL;
+        }
+        return parse_double(v, &f->reach_m) && f->reach_m > 0 && f->reach_m <= TSIM_FLOW_REACH_MAX
+                   ? NULL
+                   : "expected metres above 0 and up to 655350, or none";
+    }
+    return "unknown flow setting: interval, timer, len, to, share, reply, hops or reach";
+}
+
 static const char *set_core(struct tsim_scenario *s, const char *key, const char *v) {
     uint64_t u;
     if (strcmp(key, "seed") == 0) {
@@ -1434,6 +1511,9 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
         return parse_time(v, &s->net.phy.cad_delay) ? NULL : "expected a time, such as 30 ms";
     }
 
+    if (strncmp(key, "flow.", 5) == 0) {
+        return set_flow(s, key + 5, v);
+    }
     if (strcmp(key, "traffic.interval") == 0) {
         if (strcmp(v, "none") == 0) {
             s->interval = 0;
@@ -1702,6 +1782,25 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     }
     if (ok && s->chatty_share > 0 && s->chatty_interval == 0) {
         ok = fail(err, 0, "traffic.chatty needs traffic.chatty_interval: how often they write");
+    }
+    for (uint32_t i = 0; ok && i < s->flow_count; i++) {
+        const struct tsim_flow *f = &s->flows[i];
+        bool bcast = f->to == TSIM_FLOW_ALL;
+        if (f->interval == 0) {
+            ok =
+                fail(err, 0, "flow.%s.interval is not set: how often each node sends one", f->name);
+        } else if (f->to == TSIM_FLOW_PEER && !s->peers) {
+            ok = fail(err, 0, "flow.%s.to = peer needs traffic.peers", f->name);
+        } else if (bcast && f->reply > 0) {
+            ok = fail(err, 0, "flow.%s.reply: a broadcast is not answered", f->name);
+        } else if (!bcast && (f->hops || f->reach_m > 0)) {
+            ok = fail(err, 0, "flow.%s: hops and reach scope a broadcast, not a unicast", f->name);
+        } else if (f->reach_m > 0 && s->links_file[0]) {
+            ok = fail(err, 0, "flow.%s.reach needs positions, which links replaces", f->name);
+        } else if (s->closed) {
+            ok = fail(err, 0, "flow.%s needs traffic.closed = no: a flow's gaps wait on nothing",
+                      f->name);
+        }
     }
     if (ok && !(extent(s) / s->channel.decorrelation_m <= 1e9)) {
         ok = fail(err, 0,
@@ -2616,6 +2715,17 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         }
         *pk.set = relay_set;
     }
+    /* Each node knows where it stands, for a broadcast scoped by place: where it was placed. A
+     * position its frame cannot carry, in 24 bits of metres each way, is refused, not clamped. */
+    if (dv && dv->bcast_geo) {
+        for (uint32_t i = 0; i < s->nodes; i++) {
+            if (!(fabs(pos[i].x) <= TSIM_DISTVEC_GEO_MAX &&
+                  fabs(pos[i].y) <= TSIM_DISTVEC_GEO_MAX)) {
+                goto done;
+            }
+        }
+        dv->pos = pos;
+    }
     /* A node that moves knows it does, as a handheld would: the same nodes move_start() picks. */
     if (dv && dv->relay_pick == TSIM_DISTVEC_PICK_ELECT && s->move_share > 0) {
         uint32_t k;
@@ -2685,7 +2795,18 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         .chatty_interval = s->chatty_interval,
         .sends = s->sends,
         .send_count = s->send_count,
+        .flow_count = s->flow_count,
     };
+    memcpy(tp.flows, s->flows, sizeof tp.flows);
+    bool reach = false;
+    for (uint32_t i = 0; i < s->flow_count; i++) {
+        reach |= s->flows[i].reach_m > 0;
+    }
+    /* Before the traffic, which may make a message at once. */
+    if (metrics && s->flow_count &&
+        !tsim_metrics_flows(metrics, s->flow_count, reach ? pos : NULL)) {
+        goto done;
+    }
     traffic = tsim_traffic_create(net, &tp);
     if (!metrics || !traffic) {
         goto done;

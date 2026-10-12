@@ -379,10 +379,11 @@ static bool finish(struct tsim_net *net, uint64_t msg) {
     return true;
 }
 
-static uint64_t originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len,
-                          bool card) {
+static uint64_t originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len, bool card,
+                          uint8_t flow, uint8_t hops, double reach_m) {
     if (src >= net->n || (dst >= net->n && dst != TSIM_BROADCAST) || dst == src ||
-        len > TSIM_FRAME_MAX || net->nodes[src].off) {
+        len > TSIM_FRAME_MAX || net->nodes[src].off || !(reach_m >= 0) ||
+        (dst != TSIM_BROADCAST && (hops || reach_m > 0))) {
         return 0;
     }
     if (net->message_count == net->message_cap) {
@@ -426,6 +427,9 @@ static uint64_t originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint
         .created = tsim_sched_now(net->sched),
         .content = content,
         .card = card,
+        .flow = flow,
+        .hops = hops,
+        .reach_m = reach_m,
     };
     net->messages[net->message_count++] = (struct record){
         .r = {.msg = msg,
@@ -446,11 +450,16 @@ static uint64_t originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint
 }
 
 uint64_t tsim_net_originate(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len) {
-    return originate(net, src, dst, len, false);
+    return originate(net, src, dst, len, false, 0, 0, 0);
 }
 
 uint64_t tsim_net_originate_card(struct tsim_net *net, uint32_t src, uint32_t len) {
-    return originate(net, src, TSIM_BROADCAST, len, true);
+    return originate(net, src, TSIM_BROADCAST, len, true, 0, 0, 0);
+}
+
+uint64_t tsim_net_originate_flow(struct tsim_net *net, uint32_t src, uint32_t dst, uint32_t len,
+                                 uint8_t flow, uint8_t hops, double reach_m) {
+    return originate(net, src, dst, len, false, flow, hops, reach_m);
 }
 
 const struct tsim_ledger *tsim_net_ledger(const struct tsim_net *net, uint32_t node) {

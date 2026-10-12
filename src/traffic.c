@@ -6,6 +6,16 @@
 #include "tsim/rng.h"
 #include "tsim/sched.h"
 
+struct source;
+
+/* One node's process for one flow. */
+struct flow_source {
+    struct source *source;
+    uint8_t flow; /* from 1 */
+    struct tsim_rng rng;
+    struct tsim_event next;
+};
+
 struct source {
     struct tsim_traffic *traffic;
     uint32_t node;
@@ -17,6 +27,7 @@ struct source {
     uint32_t peer_count;
     struct tsim_rng card_rng; /* when its cards fall, apart from its messages' draws */
     struct tsim_event card;
+    struct flow_source flows[TSIM_FLOWS_MAX];
 };
 
 /* An answer waiting to be sent. */
@@ -25,6 +36,7 @@ struct reply {
     struct reply *prev, *next;
     struct tsim_event event;
     uint32_t src, dst, len;
+    uint8_t flow; /* the flow it answers, or 0 */
 };
 
 /* A set send, and the id of the message it made, which the closed loop leaves alone. */
@@ -88,20 +100,23 @@ static void send_reply(struct tsim_sched *sched, void *ctx) {
     struct reply *r = ctx;
     struct tsim_traffic *t = r->traffic;
     unlink_reply(r);
-    if (tsim_net_originate(t->net, r->src, r->dst, r->len)) {
+    if (r->flow ? tsim_net_originate_flow(t->net, r->src, r->dst, r->len, r->flow, 0, 0)
+                : tsim_net_originate(t->net, r->src, r->dst, r->len)) {
         t->made++;
     }
     free(r);
 }
 
-/* Draws whether the unicast just drawn is answered, and when and how long the answer is; and if
- * it is, and falls before stop, schedules it. */
-static void plan_reply(struct source *s, uint32_t dst, tsim_time now) {
+/* Draws from `rng` whether the unicast just drawn is answered, with probability `chance`, and when
+ * and how long the answer is, over [len_min, len_max]; and if it is, and falls before stop,
+ * schedules it, as part of `flow`. */
+static void plan_reply(struct source *s, struct tsim_rng *rng, double chance, uint32_t len_min,
+                       uint32_t len_max, uint8_t flow, uint32_t dst, tsim_time now) {
     struct tsim_traffic *t = s->traffic;
     const struct tsim_traffic_params *p = &t->params;
-    bool answered = tsim_rng_unit(&s->rng) < p->reply;
-    tsim_time delay = exponential(&s->rng, p->reply_delay);
-    uint32_t len = p->len_min + (uint32_t)tsim_rng_below(&s->rng, p->len_max - p->len_min + 1);
+    bool answered = tsim_rng_unit(rng) < chance;
+    tsim_time delay = exponential(rng, p->reply_delay);
+    uint32_t len = len_min + (uint32_t)tsim_rng_below(rng, len_max - len_min + 1);
     if (!answered || delay >= p->stop - now) {
         return;
     }
@@ -109,7 +124,8 @@ static void plan_reply(struct source *s, uint32_t dst, tsim_time now) {
     if (!r) {
         return; /* out of memory: the answer is not sent */
     }
-    *r = (struct reply){.traffic = t, .next = t->replies, .src = dst, .dst = s->node, .len = len};
+    *r = (struct reply){
+        .traffic = t, .next = t->replies, .src = dst, .dst = s->node, .len = len, .flow = flow};
     r->event = tsim_sched_at(t->sched, now + delay, send_reply, r);
     if (!tsim_sched_pending(t->sched, r->event)) {
         free(r);
@@ -150,7 +166,7 @@ static void send_next(struct tsim_sched *sched, void *ctx) {
     uint32_t len = p->len_min + (uint32_t)tsim_rng_below(&s->rng, p->len_max - p->len_min + 1);
     tsim_time now = tsim_sched_now(sched);
     if (p->reply > 0 && dst != TSIM_BROADCAST) {
-        plan_reply(s, dst, now);
+        plan_reply(s, &s->rng, p->reply, p->len_min, p->len_max, 0, dst, now);
     }
     if (!p->closed) {
         plan(s, now);
@@ -198,6 +214,58 @@ static void send_card(struct tsim_sched *sched, void *ctx) {
     }
 }
 
+static void send_flow(struct tsim_sched *sched, void *ctx);
+
+/* Schedules a node's next message of a flow `after` from `from`, unless it would fall at or past
+ * stop. */
+static void plan_flow(struct flow_source *fs, tsim_time from, tsim_time after) {
+    const struct tsim_traffic_params *p = &fs->source->traffic->params;
+    fs->next = (struct tsim_event){0};
+    if (after < 1) {
+        after = 1;
+    }
+    if (after < p->stop - from) {
+        fs->next = tsim_sched_at(fs->source->traffic->sched, from + after, send_flow, fs);
+    }
+}
+
+static tsim_time flow_gap(struct flow_source *fs) {
+    const struct tsim_flow *f = &fs->source->traffic->params.flows[fs->flow - 1];
+    if (!f->timer) {
+        return exponential(&fs->rng, f->interval);
+    }
+    double g = (0.5 + tsim_rng_unit(&fs->rng)) * (double)f->interval;
+    return g < (double)INT64_MAX ? (tsim_time)(g + 0.5) : INT64_MAX;
+}
+
+static void send_flow(struct tsim_sched *sched, void *ctx) {
+    struct flow_source *fs = ctx;
+    struct source *s = fs->source;
+    struct tsim_traffic *t = s->traffic;
+    const struct tsim_flow *f = &t->params.flows[fs->flow - 1];
+    /* Every draw for this message, then the next gap, whatever the routing does with it. */
+    uint32_t dst = TSIM_BROADCAST;
+    if (f->to == TSIM_FLOW_PEER) {
+        dst = s->peers[tsim_rng_below(&fs->rng, s->peer_count)];
+    } else if (f->to == TSIM_FLOW_ANY && t->n > 1) {
+        dst = (uint32_t)tsim_rng_below(&fs->rng, t->n - 1);
+        if (dst >= s->node) {
+            dst++;
+        }
+    }
+    uint32_t len = f->len_min + (uint32_t)tsim_rng_below(&fs->rng, f->len_max - f->len_min + 1);
+    tsim_time now = tsim_sched_now(sched);
+    if (f->reply > 0 && dst != TSIM_BROADCAST) {
+        plan_reply(s, &fs->rng, f->reply, f->len_min, f->len_max, fs->flow, dst, now);
+    }
+    plan_flow(fs, now, flow_gap(fs));
+    bool bcast = dst == TSIM_BROADCAST;
+    if (t->n > 1 && tsim_net_originate_flow(t->net, s->node, dst, len, fs->flow,
+                                            bcast ? f->hops : 0, bcast ? f->reach_m : 0)) {
+        t->made++;
+    }
+}
+
 static void send_scripted(struct tsim_sched *sched, void *ctx) {
     (void)sched;
     struct scripted *sc = ctx;
@@ -214,7 +282,7 @@ static void send_scripted(struct tsim_sched *sched, void *ctx) {
  * was a set send, which no gap was waiting on. */
 static void on_finished(void *ctx, const struct tsim_message_record *record) {
     struct tsim_traffic *t = ctx;
-    if (t->scripting || record->msg.card) {
+    if (t->scripting || record->msg.card || record->msg.flow) {
         return; /* a set send, finished as it was made, or a card, which no gap waits on */
     }
     for (uint32_t i = 0; i < t->params.send_count; i++) {
@@ -310,8 +378,21 @@ struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
         p->reply_delay < 0 || p->card_interval < 0 || p->chatty_interval < 0 ||
         !(p->chatty_share >= 0.0 && p->chatty_share <= 1.0) ||
         (p->chatty_share > 0 && p->chatty_interval == 0) ||
-        !(p->card_share >= 0.0 && p->card_share <= 1.0) || p->card_len > TSIM_FRAME_MAX) {
+        !(p->card_share >= 0.0 && p->card_share <= 1.0) || p->card_len > TSIM_FRAME_MAX ||
+        p->flow_count > TSIM_FLOWS_MAX || (p->flow_count && p->closed)) {
         return NULL;
+    }
+    for (uint32_t i = 0; i < p->flow_count; i++) {
+        const struct tsim_flow *f = &p->flows[i];
+        bool bcast = f->to == TSIM_FLOW_ALL;
+        if (f->interval <= 0 || f->len_min > f->len_max || f->len_max > TSIM_FRAME_MAX ||
+            f->to > TSIM_FLOW_ANY || !(f->share >= 0.0 && f->share <= 1.0) ||
+            !(f->reply >= 0.0 && f->reply <= 1.0) ||
+            !(f->reach_m >= 0 && f->reach_m <= TSIM_FLOW_REACH_MAX) ||
+            (f->to == TSIM_FLOW_PEER && !p->peers) || (bcast && f->reply > 0) ||
+            (!bcast && (f->hops || f->reach_m > 0))) {
+            return NULL;
+        }
     }
     for (uint32_t i = 0; i < p->send_count; i++) {
         const struct tsim_send *send = &p->sends[i];
@@ -366,6 +447,17 @@ struct tsim_traffic *tsim_traffic_create(struct tsim_net *net,
         if (p->card_interval > 0 && tsim_rng_unit(&s->card_rng) < p->card_share) {
             plan_card(s, from, (tsim_time)(tsim_rng_unit(&s->card_rng) * (double)p->card_interval));
         }
+        /* Each flow: whether the node sends it, and when, from a stream of its own. */
+        for (uint32_t f = 0; f < p->flow_count; f++) {
+            struct flow_source *fs = &s->flows[f];
+            fs->source = s;
+            fs->flow = (uint8_t)(f + 1);
+            tsim_rng_init(&fs->rng, p->seed, UINT64_C(0xC9) << 56 | (uint64_t)f << 40 | i);
+            if (tsim_rng_unit(&fs->rng) < p->flows[f].share) {
+                plan_flow(fs, from,
+                          (tsim_time)(tsim_rng_unit(&fs->rng) * (double)p->flows[f].interval));
+            }
+        }
     }
     for (uint32_t i = 0; i < p->send_count; i++) {
         struct scripted *sc = &t->scripted[i];
@@ -394,6 +486,9 @@ void tsim_traffic_destroy(struct tsim_traffic *t) {
     for (uint32_t i = 0; i < t->n; i++) {
         tsim_sched_cancel(t->sched, t->sources[i].next);
         tsim_sched_cancel(t->sched, t->sources[i].card);
+        for (uint32_t f = 0; f < t->params.flow_count; f++) {
+            tsim_sched_cancel(t->sched, t->sources[i].flows[f].next);
+        }
     }
     for (uint32_t i = 0; i < t->params.send_count; i++) {
         tsim_sched_cancel(t->sched, t->scripted[i].event);

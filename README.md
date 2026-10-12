@@ -35,6 +35,11 @@ frames, `airtime.budget = on`, with each part's share and window a setting to sw
 `tsim/budget.h` is the budget and [docs/airtime.md](docs/airtime.md) what it does to a mesh
 (MSH-92).
 
+A run's traffic can be a mix of flows - presence, position, telemetry, chat, direct messages,
+alerts - each reported apart, and a broadcast can be wanted only within a reach of its sender.
+[docs/workload.md](docs/workload.md) has the mix measured meshes carry, three scenarios built from
+it (`scenarios/workload/`), every candidate's results on them, and scoped broadcast's (MSH-34).
+
 The comparison has been made: candidate 3 proceeds, and [docs/recommendation.md](docs/recommendation.md)
 says why and what could reopen it (MSH-27). Mobility and churn are measured; the store-and-forward
 floor was never built.

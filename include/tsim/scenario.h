@@ -125,6 +125,8 @@ struct tsim_scenario {
     double card_share;
     double chatty_share; /* see tsim/traffic.h */
     tsim_time chatty_interval;
+    struct tsim_flow flows[TSIM_FLOWS_MAX]; /* see tsim/traffic.h, in the order first named */
+    uint32_t flow_count;
 
     /* Churn (MSH-59): this share of the nodes `churn_nodes` names each go down and come back up
      * for the whole run, for times drawn from exponentials of these means, as tsim_net_power()

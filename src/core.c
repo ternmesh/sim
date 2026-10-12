@@ -764,11 +764,14 @@ static bool originate_flood(struct router *r, const struct tsim_message *msg) {
     tag_put(frame + AT_FLOOD_SRC, msg->src + 1);
     tag_put(frame + AT_FLOOD_ID, (uint32_t)msg->id);
     memcpy(frame + AT_FLOOD_CONTENT, msg->content, msg->len);
-    /* A card may start with fewer hops than the flooder would give it (card_hops): the flooder
-     * fills them in from its config, so the config is what is changed, for this one frame. */
+    /* A card may start with fewer hops than the flooder would give it (card_hops), and a message
+     * with the hops its sender asks for: the flooder fills them in from its config, so the config
+     * is what is changed, for this one frame. */
     uint8_t hops = r->flood.config.hops;
     if (msg->card && r->config.card_hops) {
         r->flood.config.hops = (uint8_t)r->config.card_hops;
+    } else if (msg->hops) {
+        r->flood.config.hops = msg->hops;
     }
     bool sent = tern_flood_send(&r->flood, tsim_node_now(r->node), frame, len);
     r->flood.config.hops = hops;
