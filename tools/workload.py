@@ -24,14 +24,15 @@ MSH-34 asked to be measured:
   distvec, geo     candidate 3 with broadcasts scoped by place (routing.bcast_geo): presence,
                    position and telemetry are passed on only by relays within their reach
   core             the firmware's routing, with a board's tables: the flood of draft/flooding.md
-  core, 1 hop      the core with presence, position and telemetry asking for one relay hop, the
-                   scope the flood's head already carries
-  core, 2 hops     the same, two relay hops
+  core, hops 1     the core with presence, position and telemetry sent with a flood's hops at 1,
+                   as draft/flooding.md lets the section that defines a frame set them: no relay
+                   in a crowd passes one on, and a bridge does
+  core, hops 2     the same at 2: one relay in a crowd
   core, geo        not run: the firmware has no scope by place
 
 Each run's report is kept in --out, so the table can be printed again with --only and no runs.
 --only takes the candidates' ids, their names without commas or spaces: meshtastic, meshcore,
-distvec, distvec-geo, core, core-1hop and core-2hops; empty for all of them.
+distvec, distvec-geo, core, core-hops1 and core-hops2; empty for all of them.
 """
 
 import argparse
@@ -47,15 +48,19 @@ SCENARIOS = os.path.join(HERE, "..", "scenarios", "workload")
 WORKLOADS = ["metro", "event", "dm"]
 LOCAL = ["presence", "position", "telemetry"]
 
+# The scenarios name candidate 3, which every build has; the core is there only in a build with
+# the firmware beside it (tsim/core.h).
+CORE = ["routing=core", "mac=listen"]
+
 CANDIDATES = [
     ("meshtastic", ["routing=meshtastic", "mac=meshtastic", "duty_cycle=none",
                     "routing.duty_cycle=10%"]),
     ("meshcore", ["routing=meshcore", "mac=meshcore"]),
     ("distvec", ["routing=distvec", "mac=meshcore"]),
     ("distvec, geo", ["routing=distvec", "mac=meshcore", "routing.bcast_geo=yes"]),
-    ("core", []),
-    ("core, 1 hop", ["flow.%s.hops=1" % f for f in LOCAL]),
-    ("core, 2 hops", ["flow.%s.hops=2" % f for f in LOCAL]),
+    ("core", CORE),
+    ("core, hops 1", CORE + ["flow.%s.hops=1" % f for f in LOCAL]),
+    ("core, hops 2", CORE + ["flow.%s.hops=2" % f for f in LOCAL]),
 ]
 
 

@@ -1,6 +1,6 @@
 # The realistic workload (MSH-34): what a metro mesh carries, per node, from the field. See
 # docs/workload.md for every rate's source. The network is the region's on the fast preset -
-# 1000 nodes over 18 km, 200 relays on the shared sites - with the firmware's core routing it;
+# 1000 nodes over 18 km, 200 relays on the shared sites - with candidate 3 routing it;
 # tools/workload.py runs every candidate over it.
 #
 # Presence, position and telemetry are of local interest: each is wanted within 5 km of its
@@ -16,8 +16,8 @@ radio.cr       = 1
 radio.preamble = 16
 radio.tx_dbm   = 20
 
-routing             = core
-mac                 = listen
+routing             = distvec
+mac                 = meshcore
 routing.relay_pick  = cds
 routing.relay_count = 200
 sites.sf            = 7

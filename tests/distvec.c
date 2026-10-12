@@ -1497,8 +1497,8 @@ static void a_broadcast_spends_no_hop_where_relays_are_few(void) {
     CHECK_EQ_U64(line_reached(2), 5);
 }
 
-/* A broadcast whose sender asks for fewer relay hops goes only as far: along a line, two reach
- * three nodes, where bcast_hops would take it to all five. */
+/* A broadcast whose sender sets fewer hops goes only as far: along a line, 3 - two relays -
+ * reach three nodes, where bcast_hops would take it to all five. */
 static void a_broadcast_goes_as_many_hops_as_its_sender_asks(void) {
     struct rig r;
     rig_init(&r);
@@ -1506,7 +1506,7 @@ static void a_broadcast_goes_as_many_hops_as_its_sender_asks(void) {
     r.rc.bcast_sparse = 0;
     line(&r, 6, 1);
     tsim_sched_run_until(r.sched, TSIM_S(60));
-    uint64_t b = tsim_net_originate_flow(r.net, 0, TSIM_BROADCAST, 20, 1, 2, 0);
+    uint64_t b = tsim_net_originate_flow(r.net, 0, TSIM_BROADCAST, 20, 1, 3, 0);
     tsim_sched_run_until(r.sched, TSIM_S(120));
     CHECK_EQ_U64(tsim_net_message(r.net, b)->delivered, 3);
     rig_close(&r);

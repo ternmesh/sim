@@ -299,8 +299,8 @@
  * fewer, which spend none (see Sparse networks) - each relay waiting a random time up to
  * bcast_window airtimes of the frame and dropping it if it hears bcast_cancel copies first.
  *
- * Scoped broadcast (MSH-34). A broadcast whose sender asks for fewer relay hops (struct
- * tsim_message.hops) starts with those in place of bcast_hops; the frame is the same. With
+ * Scoped broadcast (MSH-34). A broadcast whose sender sets its hops (struct tsim_message.hops)
+ * starts with those in place of bcast_hops + 1; the frame is the same. With
  * bcast_geo, one whose sender asks for a reach (struct tsim_message.reach_m) goes instead as
  *
  *     type 0x0E | source 4 | id 4 | hops 1 | x 3 | y 3 | reach 2 | content

@@ -1248,8 +1248,8 @@ static const char *set_flow(struct tsim_scenario *s, const char *rest, const cha
     }
     if (strcmp(field, "hops") == 0) {
         uint64_t hops;
-        if (!parse_u64(v, TSIM_FLOW_HOPS_MAX, &hops)) {
-            return "expected relay hops up to 254, 0 for the routing's own";
+        if (!parse_u64(v, UINT8_MAX, &hops)) {
+            return "expected hops up to 255, 0 for the routing's own";
         }
         f->hops = (uint8_t)hops;
         return NULL;

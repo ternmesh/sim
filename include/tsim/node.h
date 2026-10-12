@@ -107,7 +107,9 @@ struct tsim_message {
      * a set send or a card. Only the books read it. */
     uint8_t flow;
     /* How far a broadcast's sender asks it to go, which a routing that can scope a broadcast
-     * honours and any other ignores: `hops` relay hops, 0 for the routing's own; and `reach_m`
+     * honours and any other ignores: `hops`, what its sender sets the hops in a flood's head to
+     * (the specification's draft/flooding.md: n lets n - 1 relays in a crowd pass it on, and a
+     * bridge any number), 0 for the routing's own; and `reach_m`
      * metres from its sender, 0 for anywhere. The books count a broadcast with a reach as wanted
      * only by the nodes that close to its sender, whatever the routing does with it. */
     uint8_t hops;

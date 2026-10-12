@@ -3965,7 +3965,7 @@ static bool router_originate(void *self, const struct tsim_message *msg) {
         tx.bytes[0] = geo ? TYPE_BCAST_GEO : TYPE_BCAST;
         put32(tx.bytes + 1, r->self);
         put32(tx.bytes + 5, (uint32_t)msg->id);
-        tx.bytes[9] = (uint8_t)((msg->hops ? msg->hops : r->config.bcast_hops) + 1);
+        tx.bytes[9] = msg->hops ? msg->hops : (uint8_t)(r->config.bcast_hops + 1);
         if (geo) {
             const struct tsim_pos *at = &r->config.pos[r->self];
             put24s(tx.bytes + 10, at->x);

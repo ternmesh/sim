@@ -1060,7 +1060,7 @@ static void flows_parse_and_are_checked(void) {
         "flow.x.interval = 1 h\nflow.x.to = peer\n",                 /* no peers */
         "flow.x.interval = 1 h\nflow.x.reply = 0.5\n",               /* a broadcast answered */
         "flow.x.interval = 1 h\nflow.x.to = any\nflow.x.hops = 1\n", /* a unicast scoped */
-        "flow.x.interval = 1 h\nflow.x.hops = 255\n",
+        "flow.x.interval = 1 h\nflow.x.hops = 256\n",
         "flow.x.interval = 1 h\nflow.x.reach = 700000\n",
         "flow.x.interval = 1 h\nflow.x.colour = red\n",
         "flow.a-b.interval = 1 h\n",
