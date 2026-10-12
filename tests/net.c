@@ -1260,6 +1260,30 @@ static void a_frame_that_will_wait_takes_no_room_in_the_queue(void) {
     rig_close(&r);
 }
 
+/* Room in the queue is decided where a frame would land. A queue of one holds a frame to pass on
+ * and a frame of the node's own its part cannot pay for. A small frame of its own behind that one
+ * would be held there, and is taken; the same frame sent ahead of it, at a higher priority, would
+ * be paid for and go, so it needs room, and there is none. */
+static void room_is_decided_where_a_frame_would_land(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 1);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    tsim_node_send(n, &own);
+    CHECK(tsim_node_transmit(n)); /* the own part is empty */
+    run_for(&r, TSIM_S(10));      /* and holds 100 ms: enough for a small frame, not a big one */
+    struct tsim_tx relayed = marked(TSIM_PURPOSE_RELAY, 2, 10, TSIM_BUDGET_RELAYED);
+    CHECK(tsim_node_send(n, &relayed) != 0);
+    CHECK(tsim_node_send(n, &own) != 0); /* short: held */
+    struct tsim_tx small = marked(TSIM_PURPOSE_DATA, 1, 10, TSIM_BUDGET_OWN);
+    CHECK(tsim_node_send(n, &small) != 0); /* behind it: held */
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->budget_held, 2);
+    struct tsim_tx ahead = marked(TSIM_PURPOSE_DATA, 3, 10, TSIM_BUDGET_OWN);
+    CHECK_EQ_U64(tsim_node_send(n, &ahead), 0); /* ahead of it, paid for: no room */
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->dropped, 1);
+    rig_close(&r);
+}
+
 /* However long the queue, a node keeps no more than 32 frames of its own under the budget, waiting
  * now or not: any of them may come to wait. */
 static void a_node_keeps_32_of_its_own_however_long_its_queue(void) {
@@ -1361,6 +1385,7 @@ int main(void) {
     RUN(a_wait_behind_another_ends_when_that_one_is_gone);
     RUN(a_report_ends_a_wait_nothing_kicked_for);
     RUN(a_frame_that_will_wait_takes_no_room_in_the_queue);
+    RUN(room_is_decided_where_a_frame_would_land);
     RUN(a_node_keeps_32_of_its_own_however_long_its_queue);
     RUN(a_frame_no_bucket_could_hold_is_refused);
     RUN(with_the_budget_off_marks_change_nothing);

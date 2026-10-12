@@ -611,6 +611,17 @@ static bool carries_what_it_claims(const struct tsim_node *nd, const struct tsim
 static size_t budget_waiting(const struct tsim_node *nd);
 static size_t own_queued(const struct tsim_node *nd);
 static bool may_wait(const struct tsim_tx *tx);
+static size_t short_at(const struct tsim_node *nd);
+static bool held_at(const struct tsim_node *nd, size_t stop, size_t at, const struct tsim_tx *tx);
+
+/* Where a frame goes in the queue: behind every frame of its priority or higher. */
+static size_t insert_at(const struct tsim_node *nd, const struct tsim_tx *tx) {
+    size_t at = nd->queue_len;
+    while (at > 0 && nd->queue[at - 1].tx.priority < tx->priority) {
+        at--;
+    }
+    return at;
+}
 
 uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
     struct tsim_net *net = nd->net;
@@ -632,12 +643,9 @@ uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
                  !tsim_budget_fits(&nd->budget, tx->budget, tsim_lora_airtime(&tx->lora, tx->len));
     bool no_room = budget && may_wait(tx) && own_queued(nd) >= BUDGET_WAITING_MAX;
     /* Frames waiting for the budget take no room in the queue, and nor does this one if it will
-     * wait: behind one of its own that waits, or short itself. */
+     * wait where it lands, as held_at() has it. */
     size_t waiting = budget_waiting(nd);
-    bool will_wait =
-        budget && may_wait(tx) &&
-        (waiting > 0 || !tsim_budget_paid(&nd->budget, tsim_sched_now(net->sched), tx->budget,
-                                          tsim_lora_airtime(&tx->lora, tx->len)));
+    bool will_wait = budget && held_at(nd, short_at(nd), insert_at(nd, tx), tx);
     if (too_long || never || no_room ||
         (net->params.queue_limit && !will_wait &&
          nd->queue_len - waiting >= net->params.queue_limit)) {
@@ -657,10 +665,7 @@ uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
         nd->queue = grown;
         nd->queue_cap = cap;
     }
-    size_t at = nd->queue_len;
-    while (at > 0 && nd->queue[at - 1].tx.priority < tx->priority) {
-        at--;
-    }
+    size_t at = insert_at(nd, tx);
     uint64_t handle = net->next_handle++;
     memmove(&nd->queue[at + 1], &nd->queue[at], (nd->queue_len - at) * sizeof *nd->queue);
     nd->queue[at] = (struct queued){handle, false, -1, -1, *tx};
@@ -780,6 +785,15 @@ static size_t short_at(const struct tsim_node *nd) {
     return nd->queue_len;
 }
 
+/* The one rule for whether a frame of the node's own is held back by the budget at position `at`
+ * of the queue, queued there or about to be: it is short itself, or one of its own ahead of it is
+ * - `stop` being short_at(). The MAC's head, the queue's room and the books all ask this. */
+static bool held_at(const struct tsim_node *nd, size_t stop, size_t at, const struct tsim_tx *tx) {
+    return may_wait(tx) &&
+           (stop < at || !tsim_budget_paid(&nd->budget, tsim_sched_now(nd->net->sched), tx->budget,
+                                           airtime_of(tx)));
+}
+
 /* As short_at(), where the budget is kept: on, only there do those frames wait. */
 static size_t blocker(const struct tsim_node *nd) {
     return nd->net->params.budget.mode == TSIM_BUDGET_MODE_ON ? short_at(nd) : nd->queue_len;
@@ -788,9 +802,10 @@ static size_t blocker(const struct tsim_node *nd) {
 /* The frame the MAC is shown: the first in the queue that is not waiting for the budget, or
  * queue_len for none. */
 static size_t head_at(const struct tsim_node *nd) {
-    size_t stop = blocker(nd);
+    bool on = nd->net->params.budget.mode == TSIM_BUDGET_MODE_ON;
+    size_t stop = on ? short_at(nd) : nd->queue_len;
     for (size_t i = 0; i < nd->queue_len; i++) {
-        if (i < stop || !may_wait(&nd->queue[i].tx)) {
+        if (!on || !held_at(nd, stop, i, &nd->queue[i].tx)) {
             return i;
         }
     }
@@ -808,9 +823,12 @@ static size_t own_queued(const struct tsim_node *nd) {
 
 /* How many frames of its own wait for the budget. */
 static size_t budget_waiting(const struct tsim_node *nd) {
-    size_t n = 0;
-    for (size_t i = blocker(nd); i < nd->queue_len; i++) {
-        n += may_wait(&nd->queue[i].tx);
+    if (nd->net->params.budget.mode != TSIM_BUDGET_MODE_ON) {
+        return 0;
+    }
+    size_t n = 0, stop = short_at(nd);
+    for (size_t i = 0; i < nd->queue_len; i++) {
+        n += held_at(nd, stop, i, &nd->queue[i].tx);
     }
     return n;
 }
@@ -867,7 +885,7 @@ static void budget_track(struct tsim_node *nd) {
         return;
     }
     own_first(nd);
-    size_t stop = mode == TSIM_BUDGET_MODE_SHADOW ? short_at(nd) : blocker(nd);
+    size_t stop = short_at(nd);
     tsim_time now = tsim_sched_now(nd->net->sched);
     tsim_time ahead = -1; /* when the waits ended this time ahead of the frame came to end */
     for (size_t i = 0; i < nd->queue_len; i++) {
@@ -875,11 +893,12 @@ static void budget_track(struct tsim_node *nd) {
         if (!may_wait(&q->tx)) {
             continue;
         }
-        if (i >= stop && q->wait_from < 0) {
+        bool held = held_at(nd, stop, i, &q->tx);
+        if (held && q->wait_from < 0) {
             q->wait_from = now;
             nd->stats.budget_held += !q->held;
             q->held = true;
-        } else if (i < stop && q->wait_from >= 0) {
+        } else if (!held && q->wait_from >= 0) {
             tsim_time end = end_wait(nd, q, ahead);
             ahead = end > ahead ? end : ahead;
         }
