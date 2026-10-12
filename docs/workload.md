@@ -162,6 +162,153 @@ The candidates:
 | `distvec` | candidate 3, every broadcast going `routing.bcast_hops` relays |
 | `distvec, geo` | candidate 3 with broadcasts scoped by place (`routing.bcast_geo`) |
 | `core` | the firmware's routing with a board's tables, flooding as `draft/flooding.md` has it |
-| `core, 1 hop` | the core with presence, position and telemetry asking for one relay hop, the scope a flood's head already carries |
+| `core, hops 1` | the core with presence, position and telemetry sent with a flood's `hops` at 1: no relay in a crowd passes them on, and a bridge does |
+| `core, hops 2` | the same at 2: one relay in a crowd. `draft/flooding.md` already lets the section that defines a frame set fewer than `FLOOD_HOPS` (5), as cards do |
 
-RESULTS
+Each cell is the mean over seeds 1 to 3. The flow columns are the share of what was wanted that
+arrived within 60 s.
+
+| Column | Meaning |
+|---|---|
+| beyond | per local broadcast, the nodes outside its reach that got it |
+| airtime | seconds on the air in the measured hour, all 1000 nodes together |
+| per_s | on-time deliveries per second of that airtime |
+
+### Metro: the realistic mix
+
+| | presence | position | telemetry | chat | dm | emergency | beyond | airtime | per_s |
+|---|---|---|---|---|---|---|---|---|---|
+| meshtastic | 99.1% | 99.8% | 99.7% | 95.2% | 95.3% | 94.5% | 773 | 12727 | 10.9 |
+| meshcore | 45.9% | 57.6% | 60.7% | 57.9% | 83.8% | 55.0% | 405 | 14378 | 5.3 |
+| distvec | 87.6% | 92.5% | 92.5% | 93.4% | 99.3% | 92.8% | 711 | 8324 | 15.4 |
+| distvec, geo | 96.0% | 96.5% | 96.7% | 98.9% | 99.3% | 98.8% | 457 | 2950 | 46.4 |
+| core | 84.8% | 86.0% | 86.5% | 85.1% | 96.2% | 79.7% | 653 | 11643 | 10.3 |
+| core, hops 1 | 61.7% | 63.1% | 65.2% | 97.1% | 100.0% | 97.0% | 247 | 4003 | 24.2 |
+| core, hops 2 | 87.2% | 88.1% | 89.0% | 94.4% | 99.3% | 95.0% | 561 | 6029 | 20.8 |
+
+### Event: broadcast-heavy
+
+| | presence | position | telemetry | chat | dm | emergency | beyond | airtime | per_s |
+|---|---|---|---|---|---|---|---|---|---|
+| meshtastic | 5.9% | 7.3% | 7.2% | 2.9% | 3.3% | 3.3% | 114 | 21079 | 5.5 |
+| meshcore | 16.3% | 20.8% | 17.8% | 17.3% | 45.0% | 23.8% | 110 | 13498 | 24.5 |
+| distvec | 45.9% | 55.9% | 56.1% | 43.6% | 63.7% | 43.1% | 298 | 13599 | 66.0 |
+| distvec, geo | 63.6% | 69.8% | 71.9% | 68.1% | 85.9% | 59.4% | 270 | 9570 | 119.9 |
+| core | 43.4% | 49.1% | 44.9% | 43.2% | 73.0% | 53.0% | 256 | 15961 | 50.2 |
+| core, hops 1 | 34.9% | 35.4% | 35.4% | 95.5% | 100.0% | 95.9% | 38 | 2935 | 216.5 |
+| core, hops 2 | 59.7% | 60.9% | 59.8% | 75.4% | 97.4% | 81.0% | 236 | 8628 | 118.9 |
+
+### DM-heavy
+
+| | presence | position | telemetry | chat | dm | emergency | beyond | airtime | per_s |
+|---|---|---|---|---|---|---|---|---|---|
+| meshtastic | 73.4% | 75.8% | 74.7% | 48.4% | 45.4% | 44.8% | 425 | 24948 | 4.0 |
+| meshcore | 15.8% | 24.1% | 25.3% | 19.5% | 50.5% | 16.2% | 122 | 20575 | 1.5 |
+| distvec | 88.2% | 92.4% | 90.0% | 93.3% | 98.5% | 80.8% | 705 | 9001 | 14.2 |
+| distvec, geo | 95.7% | 96.2% | 96.3% | 98.7% | 99.5% | 96.6% | 448 | 3679 | 37.4 |
+| core | 81.5% | 85.1% | 85.0% | 76.5% | 95.1% | 80.6% | 633 | 12976 | 9.0 |
+| core, hops 1 | 59.0% | 61.3% | 62.3% | 97.3% | 99.8% | 91.7% | 227 | 4625 | 20.3 |
+| core, hops 2 | 85.8% | 86.8% | 88.1% | 94.3% | 99.2% | 97.0% | 527 | 6899 | 18.1 |
+
+### What it says
+
+**MSH-27's answer stands on the field's mix.**
+
+- Candidate 3 (`distvec`) and the core deliver direct messages at 95-100% on the metro and the
+  DM-heavy mix, and at 64-73% at the event (86% with scope by place).
+- Meshtastic delivers 95% on the metro, but 45% once DMs are six a node a day, and 3% at the event.
+  Its queues overflow there: about 374,000 frames dropped in the hour, and a DM's 95th-percentile
+  delay is 39 minutes.
+- MeshCore delivers 45-84%.
+- On deliveries per second of airtime, candidate 3 and the core lead every incumbent on every
+  scenario, scoped or not, apart from the light metro. There, Meshtastic's 10.9 per second sits
+  between the core's 10.3 and candidate 3's 15.4.
+
+**On a light load, flooding everything works, at a price.**
+
+- Meshtastic delivers 99% of local broadcasts on the metro, where Tern's unscoped floods deliver
+  85-93%.
+- It spends 12.7 ks of airtime to do it. Each local broadcast reaches about 770 nodes outside its
+  5 km reach, to deliver to about 190 within it.
+- The same price is what collapses it at the event.
+
+**Scope is the largest single gain measured here.**
+
+On the broadcast-heavy event, against unscoped flooding through the same relays:
+
+- **Scope by place** (`distvec, geo`) raises every flow:
+  - local broadcasts from 46-56% to 64-72%;
+  - chat from 44% to 68%;
+  - DMs from 64% to 86%;
+  - on 30% less airtime, at 1.8 times the deliveries per second of airtime.
+- **On the metro**, scope by place delivers 96-99% of everything, local broadcasts included.
+  - It uses a third of candidate 3's unscoped airtime (2950 s against 8324 s), and a quarter of the
+    core's.
+  - That is 3 times the deliveries per second of airtime, and 4.2 times Meshtastic's.
+- **Hops alone**, which the specification can already say:
+  - At 2, the core's local broadcasts deliver as well or better than unscoped: 87-89% against
+    85-86% on the metro, and 60-61% against 43-49% at the event.
+  - Chat, DMs and alerts all rise.
+  - Airtime falls by 48% on the metro and 46% at the event.
+  - At 1, hops are too few for a 1.5-5 km reach: local broadcasts fall to 35-65%.
+- **Hops are a poor proxy for distance.** At the same metro airtime, scope by place delivered 96%
+  where hops 2 delivered 88%.
+
+**Emergency alerts do not get through a broadcast-heavy channel on their own.**
+
+At the event, an alert to every node reached:
+
+| Candidate | Alert reached |
+|---|---|
+| Meshtastic | 3% |
+| MeshCore | 24% |
+| Tern, unscoped | 43-53% |
+| Scoped by place | 59% |
+| Hops 2 | 81% |
+| Hops 1 | 96% |
+
+The last one is only because local traffic was cut back hardest. Nothing in any candidate treats an
+alert differently from a chat line. The alert gets through only when the rest of the load is kept
+down.
+
+**With broadcasts scoped, Tern's own routing is the largest user of airtime.** On the metro, scope
+by place, announces are 1631 s of 2950 s (55%); unscoped they are 2828 of 8324 (34%). The research
+behind this work flagged control traffic as the risk a routed design adds
+([Research 01](https://linear.app/sailfin/document/research-01-field-pain-points-meshtastic-meshcore-reticulum-fa77bb0241f1), P2).
+
+**Tern's flood under-delivers on a light load.** On the metro, where the channel is quiet, the
+core's floods reach 85-86% within the reach and candidate 3's 88-93%, where Meshtastic's reach 99%.
+Scope closes the gap for candidate 3 (96%) and narrows it for the core (88% at hops 2). Why the
+unscoped flood leaves 7-15% behind on a quiet channel is not yet found.
+
+## Recommendation for the specification (MSH-30)
+
+1. **A flood's scope in hops should be set per kind of frame, now.**
+   - `draft/flooding.md` already lets the section that defines a frame set fewer than
+     `FLOOD_HOPS`.
+   - Position and telemetry, when they are specified, should start at `hops` 2. Cards should be
+     looked at again: they carry a `CARD_HOPS` of their own.
+   - This needs no new field, and on these workloads it halves the airtime and raises every flow.
+2. **Scope by place should be the next scoped primitive, and not yet normative.**
+   - It beats hops on every scenario.
+   - It needs the sender's position on the air (8 bytes here), which [positions](https://github.com/ternmesh/spec/blob/main/draft/positions.md) keeps off by default for privacy.
+   - It needs a rule for a node that does not know where it stands.
+   - Those are design questions, not measurement ones. A coarse cell rather than a position, as
+     MeshCore's regions are, is the natural next thing to measure.
+3. **Emergency needs a priority class of its own.** It should have its own small allowance, ahead
+   of floods in the queue. Scope helps an alert only by quieting everything else, and on the
+   broadcast-heavy event no scope that keeps local traffic useful got alerts above 81%.
+4. **Two follow-ups for the simulator and the firmware:**
+   - why an unscoped Tern flood leaves 7-15% of a quiet channel behind;
+   - what the announces cost once broadcasts are scoped.
+
+## Reproducing
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release   # with the firmware beside it, for the core rows
+cmake --build build
+tools/workload.py --tsim build/tsim --seeds 3 --out workload-out
+```
+
+The 63 runs take about an hour and a half on four cores. A build without the firmware runs every row but the
+core's.
