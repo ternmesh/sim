@@ -293,7 +293,8 @@ static struct tern_lora lora_of(const struct tsim_lora *l);
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,
                                           double tx_dbm) {
-#if defined(TSIM_FIRMWARE_DEFAULT_ROUTE) || defined(TSIM_FIRMWARE_LEARNING)
+#if defined(TSIM_FIRMWARE_DEFAULT_ROUTE) || defined(TSIM_FIRMWARE_LEARNING) ||                     \
+    defined(TSIM_FIRMWARE_REATTACH)
     struct tern_lora tl = lora_of(lora);
     /* The default route and learning allowance as the firmware's router has them by default. */
     struct tern_route_config rd = tern_route_defaults(&tl, 0, 0, false);
@@ -325,6 +326,9 @@ struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lo
 #endif
 #ifdef TSIM_FIRMWARE_LEARNING
         .learn_ppm = rd.learn_ppm,
+#endif
+#ifdef TSIM_FIRMWARE_REATTACH
+        .reattach = rd.reattach,
 #endif
 #ifndef TSIM_FIRMWARE_DEFAULT_ROUTE
         .default_busy_ppm = 1000000,
@@ -371,6 +375,14 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
         return "learn_ppm needs a firmware with a learning allowance";
     }
 #endif
+#ifndef TSIM_FIRMWARE_REATTACH
+    if (c->reattach) {
+        return "reattach needs a firmware whose leaves re-attach";
+    }
+#endif
+    if (c->reattach > 1) {
+        return "reattach must be 0 or 1";
+    }
     if (c->announce_ppm > 1000000 || c->address_after > 255 || c->address_every > 255 ||
         c->learn_ppm > 1000000) {
         return "announce_ppm must be 0 to 1000000, and address_after and address_every 0 to 255";
@@ -867,6 +879,9 @@ static void *router_create(struct tsim_node *node, const void *config) {
     }
 #ifdef TSIM_FIRMWARE_LEARNING
     rc.learn_ppm = c->learn_ppm;
+#endif
+#ifdef TSIM_FIRMWARE_REATTACH
+    rc.reattach = c->reattach != 0;
 #endif
 #ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
     rc.default_hops = (uint8_t)c->default_hops;

@@ -143,6 +143,13 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
     if(TSIM_ROUTE_LEARNING)
         target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_LEARNING)
     endif()
+    # A firmware whose leaves re-attach when they move (ternmesh/spec routing draft, "Leaves that
+    # move") has it measured on and off.
+    file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/route.h" TSIM_ROUTE_REATTACH
+         REGEX "bool reattach;")
+    if(TSIM_ROUTE_REATTACH)
+        target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_REATTACH)
+    endif()
     set(TSIM_HAVE_CORE ON)
     message(STATUS "Core routing: from ${TSIM_FIRMWARE_DIR}")
 elseif(TSIM_REQUIRE_CORE)

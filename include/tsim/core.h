@@ -59,7 +59,7 @@
  * nodes that hold a route as the warmup ends, the share whose routes followed from node to node
  * arrive, and the seconds on the air in the hour after, all nodes together. Candidate 3 is run
  * without traffic, as the core is, and with and without its re-attachment, which neither the
- * specification nor the core has.
+ * specification nor the core had when this table was made (the core with it is further on).
  *
  * The core with unbounded tables (-s routing.neighbours=255 -s routing.destinations=0 -s
  * routing.frames=16 -s routing.flood_frames=16), announces signed and checked, numbers kept, and
@@ -154,6 +154,82 @@
  * With 255 places the two agree to 0.02 of a point. With 32 or 64 on the fast preset some seeds
  * do not settle: six hours on they still send requests, and 3 ks of announces an hour against
  * 0.6 ks, which is not explained.
+ *
+ * Re-attachment (the routing draft's leaves that move, firmware#86; MSH-78). Candidate 3 has it on
+ * by default and the core now has it too, `reattach` 0 being the core without it. The same three
+ * scenarios, re-attachment on in both and off in both, the core without a board's tables but for
+ * its neighbours, 255 or 32 (tools/core.py compare's rows, and the last with -s 'warmup=12 h';
+ * 3 seeds, no traffic):
+ *
+ *                               routes    reach    airtime
+ *   town
+ *     candidate 3              100.00%  100.00%     2544 s
+ *     without re-attachment    100.00%  100.00%     2497 s
+ *     core, 255                 99.98%   99.82%     3247 s
+ *     without re-attachment     99.96%   99.92%     3242 s
+ *     core, 32                  99.90%   99.79%     3421 s
+ *     without re-attachment     99.91%   99.80%     3442 s
+ *   region, fast
+ *     candidate 3               99.63%   99.57%      842 s
+ *     without re-attachment     97.21%   97.21%      665 s
+ *     core, 255                 97.17%   97.17%     2129 s
+ *     without re-attachment     97.07%   97.07%     2377 s
+ *     core, 32                  84.37%   84.08%     3450 s
+ *     without re-attachment     84.52%   84.06%     3563 s
+ *   region, deployed
+ *     candidate 3               92.68%   78.46%     5762 s
+ *     without re-attachment     85.01%   85.01%     4280 s
+ *     core, 255                 77.59%   77.59%     7208 s
+ *     without re-attachment     64.77%   64.76%     8022 s
+ *     core, 32                  69.76%   66.60%     5992 s
+ *     without re-attachment     63.18%   57.65%     6109 s
+ *   region, deployed, warmup 12 h
+ *     candidate 3               96.88%   95.88%     5063 s
+ *     without re-attachment     96.58%   96.58%     4122 s
+ *     core, 255                 95.42%   95.42%     5640 s
+ *     without re-attachment     95.78%   95.75%     5373 s
+ *     core, 32                  78.86%   78.30%     5648 s
+ *     without re-attachment     76.48%   75.36%     6158 s
+ *
+ * The 2.4 points candidate 3 gains on the fast preset are not routes. Its leaf that solicits
+ * sends what it has no route for to its anchor, and tsim_distvec_next() counts that as a route
+ * held; the core's leaf has the same in its default route, which this plugin's next_hop leaves
+ * out (router_next_hop() above). Counted as candidate 3 counts it, the core holds routes for
+ * 99.89% of pairs with re-attachment and 99.75% without, 99.80% and 99.64% arriving (seeds 1 to
+ * 3). What the core's re-attachment does do is settle the deployed preset sooner, 77.6% at 6 h
+ * against 64.8%, on a tenth less airtime; it is not isolated which of its parts does that. By
+ * 12 h both are within a point of candidate 3.
+ *
+ * So the deployed preset's gap (MSH-78: the core, unsigned, at 92.1% against candidate 3's 85.0%
+ * without re-attachment) is a snapshot of two networks settling at different speeds, not a
+ * difference once settled: with signed announces the core settles slower, and the gap turns
+ * round, 64.8% against 85.0% at 6 h; at 12 h the two hold 95.8% and 96.6%. That is the same
+ * finding docs/sensitivity.md makes of delivery there.
+ *
+ * Delivery, as in the table below (a message from every node every half hour, none broadcast, the
+ * core given it as tools/density.py gives its traffic; 3 seeds): unicast on time and on-time
+ * deliveries per second of airtime, candidate 3 with rescue floods off so that it differs from the
+ * core by little more than its code, and plain:
+ *
+ *                               town            region, fast     region, deployed
+ *   candidate 3, as it is      99.9%  0.120    99.5%  0.541      9.2%  0.006
+ *   no rescue floods          100.0%  0.119    99.5%  0.551      9.1%  0.007
+ *   plain                      99.9%  0.120    96.8%  0.390     19.1%  0.016
+ *   core, 255                  99.7%  0.098    99.2%  0.341     11.6%  0.008
+ *   without re-attachment      99.8%  0.097    99.3%  0.356     11.0%  0.008
+ *   core, 32                   99.2%  0.088    85.1%  0.207      9.2%  0.006
+ *   without re-attachment      99.3%  0.090    80.5%  0.201     10.1%  0.007
+ *
+ * With nothing moving the core's re-attachment changes its delivery by less than a seed's spread,
+ * and with 32 neighbours on the fast preset it delivers 4.6 points more. The core delivers what
+ * candidate 3 does with re-attachment, its default route doing for a leaf with no relay up what
+ * candidate 3's anchor does. For each second on the air it does 0.8 and 0.6 of what candidate 3
+ * without rescue floods does in the town and on the fast preset, its signed announces taking
+ * 3.5 ks of the fast preset's hour against 2.0 ks, and more on the deployed preset. With a quarter
+ * of the leaves walking (-s move.nodes=leaves -s move.share=0.25, fast preset, 3 seeds),
+ * re-attachment gains the core what it gains candidate 3: unicast on time 91.2% against 86.8%
+ * without it, at 0.177 deliveries per second of airtime against 0.193; candidate 3 without rescue
+ * floods 93.5% against 89.2% plain, at 0.240 against 0.254.
  *
  * Delivery, with every node sending a message to another at random every half hour and none
  * broadcast (-s traffic.broadcast=0, 3 seeds): messages that arrived within the minute allowed,
@@ -439,6 +515,10 @@ struct tsim_core_config {
     /* The second allowance only announces carrying changed routes spend (tern/route.h), in
      * millionths: the firmware's own by default. Needs a firmware that has it. */
     uint32_t learn_ppm; /* 0..1000000, 0 for none */
+    /* Whether leaves re-attach when they move, as the specification's routing draft has it (its
+     * "Leaves that move"): 1 by default with a firmware that has it, and 0 for the core as it was
+     * before. Needs a firmware that has it to be 1. */
+    uint32_t reattach; /* 0 or 1 */
 };
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,

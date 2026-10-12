@@ -40,7 +40,9 @@ seeds (`tsim/core.h`):
 | candidate 3, plain | -              | 96.8%  0.390        | 19.1%  0.016            |
 | firmware core *    | 100.0%  0.132  | 96.7%  0.438        | 14.4%  0.013            |
 
-"Plain" is candidate 3 without re-attachment or rescue floods, which the core has neither of.
+"Plain" is candidate 3 without re-attachment or rescue floods, which the core had neither of when
+these were measured. It has re-attachment since firmware#86, and delivers what candidate 3 does
+with it (`tsim/core.h`).
 
 \* These core figures used tables larger than a board's: 255 neighbours, a destination for
 every node, and 16 frames of each kind. The board-table figures below come from a different
