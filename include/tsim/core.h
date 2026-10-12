@@ -236,7 +236,11 @@
  * full table giving up a neighbour out of use first - move the core with 32 neighbours on the fast
  * preset (3 seeds again): 84.95% of pairs hold a route, 84.81% arriving, and 83.1% of unicasts
  * arrive on time at 0.196 a second of airtime, so re-attachment gains it 2.6 points there rather
- * than 4.6. With 255 neighbours (seeds 1 and 2) nothing moved beyond a seed's spread.
+ * than 4.6. With 255 neighbours (seeds 1 and 2) nothing moved beyond a seed's spread. With a
+ * quarter of the leaves walking, after a leaf whose anchor went silent too re-attaches and a
+ * request with no room is asked again (3 seeds): 90.6% of unicasts on time at 0.164 a second of
+ * airtime, against 91.2% at 0.177 before, the re-attachments costing 7% of what a second of
+ * airtime delivers.
  *
  * Delivery, with every node sending a message to another at random every half hour and none
  * broadcast (-s traffic.broadcast=0, 3 seeds): messages that arrived within the minute allowed,
