@@ -151,6 +151,13 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
     if(TSIM_ROUTE_REATTACH)
         target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_REATTACH)
     endif()
+    # And one whose leaves may re-attach from the announces they hear, as well as from a solicit's
+    # answers, has that measured too: off by default, as the firmware has it.
+    file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/route.h" TSIM_ROUTE_PASSIVE_REATTACH
+         REGEX "bool passive_reattach;")
+    if(TSIM_ROUTE_PASSIVE_REATTACH)
+        target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_PASSIVE_REATTACH)
+    endif()
     set(TSIM_HAVE_CORE ON)
     message(STATUS "Core routing: from ${TSIM_FIRMWARE_DIR}")
 elseif(TSIM_REQUIRE_CORE)

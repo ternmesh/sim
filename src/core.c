@@ -383,6 +383,14 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
     if (c->reattach > 1) {
         return "reattach must be 0 or 1";
     }
+#ifndef TSIM_FIRMWARE_PASSIVE_REATTACH
+    if (c->passive_reattach) {
+        return "passive_reattach needs a firmware whose leaves re-attach from announces";
+    }
+#endif
+    if (c->passive_reattach > 1 || (c->passive_reattach && !c->reattach)) {
+        return "passive_reattach must be 0 or 1, and 1 only with reattach";
+    }
     if (c->announce_ppm > 1000000 || c->address_after > 255 || c->address_every > 255 ||
         c->learn_ppm > 1000000) {
         return "announce_ppm must be 0 to 1000000, and address_after and address_every 0 to 255";
@@ -885,6 +893,9 @@ static void *router_create(struct tsim_node *node, const void *config) {
 #endif
 #ifdef TSIM_FIRMWARE_REATTACH
     rc.reattach = c->reattach != 0;
+#endif
+#ifdef TSIM_FIRMWARE_PASSIVE_REATTACH
+    rc.passive_reattach = c->passive_reattach != 0;
 #endif
 #ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
     rc.default_hops = (uint8_t)c->default_hops;

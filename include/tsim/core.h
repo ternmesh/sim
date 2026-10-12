@@ -244,6 +244,18 @@
  * numbering a leaf's solicits from a random place, leave that where it was: 90.4% at 0.162. Taking
  * out of use only relays silent through both solicits of a pair: 90.7% at 0.165.
  *
+ * A leaf that finds from announces alone that it has moved, and raises its seq as one re-attaching
+ * on a solicit's answers does (`passive_reattach`, off by default; the firmware's flag, not the
+ * specification's), was measured against re-attachment alone, 255 neighbours, 3 seeds, the means
+ * with the seeds' range. With a quarter of the leaves walking on the fast preset, where nearly
+ * every leaf hears more than four relays and never solicits: unicast on time 89.5% [88.2-91.1]
+ * against 90.6% [90.3-90.9], at 0.134 deliveries per second of airtime against 0.163, pairs
+ * reached 94.1% against 96.2%, the leaves raising 294 seqs an hour from announces. On the deployed
+ * preset 6.7% against 7.6%; in the town with 100 of its nodes leaves (relay_pick cds), walking,
+ * 97.7% against 96.8% at 0.115 against 0.126. With nothing moving the leaves still raise 19 seqs an
+ * hour on the fast preset, delivering as much on 0.302 against 0.340, and an hour of announces
+ * alone takes 4.2 ks against 2.7 ks. So it is left off.
+ *
  * Delivery, with every node sending a message to another at random every half hour and none
  * broadcast (-s traffic.broadcast=0, 3 seeds): messages that arrived within the minute allowed,
  * and how many did for each second on the air, all nodes together. Candidate 3 is run as it is,
@@ -532,6 +544,10 @@ struct tsim_core_config {
      * "Leaves that move"): 1 by default with a firmware that has it, and 0 for the core as it was
      * before. Needs a firmware that has it to be 1. */
     uint32_t reattach; /* 0 or 1 */
+    /* Whether a leaf that finds from announces alone that it has moved raises its seq too, as one
+     * that re-attaches on a solicit's answers does (tern/route.h's passive_reattach): 0 by
+     * default, as the firmware has it, and 1 needs reattach and a firmware that has it. */
+    uint32_t passive_reattach; /* 0 or 1 */
 };
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,

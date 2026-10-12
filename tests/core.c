@@ -487,6 +487,21 @@ static void a_config_out_of_range_is_refused(void) {
     c.flood_busy_ppm = 0;
     c.flood_last = 2;
     CHECK(tsim_core_check(&c) != NULL);
+    /* A leaf re-attaches from announces only in a firmware that has it, off by default, and only
+     * where it re-attaches at all. */
+    c = tsim_core_default(0, &l, 14.0);
+    CHECK_EQ_U64(c.passive_reattach, 0);
+    c.passive_reattach = 1;
+#ifdef TSIM_FIRMWARE_PASSIVE_REATTACH
+    CHECK(tsim_core_check(&c) == NULL);
+#else
+    CHECK(tsim_core_check(&c) != NULL);
+#endif
+    c.reattach = 0;
+    CHECK(tsim_core_check(&c) != NULL);
+    c.reattach = 1;
+    c.passive_reattach = 2;
+    CHECK(tsim_core_check(&c) != NULL);
 }
 
 int main(void) {
