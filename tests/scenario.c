@@ -1002,15 +1002,26 @@ static void a_run_keeps_the_airtime_budget(void) {
     CHECK(on.budget.busiest_drop > 0 && on.budget.busiest_drop < 1);
     CHECK(on.unicast.on_time < off.unicast.on_time);
     CHECK(off.budget.dropped == 0 && off.losses.drops[TSIM_DROP_BUDGET] == 0);
+    /* In shadow mode nothing is dropped, and the unicasts that would have lost a frame are still
+     * counted as hit. */
+    struct tsim_report shadow;
+    snprintf(buf, sizeof buf, text, "shadow");
+    CHECK(parse(&s, buf));
+    CHECK(tsim_scenario_run(&s, &shadow));
+    CHECK(shadow.budget.dropped > 0 && shadow.losses.drops[TSIM_DROP_BUDGET] == 0);
+    CHECK(shadow.budget.unicast_hit > 0 && shadow.budget.broadcast_hit > 0);
+    CHECK(shadow.unicast.on_time == off.unicast.on_time);
 }
 
-/* With chatty nodes, the rest's messages are reported apart. */
+/* With chatty nodes, the rest's messages are reported apart: those made in the window only, though
+ * traffic made before it is delivered in it too. */
 static void chatty_nodes_are_reported_apart(void) {
     struct tsim_scenario s;
     CHECK(parse(&s, "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"
                     "routing = distvec\nmac = meshcore\nrouting.links = sensed\n"
                     "traffic.interval = 2 min\ntraffic.broadcast = 0.25\ntraffic.chatty = 0.5\n"
-                    "traffic.chatty_interval = 20 s\nwarmup = 30 min\nduration = 10 min\n"));
+                    "traffic.chatty_interval = 20 s\nwarmup = 30 min\nduration = 10 min\n"
+                    "traffic.lead = 20 min\n"));
     struct tsim_report rep;
     CHECK(tsim_scenario_run(&s, &rep));
     CHECK(rep.quiet.present && rep.quiet.unicast_wanted > 0);

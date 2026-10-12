@@ -136,6 +136,12 @@ struct tsim_net_stats {
 
 const struct tsim_net_stats *tsim_net_stats(const struct tsim_net *net, uint32_t node);
 
+/* For the books (tsim/metrics.h): how many frames of a node's own wait for the airtime budget now;
+ * and from `at` on, a frame that waited adds to budget_waited only the part of its wait from `at`,
+ * so a window begun while it waited counts no more of its wait than fell in it. */
+uint32_t tsim_net_budget_waiting(const struct tsim_net *net, uint32_t node);
+void tsim_net_budget_count_from(struct tsim_net *net, tsim_time at);
+
 /* A drop of a message, as tsim_node_drop() booked it. */
 struct tsim_message_drop {
     enum tsim_drop cause; /* TSIM_DROP_COUNT for none */
@@ -160,6 +166,9 @@ struct tsim_message_record {
     tsim_time sent;
     uint32_t drops[TSIM_DROP_COUNT];
     struct tsim_message_drop drop;
+    /* In the airtime budget's shadow mode, frames carrying it that the budget would have dropped,
+     * and that went all the same: booked here, not as drops, since they went. */
+    uint32_t budget_shadow;
 };
 
 /* The record for a message id, or NULL. Valid until the next message is originated. */

@@ -421,11 +421,15 @@ void tsim_metrics_begin(struct tsim_metrics *m) {
         base[i].dropped = tsim_net_stats(m->net, i)->dropped;
         base[i].held = tsim_net_stats(m->net, i)->held;
         base[i].stats = *tsim_net_stats(m->net, i);
+        /* A frame waiting as the window begins waits in it too: it counts as held in the window,
+         * and only its wait from now on (tsim_net_budget_count_from()). */
+        base[i].stats.budget_held -= tsim_net_budget_waiting(m->net, i);
         base[i].phy = *tsim_phy_stats(phy, i);
         m->warmup_ns += (double)tsim_ledger_airtime(&base[i].ledger);
     }
     m->base = base;
     m->begun = tsim_sched_now(tsim_net_sched(m->net));
+    tsim_net_budget_count_from(m->net, m->begun);
     /* By id, not time: a message made earlier at this same instant is still before the window. */
     m->first = tsim_net_message_count(m->net) + 1;
     /* Every delivery so far was of a message made before the window. */
@@ -565,10 +569,13 @@ void tsim_metrics_report(const struct tsim_metrics *m, struct tsim_report *r) {
             *(rec->msg.dst == TSIM_BROADCAST ? &r->quiet.broadcast_wanted
                                              : &r->quiet.unicast_wanted) += rec->wanted;
         }
-        if (rec->drops[TSIM_DROP_BUDGET] && rec->msg.dst == TSIM_BROADCAST && !rec->msg.card) {
+        /* Hit: a frame carrying it dropped for the budget, or in shadow mode one that would have
+         * been. */
+        bool hit = rec->drops[TSIM_DROP_BUDGET] || rec->budget_shadow;
+        if (hit && rec->msg.dst == TSIM_BROADCAST && !rec->msg.card) {
             r->budget.broadcast_hit++;
         }
-        if (rec->drops[TSIM_DROP_BUDGET] && rec->msg.dst != TSIM_BROADCAST) {
+        if (hit && rec->msg.dst != TSIM_BROADCAST) {
             r->budget.unicast_hit++;
             r->budget.unicast_hit_on_time +=
                 rec->delivered && rec->first - rec->msg.created <= m->deadline;

@@ -97,8 +97,9 @@ struct tsim_net {
     void *hop_ctx;
     tsim_net_heard_fn heard;
     void *heard_ctx;
-    tsim_time
-        budget_frame; /* one 255-byte frame at the listen modulation: the least a bucket holds */
+    /* One 255-byte frame at the listen modulation: the least a bucket holds. */
+    tsim_time budget_frame;
+    tsim_time budget_from; /* see tsim_net_budget_count_from() */
 };
 
 static void kick(struct tsim_node *nd);
@@ -938,6 +939,9 @@ static bool budget_allows(struct tsim_node *nd, size_t at) {
     }
     nd->stats.budget_dropped++;
     if (mode == TSIM_BUDGET_MODE_SHADOW) {
+        if (tx->carries) {
+            net->messages[tx->carries - 1].r.budget_shadow++;
+        }
         return true;
     }
     struct queued q = nd->queue[at];
@@ -1005,8 +1009,10 @@ bool tsim_node_transmit(struct tsim_node *nd) {
         }
         tsim_budget_charge(&nd->budget, now, tx->budget, airtime);
         if (nd->air.held_since >= 0) {
+            tsim_time from =
+                nd->air.held_since > net->budget_from ? nd->air.held_since : net->budget_from;
             nd->stats.budget_gone++;
-            nd->stats.budget_waited += now - nd->air.held_since;
+            nd->stats.budget_waited += now - from;
         }
     }
     nd->air_end = tsim_sched_now(nd->net->sched) + airtime;
@@ -1040,6 +1046,16 @@ void tsim_node_hold_header(struct tsim_node *nd, tsim_time hold) {
 bool tsim_node_tune(struct tsim_node *nd, uint16_t channel, const struct tsim_lora *listen) {
     return tsim_phy_tune(nd->net->phy, nd->index, channel, listen);
 }
+
+uint32_t tsim_net_budget_waiting(const struct tsim_net *net, uint32_t node) {
+    uint32_t n = 0;
+    for (size_t i = 0; node < net->n && i < net->nodes[node].queue_len; i++) {
+        n += net->nodes[node].queue[i].held_since >= 0;
+    }
+    return n;
+}
+
+void tsim_net_budget_count_from(struct tsim_net *net, tsim_time at) { net->budget_from = at; }
 
 uint64_t tsim_node_head_handle(const struct tsim_node *nd) {
     size_t at = head_at(nd);

@@ -191,13 +191,14 @@ struct tsim_budget_node {
 struct tsim_budget_report {
     /* Set by tsim_scenario_run(); tsim_metrics_report() leaves it off. */
     enum tsim_budget_mode mode;
-    uint64_t held;       /* frames of nodes' own that waited for their buckets */
-    double wait_mean_s;  /* how long those that went waited, on average */
+    uint64_t held;       /* frames of nodes' own that waited, those waiting as it began too */
+    double wait_mean_s;  /* how long those that went waited in the window, on average */
     uint64_t dropped;    /* frames passed on, dropped */
     uint64_t relayed;    /* frames passed on that the relayed part paid for */
     uint64_t short_acks; /* acknowledgements sent that their buckets did not hold */
     uint32_t dropping;   /* nodes that dropped any */
-    /* Unicasts counted, with a frame of theirs dropped for the budget somewhere on the way; and of
+    /* Unicasts counted, with a frame of theirs dropped for the budget somewhere on the way - in
+     * shadow mode, one that would have been (tsim_message_record.budget_shadow); and of
      * those, how many were delivered on time all the same, another way or on another try. */
     uint64_t unicast_hit;
     uint64_t unicast_hit_on_time;
