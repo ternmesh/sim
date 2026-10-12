@@ -208,9 +208,10 @@ static void print_report(const char *path, const struct tsim_scenario *s,
                                                          "taken",   "busy", "deaf"};
         const struct tsim_floods *f = &r->floods;
         printf("  \"floods\": {\"messages\": %" PRIu64 ", \"wanted\": %" PRIu64
-               ", \"missed\": %" PRIu64 ", \"missed_relays\": %" PRIu64 ", \"far\": %" PRIu64
-               ", \"quiet\": %" PRIu64 ", \"lost\": %" PRIu64 ",\n",
-               f->messages, f->wanted, f->missed, f->missed_relays, f->far, f->quiet, f->lost);
+               ", \"missed\": %" PRIu64 ", \"missed_relays\": %" PRIu64 ", \"unsent\": %" PRIu64
+               ", \"far\": %" PRIu64 ", \"quiet\": %" PRIu64 ", \"lost\": %" PRIu64 ",\n",
+               f->messages, f->wanted, f->missed, f->missed_relays, f->unsent, f->far, f->quiet,
+               f->lost);
         printf("             \"copies\": {\"1\": %" PRIu64 ", \"2\": %" PRIu64 ", \"3\": %" PRIu64
                ", \"4+\": %" PRIu64 "}, \"fates\": ",
                f->copies[0], f->copies[1], f->copies[2], f->copies[3]);

@@ -1105,7 +1105,7 @@ static void floods_say_why_a_broadcast_was_missed(void) {
     CHECK_EQ_U64(f->messages, rep.broadcast.messages);
     CHECK_EQ_U64(f->wanted, rep.broadcast.wanted);
     CHECK_EQ_U64(f->missed, rep.broadcast.wanted - rep.broadcast.delivered);
-    CHECK_EQ_U64(f->far + f->quiet + f->lost, f->missed);
+    CHECK_EQ_U64(f->unsent + f->far + f->quiet + f->lost, f->missed);
     CHECK_EQ_U64(f->copies[0] + f->copies[1] + f->copies[2] + f->copies[3], f->lost);
     CHECK(f->relays_reached <= f->relays_wanted);
 
@@ -1122,6 +1122,18 @@ static void floods_say_why_a_broadcast_was_missed(void) {
     CHECK_EQ_U64(f->wanted, 2);
     CHECK_EQ_U64(f->missed, 1);
     CHECK_EQ_U64(f->far, 1);
+
+    /* A broadcast whose source never sends it is missed as unsent, not as out of reach: here
+     * its MAC holds it past the run's end. */
+    CHECK(parse(&s, "nodes = 3\nplacement = line\nspacing = 100\nchannel.sigma = 0\n"
+                    "routing = flood\nmac = aloha\nmac.max_delay = 10 h\ntraffic.interval = none\n"
+                    "warmup = 1 s\nduration = 1 min\ntraffic.send = 2 s, 0, all, 40\n"
+                    "report.floods = yes\n"));
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK_EQ_U64(f->messages, 1);
+    CHECK_EQ_U64(f->missed, 2);
+    CHECK_EQ_U64(f->unsent, 2);
+    CHECK_EQ_U64(f->far, 0);
 
     /* Elected relays are the ones elected as the window begins. */
     CHECK(parse(&s, "nodes = 6\nplacement = line\nspacing = 2000\nchannel.sigma = 0\n"

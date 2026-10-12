@@ -521,7 +521,16 @@ static void floods_count_the_flooders_through_restarts(void) {
     CHECK(f->core.heard >= rep.broadcast.delivered && f->core.heard < 1000000);
     CHECK(f->core.passed_on <= f->core.heard);
     CHECK(f->core.cancelled + f->core.unpaid + f->core.busy <= f->core.passed_on);
-    CHECK(f->core.echoed == 0 && f->core.resent == 0); /* none by default */
+#ifdef TSIM_FIRMWARE_RESENDS
+    /* As the firmware's own defaults have it: listened for, and some heard passed on. */
+    if (tern_flood_defaults().resends) {
+        CHECK(f->core.echoed > 0);
+    } else {
+        CHECK(f->core.echoed == 0 && f->core.resent == 0);
+    }
+#else
+    CHECK(f->core.echoed == 0 && f->core.resent == 0); /* a firmware that never sends again */
+#endif
     CHECK_EQ_U64(f->missed, rep.broadcast.wanted - rep.broadcast.delivered);
 }
 
