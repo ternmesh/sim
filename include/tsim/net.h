@@ -38,8 +38,10 @@ struct tsim_net_params {
      * net.duty_cycle and the routing's `sending` have let it go, is taken out of the queue,
      * booked as TSIM_DROP_BUDGET, and handed to the routing's `withdrawn`. Frames waiting for the
      * budget are the node's to keep, as a companion keeps the messages it is handed, and do not
-     * count against queue_limit; but it keeps no more than 32, a board's companion link's worth,
-     * and one more of its own while they wait is refused as a full queue refuses one. */
+     * count against queue_limit; but it keeps no more than 32 of its own queued, waiting or not, a
+     * board's companion link's worth, and refuses one more as a full queue refuses one, and refuses
+     * so too a frame its buckets could not hold however full - one longer than the 255-byte frame
+     * they are sized for, at a slower modulation than `listen`'s - which would never go. */
     struct tsim_budget_params budget;
 };
 

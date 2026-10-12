@@ -53,7 +53,7 @@ struct burst {
 
 #define DUTY_WINDOW TSIM_S(3600)
 
-/* The most frames of its own a node keeps waiting for the airtime budget: what a board's companion
+/* The most frames of its own a node keeps queued under the airtime budget: what a board's companion
  * link holds of the messages it is handed (LINK_MESSAGES in the firmware's ports/node/link.h). */
 #define BUDGET_WAITING_MAX 32
 
@@ -609,6 +609,7 @@ static bool carries_what_it_claims(const struct tsim_node *nd, const struct tsim
 }
 
 static size_t budget_waiting(const struct tsim_node *nd);
+static size_t own_queued(const struct tsim_node *nd);
 static bool may_wait(const struct tsim_tx *tx);
 
 uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
@@ -622,10 +623,16 @@ uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
     bool too_long =
         net->params.duty_cycle > 0 && tsim_lora_airtime(&tx->lora, tx->len) >
                                           (tsim_time)(net->params.duty_cycle * (double)DUTY_WINDOW);
+    /* With the budget on, a frame its buckets could never hold - longer than one of them holds
+     * however full - would never go, nor any of its own behind it; and a node keeps no more than
+     * BUDGET_WAITING_MAX of its own queued, waiting now or not, since any of them may come to wait.
+     * Each is refused as a full queue refuses one. */
+    bool budget = net->params.budget.mode == TSIM_BUDGET_MODE_ON;
+    bool never = budget && !(tx->budget & TSIM_BUDGET_ACK) &&
+                 !tsim_budget_fits(&nd->budget, tx->budget, tsim_lora_airtime(&tx->lora, tx->len));
+    bool no_room = budget && may_wait(tx) && own_queued(nd) >= BUDGET_WAITING_MAX;
     size_t waiting = budget_waiting(nd);
-    /* One more of its own behind those waiting would wait too, and there is room for so many. */
-    bool no_room = may_wait(tx) && waiting >= BUDGET_WAITING_MAX;
-    if (too_long || no_room ||
+    if (too_long || never || no_room ||
         (net->params.queue_limit && nd->queue_len - waiting >= net->params.queue_limit)) {
         nd->stats.dropped++;
         if (tx->carries) {
@@ -781,6 +788,15 @@ static size_t head_at(const struct tsim_node *nd) {
         }
     }
     return nd->queue_len;
+}
+
+/* How many frames of its own the budget could hold back are queued. */
+static size_t own_queued(const struct tsim_node *nd) {
+    size_t n = 0;
+    for (size_t i = 0; i < nd->queue_len; i++) {
+        n += may_wait(&nd->queue[i].tx);
+    }
+    return n;
 }
 
 /* How many frames of its own wait for the budget. */

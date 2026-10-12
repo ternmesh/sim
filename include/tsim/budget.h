@@ -113,6 +113,10 @@ void tsim_budget_init(struct tsim_budget *budget, const struct tsim_budget_param
  * one no part pays for. */
 unsigned tsim_budget_payers(const struct tsim_budget *budget, uint8_t mark);
 
+/* Whether every bucket that pays for it could hold it at all, full: a frame one of them could not
+ * would never be paid for. */
+bool tsim_budget_fits(const struct tsim_budget *budget, uint8_t mark, tsim_time airtime);
+
 /* Whether every bucket that pays for it holds it at `at`. A frame no part pays for always is. */
 bool tsim_budget_paid(const struct tsim_budget *budget, tsim_time at, uint8_t mark,
                       tsim_time airtime);

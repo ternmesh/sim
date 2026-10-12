@@ -1214,6 +1214,44 @@ static void shadow_mode_counts_a_frame_held_when_it_is_first_short(void) {
     rig_close(&r);
 }
 
+/* However long the queue, a node keeps no more than 32 frames of its own under the budget, waiting
+ * now or not: any of them may come to wait. */
+static void a_node_keeps_32_of_its_own_however_long_its_queue(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 0);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 10, TSIM_BUDGET_OWN);
+    int taken = 0;
+    for (int i = 0; i < 40; i++) {
+        taken += tsim_node_send(n, &own) != 0;
+    }
+    CHECK(taken == 32);
+    CHECK(tsim_node_head(n) != NULL); /* the first is paid for: not every one waits */
+    struct tsim_tx relayed = marked(TSIM_PURPOSE_RELAY, 2, 10, TSIM_BUDGET_RELAYED);
+    CHECK(tsim_node_send(n, &relayed) != 0);
+    rig_close(&r);
+}
+
+/* A frame its buckets could not hold however full - here at SF12, 14 s against a part sized for a
+ * 255-byte frame at SF7 - would never go, nor anything of its own behind it: it is refused. An
+ * acknowledgement so long still goes. */
+static void a_frame_no_bucket_could_hold_is_refused(void) {
+    struct rig r;
+    budget_rig(&r, TSIM_BUDGET_MODE_ON, 16);
+    struct tsim_node *n = tsim_net_node(r.net, 0);
+    struct tsim_tx own = marked(TSIM_PURPOSE_DATA, 1, 255, TSIM_BUDGET_OWN);
+    own.lora = tsim_lora_default(12, 125000);
+    CHECK_EQ_U64(tsim_node_send(n, &own), 0);
+    CHECK_EQ_U64(tsim_net_stats(r.net, 0)->dropped, 1);
+    struct tsim_tx relayed = own;
+    relayed.budget = TSIM_BUDGET_RELAYED;
+    CHECK_EQ_U64(tsim_node_send(n, &relayed), 0);
+    struct tsim_tx ack = own;
+    ack.budget = TSIM_BUDGET_OWN | TSIM_BUDGET_ACK;
+    CHECK(tsim_node_send(n, &ack) != 0);
+    rig_close(&r);
+}
+
 /* Off, the marks change nothing. */
 static void with_the_budget_off_marks_change_nothing(void) {
     struct rig r;
@@ -1275,6 +1313,8 @@ int main(void) {
     RUN(a_wait_ends_when_the_buckets_hold_the_frame);
     RUN(a_frame_free_to_go_as_the_window_begins_is_not_waiting);
     RUN(a_wait_behind_another_ends_when_that_one_is_gone);
+    RUN(a_node_keeps_32_of_its_own_however_long_its_queue);
+    RUN(a_frame_no_bucket_could_hold_is_refused);
     RUN(with_the_budget_off_marks_change_nothing);
     return CHECK_DONE();
 }

@@ -93,6 +93,16 @@ unsigned tsim_budget_payers(const struct tsim_budget *bd, uint8_t mark) {
     return payers;
 }
 
+bool tsim_budget_fits(const struct tsim_budget *bd, uint8_t mark, tsim_time airtime) {
+    unsigned payers = tsim_budget_payers(bd, mark);
+    for (int i = 0; i < TSIM_BUCKET_COUNT; i++) {
+        if ((payers >> i & 1) && bd->bucket[i].room < airtime * PPM) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool tsim_budget_paid(const struct tsim_budget *bd, tsim_time at, uint8_t mark, tsim_time airtime) {
     unsigned payers = tsim_budget_payers(bd, mark);
     for (int i = 0; i < TSIM_BUCKET_COUNT; i++) {
