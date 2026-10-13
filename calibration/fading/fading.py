@@ -47,6 +47,7 @@ def read(paths):
                 heard = r["heard"] == "1"
                 links.setdefault(key, []).append({
                     "t": float(r["time_s"]),
+                    "seq": int(r["seq"]),
                     "heard": heard,
                     "rssi": float(r["rssi_dbm"]) if heard else None,
                     "snr": float(r["snr_cdb"]) / 100 if heard and r["snr_cdb"] else None,
@@ -63,13 +64,15 @@ def sd(xs):
     return math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1))
 
 
-def sigma_from_diffs(diffs, rounding=True):
-    """sd of the differences over sqrt(2), the rounding taken off; with its standard error."""
+def sigma_from_diffs(diffs, rounding=True, independent=None):
+    """sd of the differences over sqrt(2), the rounding taken off; with its standard error, from
+    `independent` differences where the pairs overlap and fewer than all of them are."""
     if len(diffs) < 10:
         return None, None
     var = sd(diffs) ** 2 / 2 - (ROUNDING_VAR if rounding else 0)
     s = math.sqrt(max(var, 0.0))
-    return s, s / math.sqrt(2 * (len(diffs) - 1)) if s > 0 else 0.0
+    n = min(len(diffs), independent) if independent is not None else len(diffs)
+    return s, s / math.sqrt(2 * max(n - 1, 1)) if s > 0 else 0.0
 
 
 def typical_gap(rows):
@@ -78,9 +81,10 @@ def typical_gap(rows):
 
 
 def next_frame(rows, a, b, gap):
-    """Whether b is the frame after a: both heard, and no pause between them, as where runs
-    appended to one file meet."""
-    return a["heard"] and b["heard"] and gap is not None and b["t"] - a["t"] <= 1.5 * gap
+    """Whether b is the frame after a: both heard, numbered one after the other (run.py numbers
+    each run from 0), and no pause between them, as where runs appended to one file meet."""
+    return (a["heard"] and b["heard"] and b["seq"] == a["seq"] + 1 and gap is not None and
+            b["t"] - a["t"] <= 1.5 * gap)
 
 
 def next_frame_diffs(rows):
@@ -134,9 +138,18 @@ def summarise(rows, rounding=True):
     s["snr_mean"] = sum(snr) / len(snr) if snr else None
     s["r1"] = lag1_correlation(rows)
     s["sigma"] = {}
+    span = rows[-1]["t"] - rows[0]["t"]
     for lag in LAGS:
-        diffs = next_frame_diffs(rows) if lag is None else lag_diffs(heard, lag)
-        s["sigma"][lag] = (sigma_from_diffs(diffs, rounding), len(diffs))
+        if lag is None:
+            # Neighbouring differences share a frame, which widens the error as if there were
+            # two thirds as many (correlation -1/2, so 1 + 2 * (1/2)^2 = 1.5).
+            diffs = next_frame_diffs(rows)
+            independent = int(len(diffs) / 1.5)
+        else:
+            # Pairs a lag long start at nearly every frame, and share most of their interval: the
+            # run holds only about span / lag that do not overlap.
+            diffs, independent = lag_diffs(heard, lag), max(int(span / lag), 1)
+        s["sigma"][lag] = (sigma_from_diffs(diffs, rounding, independent), len(diffs))
     return s
 
 
@@ -200,8 +213,8 @@ def made_up(rng, n, gap, fading, drift_per_h, mean=-95.0, floor=None):
         slow += rng.gauss(0, step)
         x = mean + slow + rng.gauss(0, fading)
         heard = floor is None or x >= floor
-        rows.append({"t": i * gap, "heard": heard, "rssi": float(round(x)) if heard else None,
-                     "snr": None})
+        rows.append({"t": i * gap, "seq": i, "heard": heard,
+                     "rssi": float(round(x)) if heard else None, "snr": None})
     return rows
 
 
@@ -252,6 +265,22 @@ def check(args):
         rows += run
     s = summarise(rows)
     expect("twenty runs an hour apart, next frame", s["sigma"][None][0][0], 2.0, 0.25)
+
+    # Runs restarted at once, within a gap of the last: only the numbering tells them apart.
+    rows = []
+    for k in range(20):
+        run = made_up(rng, 50, 20, 2.0, 0, mean=-100 + rng.uniform(-20, 20))
+        for r in run:
+            r["t"] += k * 50 * 20
+        rows += run
+    s = summarise(rows)
+    expect("twenty runs back to back, next frame", s["sigma"][None][0][0], 2.0, 0.25)
+
+    # Hour-long pairs overlap: a day holds 24 that do not, and the error says so.
+    s = summarise(made_up(rng, 8640, 10, 3.0, 0))
+    (sig, err), n = s["sigma"][3600]
+    expect("a day's 1 h error, from 24 independent pairs", err, round(sig / math.sqrt(2 * 23), 2),
+           0.01)
 
     # A run stopped early: one frame, or one heard, is reported, not a crash.
     for rows in (made_up(rng, 1, 20, 2.0, 0), made_up(rng, 50, 20, 2.0, 0, mean=-130, floor=-100)):
