@@ -82,16 +82,24 @@ def typical_gap(rows):
     return gaps[len(gaps) // 2] if gaps else None
 
 
-def runs(rows):
-    """The rows cut into runs: where the numbering does not go up (run.py numbers each run from 0,
-    as where runs appended to one file meet), and where a pause is longer than one and a half
-    gaps (a computer that slept). Nothing is ever paired across a cut."""
-    gap = typical_gap(rows)
+def cut(rows, where):
     out = [rows[:1]] if rows else []
     for a, b in zip(rows, rows[1:]):
-        if b["seq"] <= a["seq"] or b["t"] - a["t"] > 1.5 * gap:
+        if where(a, b):
             out.append([])
         out[-1].append(b)
+    return out
+
+
+def runs(rows):
+    """The rows cut into runs: where the numbering does not go up (run.py numbers each run from 0,
+    as where runs appended to one file meet), and then, inside each, where a pause is longer than
+    one and a half of that run's own gaps (a computer that slept). Nothing is ever paired across
+    a cut."""
+    out = []
+    for run in cut(rows, lambda a, b: b["seq"] <= a["seq"]):
+        gap = typical_gap(run)
+        out += cut(run, lambda a, b: b["t"] - a["t"] > 1.5 * gap)
     return out
 
 
@@ -313,6 +321,17 @@ def check(args):
         rows += run
     s = summarise(rows)
     expect("runs restarted an hour apart, 1 h", s["sigma"][3600][0][0], 2.0, 0.3)
+
+    # Runs at two gaps in one file, most of them 10 s and one 30 s: the 30 s run is not lost to
+    # the 10 s runs' pause threshold.
+    rows = []
+    for k, gap in enumerate((10, 10, 10, 30)):
+        run = made_up(rng, 1000, gap, 2.0, 0)
+        for r in run:
+            r["t"] += k * 86400
+        rows += run
+    s = summarise(rows)
+    expect("runs at 10 s and 30 s, all next-frame pairs kept", s["sigma"][None][1], 3996, 0)
 
     # Two days a month apart: the month is not time the hour-long pairs could have come from.
     first, second = made_up(rng, 8640, 10, 3.0, 0), made_up(rng, 8640, 10, 3.0, 0)

@@ -41,8 +41,8 @@ fading.py analyse house.csv
   channel averages over more of the multipath and fades less, so measure on the preset the
   figure is for. With neither option, the region's profile is used.
 * **The boards do not route while it runs.** Bench mode turns routing and first contact off.
-  The script turns it back on when it ends, by Ctrl-C or otherwise. After `--sf` or `--bw`,
-  reset the boards to go back to the region's settings.
+  The script turns it back on when it ends, by Ctrl-C or otherwise. After `--power`, `--sf` or
+  `--bw`, reset the boards to go back to their own settings.
 * A day gives about 8600 frames each way at the default gap, enough for the 6-hour column.
   At SF8 and 62.5 kHz a test frame is 0.26 s on the air, so each board sends for 2.6% of its
   time at the default gap. Where the region limits that (EU868's 1% sub-bands), use `--gap 30`

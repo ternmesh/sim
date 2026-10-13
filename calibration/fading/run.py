@@ -145,9 +145,9 @@ def main():
                 b.ask("bench off", r"bench off")
             except (RuntimeError, serial.SerialException) as e:
                 print(e, file=sys.stderr)
-        if args.sf is not None or args.bw is not None:
-            print("the boards are routing again, on the SF and bandwidth set here: reset them to "
-                  "go back to the region's", file=sys.stderr)
+        if args.sf is not None or args.bw is not None or args.power is not None:
+            print("the boards are routing again, at the power, SF or bandwidth set here: reset "
+                  "them to go back to their own", file=sys.stderr)
 
 
 if __name__ == "__main__":
