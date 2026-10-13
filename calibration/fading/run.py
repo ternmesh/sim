@@ -27,6 +27,7 @@ COUNTS = (r"counts: sync 0x(\w+), (-?\d+) dBm, sent (\d+), preambles (\d+), head
           r"mean (-?\d+) dBm, SNR (-?\d+) cB")
 COLUMNS = ["time_s", "sender", "listener", "seq", "heard", "rssi_dbm", "snr_cdb", "preambles",
            "headers", "crc_errors", "power_dbm", "sf", "bw_hz"]
+RX_WAIT = 2.0  # seconds a listener is given to have a frame, from the sender's "done"
 
 
 class Board:
@@ -114,10 +115,17 @@ def main():
                 tx.ask("counts reset", r"counts reset")
                 sent_at = time.time()
                 tx.ask("beacon 1 0", r"beacon: 1 frames")
-                tx.wait(r"beacon: done, (\d+) sent", 10)
-                # The frame is on the air until a little after the sender says it is done.
-                time.sleep(0.5)
-                c = rx.counts()
+                sent = int(tx.wait(r"beacon: done, (\d+) sent", 10).group(1))
+                if sent != 1:
+                    continue  # nothing went on the air, so nothing was missed
+                # "done" comes once the frame has left the sender. The listener is asked until it
+                # has taken it, or for RX_WAIT, after which it was missed.
+                end = time.monotonic() + RX_WAIT
+                while True:
+                    time.sleep(0.25)
+                    c = rx.counts()
+                    if c["test_frames"] > 0 or time.monotonic() > end:
+                        break
                 heard = 1 if c["test_frames"] > 0 else 0
                 out.writerow([f"{sent_at:.3f}", tx.name, rx.name, seq, heard,
                               c["rssi_dbm"] if heard else "", c["snr_cdb"] if heard else "",

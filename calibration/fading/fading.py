@@ -72,14 +72,22 @@ def sigma_from_diffs(diffs, rounding=True):
     return s, s / math.sqrt(2 * (len(diffs) - 1)) if s > 0 else 0.0
 
 
+def typical_gap(rows):
+    gaps = sorted(b["t"] - a["t"] for a, b in zip(rows, rows[1:]))
+    return gaps[len(gaps) // 2] if gaps else None
+
+
+def next_frame(rows, a, b, gap):
+    """Whether b is the frame after a: both heard, and no pause between them, as where runs
+    appended to one file meet."""
+    return a["heard"] and b["heard"] and gap is not None and b["t"] - a["t"] <= 1.5 * gap
+
+
 def next_frame_diffs(rows):
     """Differences between frames one after the other, both heard. A miss between breaks a pair:
     across it, the gap is twice as long."""
-    diffs = []
-    for a, b in zip(rows, rows[1:]):
-        if a["heard"] and b["heard"]:
-            diffs.append(b["rssi"] - a["rssi"])
-    return diffs
+    gap = typical_gap(rows)
+    return [b["rssi"] - a["rssi"] for a, b in zip(rows, rows[1:]) if next_frame(rows, a, b, gap)]
 
 
 def lag_diffs(heard, lag):
@@ -100,7 +108,8 @@ def lag_diffs(heard, lag):
 
 
 def lag1_correlation(rows):
-    pairs = [(a["rssi"], b["rssi"]) for a, b in zip(rows, rows[1:]) if a["heard"] and b["heard"]]
+    gap = typical_gap(rows)
+    pairs = [(a["rssi"], b["rssi"]) for a, b in zip(rows, rows[1:]) if next_frame(rows, a, b, gap)]
     if len(pairs) < 10:
         return None
     xs, ys = zip(*pairs)
@@ -118,8 +127,7 @@ def summarise(rows, rounding=True):
         return s
     rssi = [r["rssi"] for r in heard]
     snr = [r["snr"] for r in heard if r["snr"] is not None]
-    gaps = [b["t"] - a["t"] for a, b in zip(rows, rows[1:])]
-    s["gap"] = sorted(gaps)[len(gaps) // 2] if gaps else None
+    s["gap"] = typical_gap(rows)
     s["hours"] = (rows[-1]["t"] - rows[0]["t"]) / 3600
     s["rssi_mean"] = sum(rssi) / len(rssi)
     s["rssi_sd"] = sd(rssi)
@@ -142,11 +150,17 @@ def analyse(args):
     links = read(args.files)
     if not links:
         sys.exit("no rows")
+    print(analyse_rows(links))
+
+
+def analyse_rows(links):
     out = []
     for (tx, rx), rows in sorted(links.items()):
         s = summarise(rows)
         out.append(f"{tx} -> {rx}: {s['heard']} of {s['sent']} frames heard")
-        if not s["heard"]:
+        if s["heard"] < 2:
+            out.append("  too few frames heard to say anything")
+            out.append("")
             continue
         out.append(f"  over {s['hours']:.1f} h, a frame every {s['gap']:.0f} s")
         snr = f", SNR {s['snr_mean']:.1f} dB" if s["snr_mean"] is not None else ""
@@ -171,7 +185,7 @@ def analyse(args):
         if first is not None:
             out.append(f"  for the simulator: -s phy.fading={first:.1f}")
         out.append("")
-    print("\n".join(out).rstrip())
+    return "\n".join(out).rstrip()
 
 
 # --- check ------------------------------------------------------------------------------------
@@ -227,6 +241,23 @@ def check(args):
     rows = made_up(rng, 4000, 20, 4.0, 0, mean=-100, floor=-100)
     s = summarise(rows)
     expect("4 dB at the floor reads low", s["sigma"][None][0][0] < 3.0, True, 0)
+
+    # Twenty short runs appended to one file, an hour apart and each at its own level: the step
+    # across a pause is not a frame-to-frame one.
+    rows = []
+    for k in range(20):
+        run = made_up(rng, 50, 20, 2.0, 0, mean=-100 + rng.uniform(-20, 20))
+        for r in run:
+            r["t"] += k * (50 * 20 + 3600)
+        rows += run
+    s = summarise(rows)
+    expect("twenty runs an hour apart, next frame", s["sigma"][None][0][0], 2.0, 0.25)
+
+    # A run stopped early: one frame, or one heard, is reported, not a crash.
+    for rows in (made_up(rng, 1, 20, 2.0, 0), made_up(rng, 50, 20, 2.0, 0, mean=-130, floor=-100)):
+        s = summarise(rows)
+        expect(f"{s['sent']} sent, {s['heard']} heard: summarised", s["heard"] < 2, True, 0)
+    analyse_rows({("A", "B"): made_up(rng, 1, 20, 2.0, 0)})
 
     if failed:
         sys.exit(f"{len(failed)} failed")
