@@ -126,9 +126,11 @@ def main():
             for tx, rx in (boards, boards[::-1]):
                 rx.ask("counts reset", r"counts reset")
                 tx.ask("counts reset", r"counts reset")
-                sent_at = time.time()
                 tx.ask("beacon 1 0", r"beacon: 1 frames")
                 sent = int(tx.wait(r"beacon: done, (\d+) sent", 10).group(1))
+                # Timed when it has gone, not when asked for: a region's limit on transmitting can
+                # hold a frame back for seconds, and the lag columns pair frames by this time.
+                sent_at = time.time()
                 if sent != 1:
                     continue  # nothing went on the air, so nothing was missed
                 # "done" comes once the frame has left the sender. The listener is asked until it
