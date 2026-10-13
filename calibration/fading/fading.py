@@ -71,10 +71,12 @@ def sigma_from_diffs(diffs, rounding=True, independent=None):
     `independent` differences where the pairs overlap and fewer than all of them are."""
     if len(diffs) < 10:
         return None, None
-    var = sd(diffs) ** 2 / 2 - (ROUNDING_VAR if rounding else 0)
-    s = math.sqrt(max(var, 0.0))
+    raw = sd(diffs) ** 2 / 2
+    s = math.sqrt(max(raw - (ROUNDING_VAR if rounding else 0), 0.0))
     n = min(len(diffs), independent) if independent is not None else len(diffs)
-    return s, s / math.sqrt(2 * max(n - 1, 1)) if s > 0 else 0.0
+    # The error is the uncorrected figure's: where rounding leaves little or nothing, the figure is
+    # as uncertain as a twelfth of a dB squared allows, never exactly known to be 0.
+    return s, math.sqrt(max(raw, ROUNDING_VAR)) / math.sqrt(2 * max(n - 1, 1))
 
 
 def typical_gap(rows):
@@ -341,6 +343,11 @@ def check(args):
     (sig, err), n = s["sigma"][3600]
     expect("two days a month apart, 1 h error from 48", err, round(sig / math.sqrt(2 * 47), 2),
            0.01)
+
+    # A link that never moves from one whole dB: the figure is 0, and its error is not.
+    rows = [{"t": i * 10, "seq": i, "heard": True, "rssi": -90.0, "snr": None} for i in range(200)]
+    (sig, err), n = summarise(rows)["sigma"][None]
+    expect("a constant link, its error above 0", err > 0, True, 0)
 
     # A run stopped early: one frame, or one heard, is reported, not a crash.
     for rows in (made_up(rng, 1, 20, 2.0, 0), made_up(rng, 50, 20, 2.0, 0, mean=-130, floor=-100)):

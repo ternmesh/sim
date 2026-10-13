@@ -27,6 +27,7 @@ COUNTS = (r"counts: sync 0x(\w+), (-?\d+) dBm, sent (\d+), preambles (\d+), head
           r"mean (-?\d+) dBm, SNR (-?\d+) cB")
 COLUMNS = ["time_s", "sender", "listener", "seq", "heard", "rssi_dbm", "snr_cdb", "preambles",
            "headers", "crc_errors", "power_dbm", "sf", "bw_hz"]
+RADIO = r"radio: [^\n]*?, (\d+) Hz, SF(\d+), (\d+) Hz, CR 4/\d, (-?\d+) dBm"
 RX_WAIT = 2.0  # seconds a listener is given to have a frame, from the sender's "done"
 
 
@@ -62,6 +63,17 @@ class Board:
                 self.buf = self.buf[m.end():]
                 return m
         raise RuntimeError(f"board {self.name}: no '{expect}' after '{what}': {self.buf[-300:]!r}")
+
+    def radio(self, args):
+        """The power, SF and bandwidth the board is sending with, from `status`, so a capture says
+        what it was made at even where no option set it; what was asked for, where the board does
+        not say."""
+        try:
+            m = self.ask("status", RADIO, timeout=3)
+            return {"power": m.group(4), "sf": m.group(2), "bw": m.group(3)}
+        except RuntimeError:
+            return {"power": "" if args.power is None else args.power, "sf": args.sf or "",
+                    "bw": args.bw or ""}
 
     def counts(self):
         g = self.ask("counts", COUNTS).groups()
@@ -106,6 +118,7 @@ def main():
                 b.ask(f"sf {args.sf}", r"radio: ")
             if args.bw is not None:
                 b.ask(f"bw {args.bw}", r"radio: ")
+        radio = {b.name: b.radio(args) for b in boards}
         start = time.time()
         seq = 0
         while args.hours <= 0 or time.time() - start < args.hours * 3600:
@@ -130,8 +143,8 @@ def main():
                 out.writerow([f"{sent_at:.3f}", tx.name, rx.name, seq, heard,
                               c["rssi_dbm"] if heard else "", c["snr_cdb"] if heard else "",
                               c["preambles"], c["headers"], c["crc_errors"],
-                              "" if args.power is None else args.power,
-                              args.sf or "", args.bw or ""])
+                              radio[tx.name]["power"], radio[tx.name]["sf"],
+                              radio[tx.name]["bw"]])
                 sys.stdout.flush()
             seq += 1
             left = args.gap - (time.monotonic() - turn)
