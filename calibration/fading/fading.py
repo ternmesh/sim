@@ -36,14 +36,16 @@ STRONG_WARN_DBM = -50
 
 
 def read(paths):
-    """Rows of every file, by direction (sender, listener), in time order."""
+    """Rows of every file, by direction and radio settings, in time order: runs at another power,
+    SF or bandwidth fade differently, and are kept apart."""
     links = {}
     for path in paths:
         with open(path, newline="") as f:
             for r in csv.DictReader(f):
                 if r.get("time_s") in (None, "", "time_s"):
                     continue
-                key = (r["sender"], r["listener"])
+                key = (r["sender"], r["listener"], r.get("power_dbm") or "", r.get("sf") or "",
+                       r.get("bw_hz") or "")
                 heard = r["heard"] == "1"
                 links.setdefault(key, []).append({
                     "t": float(r["time_s"]),
@@ -138,7 +140,9 @@ def summarise(rows, rounding=True):
     s["snr_mean"] = sum(snr) / len(snr) if snr else None
     s["r1"] = lag1_correlation(rows)
     s["sigma"] = {}
-    span = rows[-1]["t"] - rows[0]["t"]
+    # The time the runs were recording, without the pauses between them.
+    gap = s["gap"]
+    span = sum(d for d in (b["t"] - a["t"] for a, b in zip(rows, rows[1:])) if d <= 1.5 * gap)
     for lag in LAGS:
         if lag is None:
             # Neighbouring differences share a frame, which widens the error as if there were
@@ -147,7 +151,7 @@ def summarise(rows, rounding=True):
             independent = int(len(diffs) / 1.5)
         else:
             # Pairs a lag long start at nearly every frame, and share most of their interval: the
-            # run holds only about span / lag that do not overlap.
+            # runs hold only about span / lag that do not overlap.
             diffs, independent = lag_diffs(heard, lag), max(int(span / lag), 1)
         s["sigma"][lag] = (sigma_from_diffs(diffs, rounding, independent), len(diffs))
     return s
@@ -168,9 +172,14 @@ def analyse(args):
 
 def analyse_rows(links):
     out = []
-    for (tx, rx), rows in sorted(links.items()):
+    for key, rows in sorted(links.items()):
         s = summarise(rows)
-        out.append(f"{tx} -> {rx}: {s['heard']} of {s['sent']} frames heard")
+        tx, rx = key[:2]
+        power, sf, bw = (tuple(key[2:]) + ("", "", ""))[:3]
+        radio = ", ".join(x for x in (f"SF{sf}" if sf else "", f"{bw} Hz" if bw else "",
+                                      f"{power} dBm" if power else "") if x)
+        out.append(f"{tx} -> {rx}{f' ({radio})' if radio else ''}: {s['heard']} of {s['sent']} "
+                   "frames heard")
         if s["heard"] < 2:
             out.append("  too few frames heard to say anything")
             out.append("")
@@ -280,6 +289,15 @@ def check(args):
     s = summarise(made_up(rng, 8640, 10, 3.0, 0))
     (sig, err), n = s["sigma"][3600]
     expect("a day's 1 h error, from 24 independent pairs", err, round(sig / math.sqrt(2 * 23), 2),
+           0.01)
+
+    # Two days a month apart: the month is not time the hour-long pairs could have come from.
+    first, second = made_up(rng, 8640, 10, 3.0, 0), made_up(rng, 8640, 10, 3.0, 0)
+    for r in second:
+        r["t"] += 30 * 86400
+    s = summarise(first + second)
+    (sig, err), n = s["sigma"][3600]
+    expect("two days a month apart, 1 h error from 48", err, round(sig / math.sqrt(2 * 47), 2),
            0.01)
 
     # A run stopped early: one frame, or one heard, is reported, not a crash.
