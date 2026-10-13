@@ -39,8 +39,9 @@ Fading is the one that matters. On the deployed preset it flips unicast at -5 an
 the fast preset it shrinks candidate 3's lead from 7–9 times to 2.4–4.1 times at -5 and 0 dBm.
 There, candidate 3 still does the most per second of airtime but delivers fewer unicasts than
 MeshCore: 36% against 47% at -5 dBm with 4 dB, and 35% and 53% against 56% and 62% with 6 dB.
-The bench rig can measure fading. **How much a link's loss varies from frame to frame is a
-must-measure item for MSH-32**, beside capture and lock time. How much of the shadowing is
+The bench rig can measure fading, and two boards in a house can start on it
+([calibration/fading](../calibration/fading/)). **How much a link's loss varies from frame to
+frame is a must-measure item for MSH-32**, beside capture and lock time. How much of the shadowing is
 shared between links cannot be measured on a bench. A field pilot's link table (MSH-69) is
 what would settle it.
 

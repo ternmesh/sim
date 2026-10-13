@@ -231,6 +231,10 @@ if(BUILD_TESTING)
         add_test(NAME meshbench
             COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/tools/meshbench.py check
                 --tsim $<TARGET_FILE:tsim>)
+        # The fading rig's estimators, against made-up links whose fading is known.
+        add_test(NAME fading
+            COMMAND Python3::Interpreter
+                ${CMAKE_CURRENT_SOURCE_DIR}/calibration/fading/fading.py check)
         # The firmware's core on the town: the routes it holds, and that it keeps to its cap.
         if(TSIM_HAVE_CORE)
             add_test(NAME core_town
