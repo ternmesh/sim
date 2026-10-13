@@ -82,21 +82,31 @@ def typical_gap(rows):
     return gaps[len(gaps) // 2] if gaps else None
 
 
-def next_frame(rows, a, b, gap):
-    """Whether b is the frame after a: both heard, numbered one after the other (run.py numbers
-    each run from 0), and no pause between them, as where runs appended to one file meet."""
-    return (a["heard"] and b["heard"] and b["seq"] == a["seq"] + 1 and gap is not None and
-            b["t"] - a["t"] <= 1.5 * gap)
+def runs(rows):
+    """The rows cut into runs: where the numbering does not go up (run.py numbers each run from 0,
+    as where runs appended to one file meet), and where a pause is longer than one and a half
+    gaps (a computer that slept). Nothing is ever paired across a cut."""
+    gap = typical_gap(rows)
+    out = [rows[:1]] if rows else []
+    for a, b in zip(rows, rows[1:]):
+        if b["seq"] <= a["seq"] or b["t"] - a["t"] > 1.5 * gap:
+            out.append([])
+        out[-1].append(b)
+    return out
+
+
+def next_frames(run):
+    """Pairs of frames one after the other in a run, both heard. A miss between breaks a pair:
+    across it, the gap is twice as long."""
+    return [(a, b) for a, b in zip(run, run[1:])
+            if a["heard"] and b["heard"] and b["seq"] == a["seq"] + 1]
 
 
 def next_frame_diffs(rows):
-    """Differences between frames one after the other, both heard. A miss between breaks a pair:
-    across it, the gap is twice as long."""
-    gap = typical_gap(rows)
-    return [b["rssi"] - a["rssi"] for a, b in zip(rows, rows[1:]) if next_frame(rows, a, b, gap)]
+    return [b["rssi"] - a["rssi"] for run in runs(rows) for a, b in next_frames(run)]
 
 
-def lag_diffs(heard, lag):
+def lag_diffs_in(heard, lag):
     """Differences between heard frames lag seconds apart, give or take a quarter of it: each frame
     paired with the one nearest lag later, every frame once at most as the first."""
     ts = [r["t"] for r in heard]
@@ -113,9 +123,12 @@ def lag_diffs(heard, lag):
     return diffs
 
 
+def lag_diffs(rows, lag):
+    return [d for run in runs(rows) for d in lag_diffs_in([r for r in run if r["heard"]], lag)]
+
+
 def lag1_correlation(rows):
-    gap = typical_gap(rows)
-    pairs = [(a["rssi"], b["rssi"]) for a, b in zip(rows, rows[1:]) if next_frame(rows, a, b, gap)]
+    pairs = [(a["rssi"], b["rssi"]) for run in runs(rows) for a, b in next_frames(run)]
     if len(pairs) < 10:
         return None
     xs, ys = zip(*pairs)
@@ -141,8 +154,7 @@ def summarise(rows, rounding=True):
     s["r1"] = lag1_correlation(rows)
     s["sigma"] = {}
     # The time the runs were recording, without the pauses between them.
-    gap = s["gap"]
-    span = sum(d for d in (b["t"] - a["t"] for a, b in zip(rows, rows[1:])) if d <= 1.5 * gap)
+    span = sum(run[-1]["t"] - run[0]["t"] for run in runs(rows))
     for lag in LAGS:
         if lag is None:
             # Neighbouring differences share a frame, which widens the error as if there were
@@ -152,7 +164,7 @@ def summarise(rows, rounding=True):
         else:
             # Pairs a lag long start at nearly every frame, and share most of their interval: the
             # runs hold only about span / lag that do not overlap.
-            diffs, independent = lag_diffs(heard, lag), max(int(span / lag), 1)
+            diffs, independent = lag_diffs(rows, lag), max(int(span / lag), 1)
         s["sigma"][lag] = (sigma_from_diffs(diffs, rounding, independent), len(diffs))
     return s
 
@@ -290,6 +302,17 @@ def check(args):
     (sig, err), n = s["sigma"][3600]
     expect("a day's 1 h error, from 24 independent pairs", err, round(sig / math.sqrt(2 * 23), 2),
            0.01)
+
+    # Runs restarted about an hour after the last began, alternating 20 dB apart: hour-long pairs
+    # must not reach across a restart.
+    rows = []
+    for k in range(12):
+        run = made_up(rng, 400, 10, 2.0, 0, mean=-90 if k % 2 else -110)
+        for r in run:
+            r["t"] += k * 3600
+        rows += run
+    s = summarise(rows)
+    expect("runs restarted an hour apart, 1 h", s["sigma"][3600][0][0], 2.0, 0.3)
 
     # Two days a month apart: the month is not time the hour-long pairs could have come from.
     first, second = made_up(rng, 8640, 10, 3.0, 0), made_up(rng, 8640, 10, 3.0, 0)
