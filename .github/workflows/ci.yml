@@ -41,7 +41,7 @@ jobs:
   # and with it a `union wait` that a Linux build never sees.
   macos:
     name: test (macos, clang)
-    runs-on: macos-15
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
