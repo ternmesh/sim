@@ -1005,6 +1005,12 @@ static const char *core_set(void *config, const char *key, const char *value) {
         {"address_every", offsetof(struct tsim_core_config, address_every), 0, 255},
         {"learn_ppm", offsetof(struct tsim_core_config, learn_ppm), 0, 1000000},
         {"reattach", offsetof(struct tsim_core_config, reattach), 0, 1},
+        {"rotate_s", offsetof(struct tsim_core_config, rotate_s), 0, 30 * 86400},
+        {"rotate_leaves", offsetof(struct tsim_core_config, rotate_leaves), 0, 1},
+        {"rotate_spread", offsetof(struct tsim_core_config, rotate_spread), 0, 1},
+        {"rotate_retire", offsetof(struct tsim_core_config, rotate_retire), 0, 1},
+        {"rotate_count", offsetof(struct tsim_core_config, rotate_count), 0, 1000000},
+        {"rotate_learn", offsetof(struct tsim_core_config, rotate_learn), 0, 1},
     };
     for (size_t i = 0; i < sizeof floods / sizeof floods[0]; i++) {
         if (strcmp(key, floods[i].key) == 0) {
