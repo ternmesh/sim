@@ -36,6 +36,13 @@
 #define TYPE_HERE 0x0C
 #define TYPE_FLOOD 0x0D
 #define TYPE_BCAST_GEO 0x0E
+#define TYPE_POLL 0x0F /* leaves that sleep: see the header */
+#define TYPE_POLL_ANSWER 0x10
+#define TYPE_HELD 0x11
+#define POLL_LEN 15
+#define POLL_ANSWER_LEN 14
+#define HELD_LEN 15
+#define FLAG_SLEEPS 0x02 /* an announce's sender sleeps */
 
 #define ANNOUNCE_HEAD 16
 #define IHU_LEN 5
@@ -205,6 +212,13 @@ struct neighbour {
     bool mute;             /* left the probe unanswered: unused until something is heard from it */
     bool announced;        /* an announce of its has been heard, not only a solicit or an answer */
     uint8_t sf; /* with per-link SF, the SF it listens on, from its announces; 0 unknown */
+    /* Leaves that sleep: it said it sleeps, in its last announce or poll; and its last poll named
+     * this node its keeper, with how long it sleeps and listens; it is awake until awake_until. */
+    bool sleeps;
+    bool kept;
+    tsim_time wake_for;
+    tsim_time listen_for;
+    tsim_time awake_until;
     /* With relay_pick elect, from its last announce: whether it said, when, the relays it hears
      * and the tier it is in or next to. */
     bool told;
@@ -231,6 +245,7 @@ struct hop {
     tsim_time due; /* -1 until the frame has gone */
     uint8_t tries;
     uint8_t salvages; /* next hops it was given up on at before this one */
+    bool reboxed;     /* handed to a leaf that sleeps, or sent it awake: held again if lost */
     uint8_t type;
     uint8_t hops; /* as sent */
     uint32_t src;
@@ -251,6 +266,14 @@ struct held {
     uint8_t heard;
     bool acks;          /* with per-link SF: queues `ack` once `tx` is queued */
     struct tsim_tx ack; /* the hop_ack for the frame `tx` passes on */
+    struct tsim_tx tx;
+};
+
+/* A frame a keeper holds for a leaf that sleeps, from `at`. */
+struct boxed {
+    uint32_t leaf;
+    tsim_time at;
+    bool reboxed; /* held once already, and lost on its way to the leaf awake */
     struct tsim_tx tx;
 };
 
@@ -419,7 +442,50 @@ struct router {
     struct tsim_timer *attach_timer;
     struct parked *parked;
     size_t parked_count;
+    /* Leaves that sleep. As a leaf: picked to sleep, and sleeping; its keeper; its last poll's id,
+     * when it went, and whether its answer is still to come; polls unanswered in a row; how long
+     * it must still listen; when it last announced; and frames its keeper said it holds, still to
+     * come. As a keeper: what it holds, and the leaves it is to hand theirs to. */
+    bool sleeper;
+    bool sleeping;
+    uint32_t keeper;
+    uint16_t poll_id;
+    tsim_time poll_last;
+    bool poll_out;
+    uint8_t unanswered;
+    tsim_time listen_until;
+    tsim_time last_announce;
+    uint8_t expect;
+    tsim_time *wakes; /* [node]: the end-to-end sleep notice, as sessions hold it; shared */
+    struct boxed *box;
+    size_t box_count;
+    size_t box_cap;
+    uint32_t *handing;
+    size_t handing_count;
+    size_t handing_cap;
+    struct tsim_timer *poll_timer;
+    struct tsim_timer *nap_timer;
+    struct tsim_timer *hand_timer;
+    struct tsim_distvec_sleep sleep_stats;
 };
+
+/* Leaves that sleep (draft/sleeping.md): see the section below. */
+#define SLEEP_SETTLE TSIM_S(1800) /* a leaf picked to sleep listens this long first */
+struct answer;
+static void sleep_changed(struct router *r, uint16_t s);
+static void box_drop(struct router *r, uint32_t leaf);
+static bool box_put(struct router *r, const struct tsim_tx *tx, uint32_t leaf, bool reboxed);
+static void box_expire(struct router *r);
+static bool boxed(const struct router *r, uint8_t type, uint32_t src, uint32_t id);
+static void notice(struct router *r, const struct answer *ans);
+static void heard_sleeper(struct router *r, uint32_t src);
+static void nap_arm(struct router *r, tsim_time delay);
+static void sleep_fire(void *ctx);
+static void nap_fire(void *ctx);
+static void hand_fire(void *ctx);
+static void on_poll(struct router *r, const uint8_t *b, uint32_t len, double snr);
+static void on_poll_answer(struct router *r, const uint8_t *b, uint32_t len, double snr);
+static void on_held(struct router *r, const uint8_t *b, uint32_t len);
 
 struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct tsim_lora *lora,
                                                 double tx_dbm) {
@@ -490,6 +556,16 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
         .leaf_tries = 1,
         .here_window = 16,
         .here_cancel = 3,
+        .sleep = 0,
+        .wake = TSIM_S(300),
+        .listen = TSIM_S(2),
+        .hold_leaf = 8,
+        .poll_tries = 3,
+        .poll_retry = TSIM_S(10),
+        .sleep_announce = TSIM_S(3600),
+        .answer_capped = true,
+        .ack_awake = true,
+        .sleep_seq = false,
     };
 }
 
@@ -592,6 +668,19 @@ const char *tsim_distvec_check(const struct tsim_distvec_config *c) {
     }
     if (c->hop_max < 1 || c->bcast_hops > 254) {
         return "hop_max is 0, or bcast_hops is over 254";
+    }
+    if (!(c->sleep >= 0 && c->sleep <= 1)) {
+        return "sleep is not a share from 0 to 1";
+    }
+    if (c->sleep > 0 &&
+        (!strength || !c->reattach || c->sf_min || c->leaves != TSIM_DISTVEC_LEAVES_ROUTED ||
+         c->routes != TSIM_DISTVEC_ROUTES_PROACTIVE || c->relay_pick == TSIM_DISTVEC_PICK_ELECT ||
+         c->wake < TSIM_S(1) || c->wake > TSIM_S(86400) || c->listen < TSIM_MS(100) ||
+         c->listen > TSIM_S(255) || c->hold_leaf < 1 || c->poll_tries < 1 || c->poll_retry <= 0 ||
+         c->sleep_announce <= 0)) {
+        return "sleep wants links by strength with reattach at one SF, routed leaves, proactive "
+               "routes and relays not elected; wake 1 s to 1 day, listen 0.1 to 255 s, hold_leaf, "
+               "poll_tries 1 or more, and poll_retry and sleep_announce above 0";
     }
     tsim_time top = c->imin << c->doublings;
     if (promise_secs(c, top, top) > UINT16_MAX) {
@@ -969,7 +1058,7 @@ static uint16_t link_cost(const struct router *r, const struct neighbour *n) {
  * infrastructure unless it is the destination. */
 static bool usable(struct router *r, uint16_t s, uint32_t d) {
     const struct neighbour *n = slot(r, s);
-    return n->used && n->cost != INF && (n->infra || n->id == d);
+    return n->used && n->cost != INF && (n->infra || (n->id == d && (!n->sleeps || n->kept)));
 }
 
 /* A leaf's parent, with parent_oracle: of the infrastructure neighbours it can use, the one with
@@ -1093,6 +1182,21 @@ static struct neighbour *next_toward(struct router *r, uint32_t dst, uint16_t *m
     uint32_t t = target_of(r, dst);
     double hop = ceil(r->ref_ms);
     uint16_t one = (uint16_t)(hop < 1 ? 1 : hop);
+    /* A leaf that sleeps sends everything to its keeper (draft/sleeping.md): asleep, it hears too
+     * few announces to keep routes of its own. The way on is its own route's metric, if it holds
+     * one through the keeper, or default_hops links more. */
+    if (r->sleeping && r->keeper < r->nodes && r->slot_of[r->keeper] && dst != r->self) {
+        struct neighbour *k = slot(r, r->slot_of[r->keeper]);
+        if (k->used && k->cost != INF) {
+            if (metric) {
+                const struct entry *e = dst < r->nodes ? live_sel(r, dst) : NULL;
+                *metric = e && e->slot == r->slot_of[r->keeper]
+                              ? total(e->metric, k->cost)
+                              : total(k->cost, (uint16_t)(6 * one));
+            }
+            return k;
+        }
+    }
     const struct entry *e = t < r->nodes && t != r->self ? live_sel(r, t) : NULL;
     if (!e) {
         struct neighbour *p = t < r->nodes && t != r->self ? up(r) : NULL;
@@ -1578,6 +1682,7 @@ static void forget(struct router *r, uint16_t s, enum tsim_distvec_down cause) {
     if (n->infra) {
         r->relay_news = now(r);
     }
+    box_drop(r, n->id);
     uint16_t was = n->cost;
     n->used = false;
     n->cost = INF;
@@ -1644,9 +1749,13 @@ static void trickle_fire(void *ctx) {
     struct router *r = ctx;
     if (!r->fired) {
         r->fired = true;
-        /* Changed routes waiting are an inconsistency of this node's own: never suppressed. */
-        if (r->config.redundancy == 0 || r->heard < r->config.redundancy ||
-            r->quiet >= r->config.quiet_max || r->urgent_count > 0 || r->asked || elect_news(r)) {
+        /* Changed routes waiting are an inconsistency of this node's own: never suppressed. A leaf
+         * that sleeps announces at its polls instead (sleep_fire). */
+        if (r->sleeping) {
+            /* nothing */
+        } else if (r->config.redundancy == 0 || r->heard < r->config.redundancy ||
+                   r->quiet >= r->config.quiet_max || r->urgent_count > 0 || r->asked ||
+                   elect_news(r)) {
             r->quiet = 0;
             announce(r);
         } else {
@@ -1761,6 +1870,10 @@ static double promise_secs(const struct tsim_distvec_config *c, tsim_time interv
 static double promise_s(const struct router *r) {
     tsim_time rest = r->interval_end - now(r);
     double s = promise_secs(&r->config, r->interval, rest > 0 ? rest : 0);
+    if (r->sleeping) { /* its next announce goes with a poll, sleep_announce from now at most */
+        s = ceil((double)(r->config.sleep_announce + r->config.wake + r->config.listen) /
+                 (double)TSIM_S(1));
+    }
     tsim_time queued = r->ann_handle ? now(r) - r->ann_queued : 0; /* the one still waiting */
     tsim_time mac = queued > r->mac_wait ? queued : r->mac_wait;
     s += ceil((double)mac / (double)TSIM_S(1));
@@ -1862,7 +1975,7 @@ static uint32_t build(struct router *r, uint8_t *b) {
     put32(b + 1, r->self);
     put16(b + 5, r->ann_seq);
     put16(b + 7, r->seq);
-    b[9] = (uint8_t)((r->infra ? FLAG_INFRA : 0) |
+    b[9] = (uint8_t)((r->infra ? FLAG_INFRA : 0) | (r->sleeping ? FLAG_SLEEPS : 0) |
                      (per_sf(r) ? (r->listen_sf - TSIM_SF_MIN) << FLAG_SF_SHIFT : 0));
     uint16_t promise = promise_code(promise_s(r));
     r->promised = promise_time(promise);
@@ -2165,6 +2278,7 @@ static void announce(struct router *r) {
         /* Numbered and charged only once queued: a gap in the numbers tells the neighbours of
          * announces lost on the air, which a refused one never reached. */
         r->ann_seq++;
+        r->last_announce = now(r);
         r->asked = false;
         r->loud = false;
         b->ns -= spent;
@@ -2556,6 +2670,12 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     probe_stop(r, n, true);
     bool was_infra = n->infra;
     n->infra = b[9] & FLAG_INFRA;
+    bool was_sleeps = n->sleeps;
+    n->sleeps = !n->infra && (b[9] & FLAG_SLEEPS);
+    if (was_sleeps != n->sleeps) {
+        n->kept = n->kept && n->sleeps;
+        sleep_changed(r, s);
+    }
     /* A neighbour that has taken up or given up the relay's role, or a relay new to this node. */
     bool news = fresh ? n->infra : n->infra != was_infra;
     if (news) {
@@ -2605,7 +2725,10 @@ static void on_announce(struct router *r, const uint8_t *b, uint32_t len, double
     if (allowed > IHU_AGE_MAX) {
         allowed = IHU_AGE_MAX;
     }
-    if (!named && (uint16_t)(seq - n->ihu_seq) >= allowed) {
+    /* A leaf asleep hears its keeper's announces seldom, and its keeper's answers to its polls
+     * give it the margin instead (draft/sleeping.md). */
+    bool answers = r->sleeping && from == r->keeper;
+    if (!named && !answers && (uint16_t)(seq - n->ihu_seq) >= allowed) {
         n->dr = 0;
     }
 
@@ -3059,7 +3182,7 @@ static void attach_fire(void *ctx) {
     if (r->solicited < 0 && !r->solicit_wanted && r->solicits < r->config.solicit_tries &&
         solicits_here(r)) {
         const struct neighbour *a = anchor(r);
-        if (!a || overdue(r, a)) {
+        if (!r->sleeping && (!a || overdue(r, a))) {
             r->solicit_wanted = true;
             r->solicit_was = a ? a->id : TSIM_BROADCAST;
             r->suspect_anchored = a != NULL;
@@ -3367,6 +3490,12 @@ static void hop_fire(void *ctx) {
         }
         struct hop dead = *h;
         drop_hop(r, i);
+        /* Lost on its way to a leaf that sleeps, which this node keeps: held for its next poll,
+         * the once, and the link judged as before. */
+        if (dead.next == dead.dst && !dead.reboxed && r->slot_of[dead.next] &&
+            slot(r, r->slot_of[dead.next])->kept && box_put(r, &dead.tx, dead.next, true)) {
+            continue;
+        }
         if (r->slot_of[dead.next]) {
             missed(r, r->slot_of[dead.next]);
         }
@@ -3668,6 +3797,17 @@ static bool route_frame(struct router *r, uint8_t type, uint32_t src, uint32_t d
         tx.carries = carries;
         tx.carries_at = r->data_head;
     }
+    /* For a leaf that sleeps, which this node keeps, and that is not awake: held, and the node
+     * before told (draft/sleeping.md). */
+    if (n && n->kept && n->id == dst && now(r) >= n->awake_until) {
+        if (queued) {
+            *queued = 0; /* the source waits as for a frame the queue refused */
+        }
+        if (box_put(r, &tx, dst, false) && ans && ans->b) {
+            notice(r, ans);
+        }
+        return true;
+    }
     /* The last hop of an acknowledgement or a reply has nothing to hear. */
     bool listen = !((type == TYPE_ACK || type == TYPE_RREP) && next == dst);
     if (purpose == TSIM_PURPOSE_DATA) {
@@ -3768,6 +3908,14 @@ static void send_attempt(struct awaiting *a) {
             r->oracle ? r->oracle->route[(size_t)r->self * r->nodes + a->dst].hops * ceil(r->ref_ms)
                       : route_metric;
         wait += (tsim_time)(r->config.ack_factor * metric * (double)TSIM_MS(1));
+        /* Told end to end that its destination sleeps: as much longer as it sleeps and listens. */
+        if (r->wakes && a->dst < r->nodes && r->wakes[a->dst] > 0) {
+            wait += r->wakes[a->dst] + r->config.listen;
+        }
+        /* Asleep while it waits, its keeper holding the acknowledgement for its next poll. */
+        if (r->sleeping && !r->config.ack_awake) {
+            wait += r->config.wake + r->config.listen;
+        }
         a->routeless = false;
         if (handle) {
             /* The wait starts when the frame goes: however long it queues behind other traffic,
@@ -3910,7 +4058,7 @@ static bool passing_on(const struct router *r, uint8_t type, uint32_t src, uint3
             return true;
         }
     }
-    return false;
+    return boxed(r, type, src, id);
 }
 
 /* Holds a data frame this relay has no route to pass on, until the route it asks for comes or two
@@ -4025,6 +4173,9 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
     if (demand(r)) {
         learn(r, b);
     }
+    if (next == r->self) {
+        heard_sleeper(r, src);
+    }
     if (type == TYPE_ACK && dst == r->self) {
         for (struct awaiting *a = r->awaiting; a; a = a->next) {
             if (a->id == id && a->dst == src) {
@@ -4058,6 +4209,9 @@ static void on_data(struct router *r, const uint8_t *b, uint32_t len, double snr
     }
     uint64_t key = frame_key(type, src, id);
     if (seen(r, key) && passing_on(r, type, src, id)) {
+        if (boxed(r, type, src, id)) {
+            notice(r, &ans); /* a copy of a frame it holds: answered as the first was */
+        }
         return; /* still trying to pass it on: the hop before will hear that */
     }
     mark_seen(r, key);
@@ -4321,6 +4475,477 @@ static void on_rreq(struct router *r, const uint8_t *b, uint32_t len) {
     hold(r, &tx, key, false, r->config.bcast_window);
 }
 
+/* --- Leaves that sleep (the specification's draft/sleeping.md) --- */
+
+/* A neighbour's sleeping, or this node's keeping it, has changed: routes to it are usable, or not,
+ * and what this node held for it goes on to wherever routes now lead. */
+static void release(struct router *r, uint32_t leaf);
+
+static void sleep_changed(struct router *r, uint16_t s) {
+    struct neighbour *n = slot(r, s);
+    if (!n->kept) {
+        release(r, n->id);
+    }
+    r->changed = true;
+    reselect_through(r, s);
+    trickle_reset(r);
+    r->changed = false;
+}
+
+static tsim_time hold_for(const struct router *r, uint32_t leaf) {
+    uint16_t s = leaf < r->nodes ? r->slot_of[leaf] : 0;
+    tsim_time w = s && r->nb[s - 1].wake_for > 0 ? r->nb[s - 1].wake_for : r->config.wake;
+    return 2 * w + TSIM_S(60);
+}
+
+static void box_remove(struct router *r, size_t i) {
+    memmove(&r->box[i], &r->box[i + 1], (r->box_count - i - 1) * sizeof *r->box);
+    r->box_count--;
+}
+
+static void box_expire(struct router *r) {
+    tsim_time t = now(r);
+    for (size_t i = 0; i < r->box_count;) {
+        struct boxed *x = &r->box[i];
+        if (t - x->at > hold_for(r, x->leaf)) {
+            if (x->tx.carries) {
+                tsim_node_drop(r->node, x->tx.carries, TSIM_DROP_OTHER, x->leaf);
+            }
+            r->sleep_stats.held_expired++;
+            box_remove(r, i);
+            continue;
+        }
+        i++;
+    }
+}
+
+static void box_drop(struct router *r, uint32_t leaf) {
+    for (size_t i = 0; i < r->box_count;) {
+        if (r->box[i].leaf == leaf) {
+            if (r->box[i].tx.carries) {
+                tsim_node_drop(r->node, r->box[i].tx.carries, TSIM_DROP_OTHER, leaf);
+            }
+            box_remove(r, i);
+            continue;
+        }
+        i++;
+    }
+}
+
+static uint32_t box_held(const struct router *r, uint32_t leaf) {
+    uint32_t count = 0;
+    for (size_t i = 0; i < r->box_count; i++) {
+        count += r->box[i].leaf == leaf;
+    }
+    return count;
+}
+
+/* Holds a frame for a leaf asleep: false, dropping it, if its share of room is full. */
+static bool box_put(struct router *r, const struct tsim_tx *tx, uint32_t leaf, bool reboxed) {
+    box_expire(r);
+    uint32_t count = box_held(r, leaf);
+    if (count >= r->config.hold_leaf) {
+        if (tx->carries) {
+            tsim_node_drop(r->node, tx->carries, TSIM_DROP_OTHER, leaf);
+        }
+        r->sleep_stats.held_full++;
+        return false;
+    }
+    if (r->box_count == r->box_cap) {
+        size_t cap = r->box_cap ? 2 * r->box_cap : 8;
+        struct boxed *grown = realloc(r->box, cap * sizeof *grown);
+        if (!grown) {
+            return false;
+        }
+        r->box = grown;
+        r->box_cap = cap;
+    }
+    r->box[r->box_count++] =
+        (struct boxed){.leaf = leaf, .at = now(r), .reboxed = reboxed, .tx = *tx};
+    r->sleep_stats.held++;
+    if (count + 1 > r->sleep_stats.held_peak) {
+        r->sleep_stats.held_peak = count + 1;
+    }
+    return true;
+}
+
+static bool boxed(const struct router *r, uint8_t type, uint32_t src, uint32_t id) {
+    for (size_t i = 0; i < r->box_count; i++) {
+        const uint8_t *b = r->box[i].tx.bytes;
+        if (b[0] == type && get32(b + 5) == src && get32(b + 13) == id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* What this node held for `leaf`, which no longer has it as its keeper, goes on by its routes. */
+static void release(struct router *r, uint32_t leaf) {
+    for (size_t i = 0; i < r->box_count;) {
+        if (r->box[i].leaf != leaf) {
+            i++;
+            continue;
+        }
+        struct boxed x = r->box[i];
+        box_remove(r, i);
+        const uint8_t *b = x.tx.bytes;
+        uint8_t type = b[0];
+        bool data = type == TYPE_DATA;
+        uint32_t len = x.tx.len > r->data_head ? x.tx.len - r->data_head : 0;
+        if (route_frame(r, type, get32(b + 5), get32(b + 9), get32(b + 13), b[17], b + r->data_head,
+                        data ? len : 0, data ? TSIM_PURPOSE_RELAY : TSIM_PURPOSE_CONTROL,
+                        data ? x.tx.carries : 0, NULL, NULL)) {
+            r->sleep_stats.released++;
+        } else if (x.tx.carries) {
+            tsim_node_drop(r->node, x.tx.carries, TSIM_DROP_NO_ROUTE, TSIM_BROADCAST);
+        }
+    }
+}
+
+/* The held notice: the head of the frame held, as passing it on would have carried it, back to the
+ * node it came from, which takes it as it would hearing the frame passed on. */
+static void notice(struct router *r, const struct answer *ans) {
+    const struct tsim_distvec_config *c = &r->config;
+    const uint8_t *b = ans->b;
+    struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_CONTROL);
+    tx.bytes[0] = TYPE_HELD;
+    tx.bytes[1] = b[0];
+    put32(tx.bytes + 2, get32(b + 5));
+    put32(tx.bytes + 6, get32(b + 13));
+    tx.bytes[10] = (uint8_t)(b[17] - 1);
+    put32(tx.bytes + 11, get32(b + 9));
+    tx.len = HELD_LEN;
+    if (c->power) {
+        double p = isnan(ans->back) ? c->tx_dbm : ceil(ans->back + c->margin_db);
+        double lo = ceil(c->tx_min_dbm);
+        tx.tx_dbm = p < lo ? lo : p > c->tx_dbm ? c->tx_dbm : p;
+    }
+    tx.budget = TSIM_BUDGET_OWN | TSIM_BUDGET_ACK;
+    r->sleep_stats.notices++;
+    hold(r, &tx, 0, false, c->jitter);
+}
+
+static void on_held(struct router *r, const uint8_t *b, uint32_t len) {
+    if (len < HELD_LEN) {
+        return;
+    }
+    uint8_t type = b[1], hops = b[10];
+    uint32_t src = get32(b + 2), id = get32(b + 6);
+    for (size_t i = 0; i < r->hop_count;) {
+        struct hop *h = &r->hops[i];
+        if (h->type == type && h->src == src && h->id == id && hops + 1 == h->hops) {
+            if (h->due < 0 && tsim_node_cancel(r->node, h->handle)) {
+                withdrawn(r, h->handle);
+            }
+            drop_hop(r, i);
+            continue;
+        }
+        i++;
+    }
+    arm_hops(r);
+}
+
+/* A frame from a leaf that sleeps, to this node: it listens for a while after. Counted against
+ * what its keeper said it holds, by the leaf itself. */
+static void heard_sleeper(struct router *r, uint32_t src) {
+    uint16_t s = src < r->nodes ? r->slot_of[src] : 0;
+    if (s && slot(r, s)->sleeps) {
+        struct neighbour *n = slot(r, s);
+        n->awake_until = now(r) + (n->listen_for > 0 ? n->listen_for : r->config.listen);
+    }
+    if (r->sleeping && src != r->self && r->expect > 0 && --r->expect == 0) {
+        r->listen_until = now(r); /* all it was told of has come: it may sleep once it answers */
+        nap_arm(r, 0);
+    }
+}
+
+/* --- As the leaf --- */
+
+static void nap_arm(struct router *r, tsim_time delay) {
+    tsim_timer_start(r->nap_timer, delay > 0 ? delay : 0);
+}
+
+/* Whether a leaf that sleeps must keep its radio on now. */
+static bool must_listen(const struct router *r) {
+    return now(r) < r->listen_until || tsim_node_queue_length(r->node) > 0 ||
+           tsim_node_sending(r->node) || tsim_node_receiving(r->node) ||
+           (r->config.ack_awake && r->awaiting) || r->hop_count > 0 || r->held_count > 0;
+}
+
+static void nap_fire(void *ctx) {
+    struct router *r = ctx;
+    if (!r->sleeping) {
+        return;
+    }
+    if (must_listen(r)) {
+        tsim_time t = now(r);
+        nap_arm(r, r->listen_until > t ? r->listen_until - t : TSIM_MS(250));
+        return;
+    }
+    tsim_node_radio(r->node, false);
+}
+
+static void stop_sleeping(struct router *r) {
+    r->sleeping = false;
+    r->keeper = TSIM_BROADCAST;
+    r->poll_out = false;
+    r->expect = 0;
+    r->wakes[r->self] = 0;
+    tsim_timer_stop(r->nap_timer);
+    tsim_node_radio(r->node, true);
+    r->interval = r->config.imin; /* its neighbours learn it listens again */
+    trickle_begin(r);
+}
+
+/* Takes `k` as its keeper, raising its seq so that every route to it moves there. */
+static void take_keeper(struct router *r, const struct neighbour *k) {
+    r->keeper = k->id;
+    r->attached = k->id;
+    r->sleep_stats.keepers++;
+    r->unanswered = 0;
+    r->seq++;
+    r->asked = true; /* its next announce, with the poll, is not put off */
+}
+
+static bool send_poll(struct router *r) {
+    uint16_t s = r->slot_of[r->keeper];
+    if (!s) {
+        return false;
+    }
+    struct neighbour *k = slot(r, s);
+    struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_CONTROL);
+    tx.addressed = true;
+    tx.to = r->keeper;
+    tx.tx_dbm = r->config.power ? power_for(r, k, NAN) : r->config.tx_dbm;
+    tx.bytes[0] = TYPE_POLL;
+    put32(tx.bytes + 1, r->self);
+    put32(tx.bytes + 5, r->keeper);
+    put16(tx.bytes + 9, (uint16_t)(r->poll_id + 1));
+    put16(tx.bytes + 11, promise_code(ceil((double)r->config.wake / (double)TSIM_S(1))));
+    double l = ceil((double)r->config.listen / (double)TSIM_S(1));
+    tx.bytes[13] = (uint8_t)(l > 255 ? 255 : l);
+    tx.bytes[14] = power_byte(tx.tx_dbm);
+    tx.len = POLL_LEN;
+    double cost = (double)tsim_lora_airtime(&tx.lora, tx.len);
+    refill(r, &r->requests);
+    if (r->requests.ns < cost || !tsim_node_send(r->node, &tx)) {
+        return false;
+    }
+    r->requests.ns -= cost;
+    r->poll_id++;
+    r->poll_out = true;
+    r->expect = 0;
+    r->sleep_stats.polls++;
+    return true;
+}
+
+/* A leaf that sleeps: begins to, once it has an anchor to keep its frames; polls its keeper every
+ * `wake`, and again after poll_retry while one goes unanswered; and after poll_tries of those
+ * takes another keeper, or stops sleeping if there is none. */
+static void sleep_fire(void *ctx) {
+    struct router *r = ctx;
+    tsim_time t = now(r);
+    if (!r->sleeping) {
+        const struct neighbour *a = reattaching(r) ? anchor(r) : NULL;
+        if (!a) {
+            tsim_timer_start(r->poll_timer,
+                             r->config.wake < TSIM_S(60) ? r->config.wake : TSIM_S(60));
+            return;
+        }
+        r->sleeping = true;
+        r->sleep_stats.slept_since = t;
+        r->wakes[r->self] = r->config.wake;
+        take_keeper(r, a);
+        r->poll_last = -1;
+    } else if (r->poll_out) {
+        r->poll_out = false;
+        if (++r->unanswered >= r->config.poll_tries) {
+            uint32_t was = r->keeper;
+            if (r->slot_of[was]) {
+                mute(r, r->slot_of[was], TSIM_DISTVEC_DOWN_SOLICIT);
+            }
+            const struct neighbour *a = anchor(r);
+            if (!a) {
+                stop_sleeping(r);
+                want_solicit(r, was, true);
+                tsim_timer_start(r->poll_timer, r->config.wake);
+                return;
+            }
+            take_keeper(r, a);
+        }
+    } else if (r->poll_last >= 0 && t < r->poll_last + r->config.wake) {
+        tsim_timer_start(r->poll_timer, r->poll_last + r->config.wake - t);
+        return;
+    }
+    if (r->asked || t - r->last_announce >= r->config.sleep_announce) {
+        if (r->config.sleep_seq) {
+            r->seq++; /* so that a route starved of it can come back: see the header */
+        }
+        announce(r);
+    }
+    if (send_poll(r)) {
+        r->poll_last = t;
+    }
+    tsim_timer_start(r->poll_timer, r->config.poll_retry);
+}
+
+static void on_poll_answer(struct router *r, const uint8_t *b, uint32_t len, double snr) {
+    if (len < POLL_ANSWER_LEN || !by_strength(r)) {
+        return;
+    }
+    uint32_t from = get32(b + 1), to = get32(b + 5);
+    if (from >= r->nodes || from == r->self) {
+        return;
+    }
+    if (to != r->self || !r->sleeping || from != r->keeper) {
+        if (r->slot_of[from]) {
+            heard_from(r, r->slot_of[from], b + 13, snr);
+        }
+        return;
+    }
+    uint16_t s = r->slot_of[from];
+    if (!s) {
+        return;
+    }
+    struct neighbour *n = slot(r, s);
+    n->dr = b[11];
+    heard_from(r, s, b + 13, snr);
+    if (get16(b + 9) != r->poll_id || !r->poll_out) {
+        return;
+    }
+    r->poll_out = false;
+    r->unanswered = 0;
+    r->sleep_stats.answered++;
+    r->expect = b[12];
+    if (r->expect == 0) {
+        r->listen_until = now(r); /* nothing held: it may sleep at once */
+        nap_arm(r, 0);
+    }
+    tsim_timer_start(r->poll_timer, r->poll_last + r->config.wake - now(r));
+}
+
+/* --- As the keeper --- */
+
+static void on_poll(struct router *r, const uint8_t *b, uint32_t len, double snr) {
+    if (len < POLL_LEN || !by_strength(r)) {
+        return;
+    }
+    uint32_t from = get32(b + 1);
+    if (from >= r->nodes || from == r->self) {
+        return;
+    }
+    if (!r->infra) {
+        if (r->slot_of[from]) {
+            heard_from(r, r->slot_of[from], b + 14, snr);
+        }
+        return;
+    }
+    uint16_t s = neighbour(r, from);
+    if (!s) {
+        return;
+    }
+    struct neighbour *n = slot(r, s);
+    heard_from(r, s, b + 14, snr);
+    bool was_sleeps = n->sleeps, was_kept = n->kept;
+    n->sleeps = true;
+    n->kept = get32(b + 5) == r->self;
+    n->wake_for = promise_time(get16(b + 11));
+    n->listen_for = (tsim_time)b[13] * TSIM_S(1);
+    n->awake_until = now(r) + n->listen_for;
+    if (was_sleeps != n->sleeps || was_kept != n->kept) {
+        sleep_changed(r, s);
+    }
+    if (!n->kept) {
+        return;
+    }
+    box_expire(r);
+    uint32_t held = box_held(r, from);
+    struct tsim_tx tx = frame(r, TSIM_PURPOSE_CONTROL, PRIORITY_CONTROL);
+    tx.addressed = true;
+    tx.to = from;
+    tx.tx_dbm = r->config.power ? power_for(r, n, NAN) : r->config.tx_dbm;
+    tx.bytes[0] = TYPE_POLL_ANSWER;
+    put32(tx.bytes + 1, r->self);
+    put32(tx.bytes + 5, from);
+    put16(tx.bytes + 9, get16(b + 9));
+    tx.bytes[11] = margin_byte(r->config.tx_dbm - n->floor);
+    tx.bytes[12] = (uint8_t)(held > 255 ? 255 : held);
+    tx.bytes[13] = power_byte(tx.tx_dbm);
+    tx.len = POLL_ANSWER_LEN;
+    double cost = (double)tsim_lora_airtime(&tx.lora, tx.len);
+    refill(r, &r->requests);
+    if (r->config.answer_capped && r->requests.ns < cost) {
+        return; /* the leaf asks again */
+    }
+    if (r->config.answer_capped) {
+        r->requests.ns -= cost;
+    } else {
+        tx.budget = TSIM_BUDGET_OWN | TSIM_BUDGET_ACK;
+    }
+    r->sleep_stats.answers++;
+    hold(r, &tx, 0, false, r->config.jitter);
+    if (held == 0) {
+        return;
+    }
+    /* What it holds goes once the answer has: after the answer's longest wait. */
+    if (r->handing_count == r->handing_cap) {
+        size_t cap = r->handing_cap ? 2 * r->handing_cap : 4;
+        uint32_t *grown = realloc(r->handing, cap * sizeof *grown);
+        if (!grown) {
+            return;
+        }
+        r->handing = grown;
+        r->handing_cap = cap;
+    }
+    r->handing[r->handing_count++] = from;
+    if (!tsim_timer_pending(r->hand_timer)) {
+        double window = (r->config.jitter + 1) * (double)tsim_lora_airtime(&tx.lora, tx.len);
+        tsim_timer_start(r->hand_timer, (tsim_time)window + TSIM_MS(1));
+    }
+}
+
+/* Hands each leaf that polled what this node holds for it: acknowledgements first, then the rest,
+ * each in the order it came. */
+static void hand_over(struct router *r, uint32_t leaf, bool acks) {
+    uint16_t s = r->slot_of[leaf];
+    for (size_t i = 0; s && i < r->box_count;) {
+        struct boxed *x = &r->box[i];
+        if (x->leaf != leaf || (x->tx.bytes[0] == TYPE_ACK) != acks) {
+            i++;
+            continue;
+        }
+        struct boxed was = *x;
+        box_remove(r, i);
+        struct tsim_tx tx = was.tx;
+        if (r->config.power) {
+            tx.tx_dbm = power_for(r, slot(r, s), NAN);
+            tx.bytes[18] = power_byte(tx.tx_dbm);
+        }
+        bool listen = tx.bytes[0] == TYPE_DATA;
+        size_t had = r->hop_count;
+        uint64_t handle = send_hop(r, &tx, listen);
+        if (handle && r->hop_count > had && r->hops[r->hop_count - 1].handle == handle) {
+            r->hops[r->hop_count - 1].reboxed = was.reboxed;
+        }
+        r->sleep_stats.handed++;
+    }
+}
+
+static void hand_fire(void *ctx) {
+    struct router *r = ctx;
+    box_expire(r);
+    for (size_t i = 0; i < r->handing_count; i++) {
+        uint32_t leaf = r->handing[i];
+        uint16_t s = r->slot_of[leaf];
+        if (!s || !slot(r, s)->kept) {
+            continue;
+        }
+        hand_over(r, leaf, true);
+        hand_over(r, leaf, false);
+    }
+    r->handing_count = 0;
+}
+
 static void router_rx(void *self, const struct tsim_rx *rx) {
     struct router *r = self;
     if (rx->len < 1) {
@@ -4368,6 +4993,15 @@ static void router_rx(void *self, const struct tsim_rx *rx) {
     case TYPE_HERE:
         on_here(r, rx->bytes, rx->len, rx->snr_db);
         return;
+    case TYPE_POLL:
+        on_poll(r, rx->bytes, rx->len, rx->snr_db);
+        return;
+    case TYPE_POLL_ANSWER:
+        on_poll_answer(r, rx->bytes, rx->len, rx->snr_db);
+        return;
+    case TYPE_HELD:
+        on_held(r, rx->bytes, rx->len);
+        return;
     case TYPE_HOP_ACK:
         /* Heard as the frame it stands for, passed on. */
         if (per_sf(r) && rx->len >= HOP_ACK_LEN &&
@@ -4408,6 +5042,11 @@ static void router_withdrawn(void *self, uint64_t handle) {
 
 static void router_tx_done(void *self, uint64_t handle) {
     struct router *r = self;
+    if (r->sleeping) { /* it listens `listen` after every frame it sends */
+        tsim_time until = now(r) + r->config.listen;
+        r->listen_until = until > r->listen_until ? until : r->listen_until;
+        nap_arm(r, r->listen_until - now(r));
+    }
     if (handle == r->ann_handle) {
         /* How long it waited, remembered for the promises to come and forgotten an eighth an
          * announce. */
@@ -4497,6 +5136,7 @@ static void house_fire(void *ctx) {
     node_power(r);
     choose_sf(r);
     unpark_expired(r);
+    box_expire(r);
     tsim_timer_start(r->house, house_period(r));
 }
 
@@ -4520,6 +5160,10 @@ static void router_start(void *self) {
         tsim_timer_start(r->seq_timer,
                          (tsim_time)((double)r->config.seq_period * tsim_rng_unit(&r->rng)));
     }
+    if (r->sleeper) {
+        tsim_timer_start(r->poll_timer, SLEEP_SETTLE + (tsim_time)((double)r->config.wake *
+                                                                   tsim_rng_unit(&r->rng)));
+    }
 }
 
 static void router_destroy(void *self) {
@@ -4542,6 +5186,11 @@ static void router_destroy(void *self) {
     tsim_timer_destroy(r->probe_timer);
     tsim_timer_destroy(r->elect_timer);
     tsim_timer_destroy(r->attach_timer);
+    tsim_timer_destroy(r->poll_timer);
+    tsim_timer_destroy(r->nap_timer);
+    tsim_timer_destroy(r->hand_timer);
+    free(r->box);
+    free(r->handing);
     free(r->starving);
     free(r->asks);
     free(r->dest);
@@ -4652,7 +5301,23 @@ static void *router_create(struct tsim_node *node, const void *config) {
     r->solicited = -1;
     r->solicit_last = -1;
     r->attached = TSIM_BROADCAST;
-    if (!r->attach_timer || !r->elect_timer || !r->probe_timer || !r->seq_timer || !r->park_timer ||
+    r->keeper = TSIM_BROADCAST;
+    r->sleep_stats.slept_since = -1;
+    r->poll_timer = tsim_timer_create(node, sleep_fire, r);
+    r->nap_timer = tsim_timer_create(node, nap_fire, r);
+    r->hand_timer = tsim_timer_create(node, hand_fire, r);
+    if (c->sleep > 0) {
+        /* Which leaves sleep: fixed by the node's number, so every seed and power cycle agrees. */
+        r->sleeper = !r->infra && (double)(mix(r->self ^ 0x51EE9u) >> 11) * 0x1p-53 < c->sleep;
+        r->poll_id = (uint16_t)tsim_rng_below(&r->rng, 65536);
+        void **shared = tsim_node_routing_shared(node);
+        if (!*shared) {
+            *shared = calloc(r->nodes, sizeof(tsim_time));
+        }
+        r->wakes = *shared;
+    }
+    if (!r->poll_timer || !r->nap_timer || !r->hand_timer || (c->sleep > 0 && !r->wakes) ||
+        !r->attach_timer || !r->elect_timer || !r->probe_timer || !r->seq_timer || !r->park_timer ||
         !r->dest || !r->slot_of || !r->trickle || !r->cap_timer || !r->hop_timer || !r->out_timer ||
         !r->house || !r->request_timer || !r->ask_timer) {
         router_destroy(r);
@@ -4679,6 +5344,7 @@ const struct tsim_routing tsim_distvec = {
     .withdrawn = router_withdrawn,
     .reports_finished = true,
     .next_hop = router_next_hop,
+    .destroy_shared = free,
 };
 
 /* --- For tests and reports --- */
@@ -5171,4 +5837,11 @@ bool tsim_distvec_tier(const struct tsim_phy *phy, const struct tsim_distvec_con
     free(start);
     free(adj);
     return ok;
+}
+
+void tsim_distvec_sleep(const void *self, struct tsim_distvec_sleep *out) {
+    const struct router *r = self;
+    *out = r->sleep_stats;
+    out->sleeper = r->sleeper;
+    out->sleeping = r->sleeping;
 }

@@ -2012,6 +2012,47 @@ static void a_message_lost_at_a_leaf_gone_quiet_is_flooded(void) {
 
 /* In a network that does not move, a leaf that solicits finds its relay there: the relay answers,
  * and nothing re-attaches. */
+/* Leaves that sleep (draft/sleeping.md): relays 0 and 1 in a line, leaf 2 hearing relay 0 and leaf
+ * 3 relay 1, both leaves sleeping with a one-minute wake. Each takes its relay as keeper and polls
+ * it; its radio sleeps between. A message to leaf 2 while it sleeps is held by relay 0, handed over
+ * at the next poll, and acknowledged; the source, told how long leaf 2 sleeps, waits for it. */
+static void a_leaf_that_sleeps_gets_what_was_held_for_it(void) {
+    struct rig r;
+    rig_init(&r);
+    r.rc.links = TSIM_DISTVEC_LINKS_STRENGTH;
+    r.rc.reattach = true;
+    r.rc.sleep = 1;
+    r.rc.wake = TSIM_S(60);
+    r.rc.ack_awake = false;
+    strcpy(r.rc.relays, "0-1");
+    CHECK(tsim_distvec_check(&r.rc) == NULL);
+    build(&r, 4, 1);
+    link(&r, 0, 1, LOSS_LOUD);
+    link(&r, 2, 0, LOSS_LOUD);
+    link(&r, 3, 1, LOSS_LOUD);
+    tsim_net_start(r.net);
+    tsim_sched_run_until(r.sched, TSIM_S(2400));
+    struct tsim_distvec_sleep leaf, keeper;
+    tsim_distvec_sleep(at(&r, 2), &leaf);
+    CHECK(leaf.sleeper && leaf.sleeping);
+    CHECK(leaf.polls >= 5 && leaf.answered >= 5);
+    CHECK(tsim_net_radio_slept(r.net, 2) > TSIM_S(300));
+    CHECK_EQ_U64(tsim_net_radio_slept(r.net, 0), 0); /* a relay never sleeps */
+    uint32_t next = 0;
+    CHECK(route(&r, 1, 2, &next) && next == 0);
+    uint64_t m = tsim_net_originate(r.net, 3, 2, 20);
+    tsim_sched_run_until(r.sched, TSIM_S(2400 + 300));
+    CHECK_EQ_U64(tsim_net_message(r.net, m)->delivered, 1);
+    CHECK(tsim_net_message(r.net, m)->finished);
+    tsim_distvec_sleep(at(&r, 0), &keeper);
+    CHECK(keeper.held >= 1 && keeper.handed >= 1);
+    CHECK_EQ_U64(keeper.held_full + keeper.held_expired, 0);
+    struct tsim_distvec_config bad = r.rc;
+    bad.links = TSIM_DISTVEC_LINKS_SENSED; /* it needs links by strength */
+    CHECK(tsim_distvec_check(&bad) != NULL);
+    rig_close(&r);
+}
+
 static void a_leaf_that_stays_does_not_reattach(void) {
     struct rig r;
     rig_init(&r);
@@ -2576,6 +2617,7 @@ int main(void) {
     RUN(a_live_neighbour_answers_the_probe);
     RUN(a_leaf_that_moves_is_reached_through_its_new_relay);
     RUN(a_leaf_that_stays_does_not_reattach);
+    RUN(a_leaf_that_sleeps_gets_what_was_held_for_it);
     RUN(a_near_neighbour_is_sent_to_quieter_than_a_far_one);
     RUN(a_relay_goes_loud_enough_for_the_hop_before);
     RUN(a_hop_lost_at_its_power_is_tried_again_louder);

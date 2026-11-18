@@ -614,6 +614,33 @@ static void a_frame_must_carry_what_it_claims(void) {
     rig_close(&r);
 }
 
+/* A routing may put its radio to sleep: it hears nothing, the time is booked, and a frame it
+ * queues wakes it. */
+static void a_radio_put_to_sleep_hears_nothing_until_woken(void) {
+    struct rig r;
+    rig_open(&r, tsim_net_defaults(1), 2);
+    struct tsim_node *n0 = tsim_net_node(r.net, 0), *n1 = tsim_net_node(r.net, 1);
+    CHECK(tsim_node_radio_on(n1));
+    CHECK(tsim_node_radio(n1, false) && !tsim_node_radio_on(n1));
+    tsim_node_send(
+        n0, &(struct tsim_tx){.lora = tsim_lora_default(7, 125000), .tx_dbm = 14.0, .len = 5});
+    CHECK(tsim_node_transmit(n0));
+    run_for(&r, TSIM_S(10));
+    CHECK(r.log.rx[1] == 0);
+    CHECK(tsim_net_radio_slept(r.net, 1) == TSIM_S(10));
+    tsim_node_send(
+        n1, &(struct tsim_tx){.lora = tsim_lora_default(7, 125000), .tx_dbm = 14.0, .len = 5});
+    CHECK(tsim_node_radio_on(n1));
+    CHECK(tsim_net_radio_slept(r.net, 1) == TSIM_S(10));
+    run_for(&r, TSIM_S(1));
+    tsim_node_send(
+        n0, &(struct tsim_tx){.lora = tsim_lora_default(7, 125000), .tx_dbm = 14.0, .len = 5});
+    CHECK(tsim_node_transmit(n0));
+    run_for(&r, TSIM_S(1));
+    CHECK(r.log.rx[1] == 1);
+    rig_close(&r);
+}
+
 /* Routing starts when the driver says the links are laid, not when the network is built. */
 static void routing_starts_once_when_told(void) {
     struct log log = {0};
@@ -1426,6 +1453,7 @@ int main(void) {
     RUN(a_timer_may_destroy_itself_when_it_fires);
     RUN(destroy_frees_timers_left_running);
     RUN(a_node_powered_down_comes_back_with_nothing);
+    RUN(a_radio_put_to_sleep_hears_nothing_until_woken);
     RUN(destroy_leaves_the_scheduler_runnable);
     RUN(the_radio_holds_to_the_duty_cycle);
     RUN(the_budget_holds_a_nodes_own_frames);

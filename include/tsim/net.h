@@ -90,6 +90,10 @@ const struct tsim_routing *tsim_net_routing_plugin(const struct tsim_net *net);
 bool tsim_net_power(struct tsim_net *net, uint32_t node, bool on);
 bool tsim_net_on(const struct tsim_net *net, uint32_t node);
 
+/* How long a node's radio has been asleep, put there by its routing (tsim_node_radio()), up to
+ * now: what a sleeping node saves, against a radio that listens whenever it is not sending. */
+tsim_time tsim_net_radio_slept(const struct tsim_net *net, uint32_t node);
+
 /* Makes a message at `src` and hands it to its routing. Returns its id, or 0 if a node is out of
  * range or powered down, `dst` is `src`, or `len` is over TSIM_FRAME_MAX. A message the routing
  * refuses keeps its record, marked refused: it stays in every delivery ratio's denominator, so a

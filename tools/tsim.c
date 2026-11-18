@@ -283,6 +283,39 @@ static void print_report(const char *path, const struct tsim_scenario *s,
         }
         printf("},\n");
     }
+    if (r->sleep.present) {
+        const struct tsim_sleep_report *z = &r->sleep;
+        printf("  \"sleep\": {\"wake_s\": %.6g, \"sleepers\": %" PRIu32 ", \"sleeping\": %" PRIu32
+               ", \"listeners\": %" PRIu32 ",\n",
+               (double)z->wake / 1e9, z->sleepers, z->sleeping, z->listeners);
+        const struct tsim_sleep_delivery *d[4] = {&z->to_sleepers, &z->to_listeners,
+                                                  &z->from_sleepers, &z->from_listeners};
+        const char *names[4] = {"to_sleepers", "to_listeners", "from_sleepers", "from_listeners"};
+        for (int k = 0; k < 4; k++) {
+            printf("            \"%s\": {\"wanted\": %" PRIu64 ", \"delivered\": %" PRIu64
+                   ", \"in_60s\": %" PRIu64 ", \"in_wake\": %" PRIu64 ", \"lost\": [%" PRIu64
+                   ", %" PRIu64 ", %" PRIu64 ", %" PRIu64 ", %" PRIu64 ", %" PRIu64 ", %" PRIu64
+                   ", %" PRIu64 "]"
+                   ", \"p50_s\": %.4g, \"p95_s\": %.4g, \"max_s\": %.4g},\n",
+                   names[k], d[k]->wanted, d[k]->delivered, d[k]->in_60s, d[k]->in_wake,
+                   d[k]->lost[0], d[k]->lost[1], d[k]->lost[2], d[k]->lost[3], d[k]->lost[4],
+                   d[k]->lost[5], d[k]->lost[6], d[k]->lost[7], (double)d[k]->latency_p50 / 1e9,
+                   (double)d[k]->latency_p95 / 1e9, (double)d[k]->latency_max / 1e9);
+        }
+        printf("            \"sleeper_on\": %.6g, \"listener_on\": %.6g, \"sleeper_tx\": %.6g"
+               ", \"listener_tx\": %.6g, \"sleeper_ua\": %.6g, \"listener_ua\": %.6g,\n",
+               z->sleeper_on, z->listener_on, z->sleeper_tx, z->listener_tx, z->sleeper_ua,
+               z->listener_ua);
+        printf("            \"polls_per_h\": %.6g, \"answered\": %.6g, \"poll_share\": %.6g"
+               ", \"keepers_per_h\": %.6g,\n",
+               z->polls_per_h, z->answered, z->poll_share, z->keepers_per_h);
+        printf("            \"held\": %" PRIu64 ", \"held_full\": %" PRIu64
+               ", \"held_expired\": %" PRIu64 ", \"handed\": %" PRIu64 ", \"released\": %" PRIu64
+               ", \"notices\": %" PRIu64 ", \"held_peak\": %" PRIu32 ", \"polls\": %" PRIu64
+               ", \"answers\": %" PRIu64 "},\n",
+               z->held, z->held_full, z->held_expired, z->handed, z->released, z->notices,
+               z->held_peak, z->polls, z->answers);
+    }
     if (r->churn.present) {
         printf("  \"churn\": {\"downs\": %" PRIu64 ", \"down_mean\": %.6g, \"to_down\": %" PRIu64
                ", \"hops_to_down\": %" PRIu64 ", \"routed_to\": %" PRIu64

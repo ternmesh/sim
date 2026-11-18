@@ -35,6 +35,11 @@ frames, `airtime.budget = on`, with each part's share and window a setting to sw
 `tsim/budget.h` is the budget and [docs/airtime.md](docs/airtime.md) what it does to a mesh
 (MSH-92).
 
+Leaves that sleep (the specification's `draft/sleeping.md`) can be run in candidate 3,
+`routing.sleep`: a share of the leaves turn their radios off between polls to a keeper relay,
+which holds their frames. [docs/sleeping.md](docs/sleeping.md) has what that delivers and costs,
+and the changes to the draft it recommends.
+
 A run's traffic can be a mix of flows - presence, position, telemetry, chat, direct messages,
 alerts - each reported apart, and a broadcast can be wanted only within a reach of its sender.
 [docs/workload.md](docs/workload.md) has the mix measured meshes carry, three scenarios built from
