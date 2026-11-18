@@ -134,6 +134,14 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
     if(TSIM_ROUTE_AUTH)
         target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_SIGNED)
     endif()
+    # A firmware whose announces carry a key blinded from the address (firmware#N) knows nodes by
+    # their keys, and its routing ids are the keys'.
+    file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/route.h" TSIM_ROUTE_KEY_ID
+         REGEX "tern_route_key_id\\(")
+    if(TSIM_ROUTE_KEY_ID)
+        target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_BLINDED)
+        message(STATUS "Core routing: announces with a blinded key")
+    endif()
     file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/route.h" TSIM_ROUTE_NUMBERING
          REGEX "tern_route_numbering_from")
     if(TSIM_ROUTE_NUMBERING)
