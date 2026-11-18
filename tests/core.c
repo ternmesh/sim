@@ -223,13 +223,14 @@ static void a_broadcast_goes_the_length_of_a_line(void) {
 /* A card goes with the card header, so the firmware's flooder holds it to CARD_HOPS (2) at every
  * relay, where a group's frame goes FLOOD_HOPS (5). Every relay here spends a hop
  * (flood_sparse 0): along a line of six, a card from the end reaches two nodes and a broadcast
- * all five. */
+ * all five, starting at FLOOD_HOPS and not one lower (flood_lower 0). */
 static void a_card_goes_two_hops_and_a_broadcast_five(void) {
     struct tsim_lora l = tsim_lora_default(7, 125000);
     struct tsim_net_params p = tsim_net_defaults(5);
     p.queue_limit = 0;
     struct rig r = {.rc = tsim_core_default(0, &l, 14.0), .mc = tsim_meshcore_mac_default()};
     r.rc.flood_sparse = 0;
+    r.rc.flood_lower = 0;
     r.nodes = 6;
     r.sched = tsim_sched_create();
     r.net = tsim_net_create(r.sched, &p, r.nodes, &tsim_core, &r.rc, &tsim_meshcore_mac, &r.mc);

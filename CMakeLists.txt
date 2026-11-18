@@ -166,6 +166,13 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
     if(TSIM_FLOOD_RESENDS)
         target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_RESENDS)
     endif()
+    # A firmware whose flooder starts half of a node's own frames one hop lower (the
+    # specification's draft/flooding.md, "Sending") has it measured on and off.
+    file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/flood.h" TSIM_FLOOD_LOWER
+         REGEX "bool lower;")
+    if(TSIM_FLOOD_LOWER)
+        target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_LOWER)
+    endif()
     set(TSIM_HAVE_CORE ON)
     message(STATUS "Core routing: from ${TSIM_FIRMWARE_DIR}")
 elseif(TSIM_REQUIRE_CORE)

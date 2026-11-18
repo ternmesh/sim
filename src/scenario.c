@@ -996,6 +996,7 @@ static const char *core_set(void *config, const char *key, const char *value) {
         {"flood_busy_ppm", offsetof(struct tsim_core_config, flood_busy_ppm), 0, 1000000},
         {"flood_resends", offsetof(struct tsim_core_config, flood_resends), 0, 255},
         {"flood_echo", offsetof(struct tsim_core_config, flood_echo), 0, 255},
+        {"flood_lower", offsetof(struct tsim_core_config, flood_lower), 0, 1},
         {"card_hops", offsetof(struct tsim_core_config, card_hops), 0, 255},
         {"leaf_destinations", offsetof(struct tsim_core_config, leaf_destinations), 0, 65535},
         {"default_hops", offsetof(struct tsim_core_config, default_hops), 0, 32},

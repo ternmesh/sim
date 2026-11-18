@@ -520,6 +520,10 @@ struct tsim_core_config {
      * than 0 (MSH-104). */
     uint32_t flood_resends; /* 0..255 */
     uint32_t flood_echo;    /* 0..255 */
+    /* 1: half of a node's own floods that would start at flood_hops start one lower, so that the
+     * first relay's copy looks like the writer's; the firmware's own by default. Needs a firmware
+     * that has it to be 1. */
+    uint32_t flood_lower;
     /* What a presence card's flood starts with (tsim/traffic.h), 0 for flood_hops. A card the
      * length of one goes with the firmware's card header, and its flooder holds it to CARD_HOPS
      * (2) whatever this says, so this can only lower it; one of another length is not a card the
