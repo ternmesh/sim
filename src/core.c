@@ -354,6 +354,9 @@ struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lo
         .flood_resends = tern_flood_defaults().resends,
         .flood_echo = tern_flood_defaults().echo,
 #endif
+#ifdef TSIM_FIRMWARE_LOWER
+        .flood_lower = tern_flood_defaults().lower,
+#endif
 #ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
         .default_hops = rd.default_hops,
         .default_busy_ppm = rd.default_busy_ppm,
@@ -409,6 +412,14 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
         return "learn_ppm needs a firmware with a learning allowance";
     }
 #endif
+#ifndef TSIM_FIRMWARE_LOWER
+    if (c->flood_lower) {
+        return "flood_lower needs a firmware whose flooder starts frames lower";
+    }
+#endif
+    if (c->flood_lower > 1) {
+        return "flood_lower must be 0 or 1";
+    }
 #ifndef TSIM_FIRMWARE_RESENDS
     if (c->flood_resends || c->flood_echo) {
         return "flood_resends and flood_echo need a firmware whose flooder sends again";
@@ -1143,6 +1154,9 @@ static void *router_create(struct tsim_node *node, const void *config) {
 #ifdef TSIM_FIRMWARE_RESENDS
     flc.resends = (uint8_t)c->flood_resends;
     flc.echo = (uint8_t)c->flood_echo;
+#endif
+#ifdef TSIM_FIRMWARE_LOWER
+    flc.lower = c->flood_lower != 0;
 #endif
     tern_flood_init(&r->flood, &flc, &r->route, r->flood_slots, c->flood_frames, r->flood_seen,
                     TERN_FLOOD_SEEN, tsim_rng_next(&rng), tsim_node_now(node));
