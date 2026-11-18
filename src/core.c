@@ -39,6 +39,19 @@
  * ports/node/node.c has it. */
 #define NUMBER_SAVE 256
 
+/* A firmware whose announces carry a routing key blinded from the address (ternmesh/spec routing
+ * draft, "Routing ids") knows a node by that key, and only the node's own code, with Ed25519, which
+ * the core is not built with, turns an address into one. Its 32 bytes made here are then the key,
+ * and its routing id is the key's (tern_route_key_id()). Either way an id is SHA-256 of 32 bytes
+ * no other node has, labelled alike, so the ids, and everything measured, are the same. */
+#ifdef TSIM_FIRMWARE_BLINDED
+#define ROUTING_ID tern_route_key_id
+#define AUTH_KEY key
+#else
+#define ROUTING_ID tern_route_id
+#define AUTH_KEY address
+#endif
+
 /* How soon a frame the queue refused is offered again. */
 #define RETRY TSIM_S(1)
 
@@ -123,7 +136,7 @@ struct router {
  * powered down.
  *
  * Who they are. Each node has an address, 32 bytes made from its index, and the routing id the
- * firmware makes from it (tern_route_id()); a frame names a node by that id, and the table maps
+ * firmware makes from it (ROUTING_ID, above); a frame names a node by that id, and the table maps
  * it back to the node. An address is not a key here - nothing is signed - but the router is given
  * a means to check, so that it discards what a device would: an announce from a neighbour whose
  * address it does not hold and that does not carry it. The ids of one network are told apart: an
@@ -201,7 +214,7 @@ static bool network_name(struct network *n) {
             tern_sha256_init(&c);
             tern_sha256_update(&c, in, sizeof in);
             tern_sha256_final(&c, n->address[i]);
-            n->id[i] = tern_route_id(n->address[i]);
+            n->id[i] = ROUTING_ID(n->address[i]);
             bool taken = false;
             for (uint32_t j = 0; j < i && !taken; j++) {
                 taken = n->id[j] == n->id[i];
@@ -774,7 +787,7 @@ static void rotate_name(struct network *n, uint32_t self) {
         tern_sha256_init(&c);
         tern_sha256_update(&c, in, sizeof in);
         tern_sha256_final(&c, n->address[self]);
-        uint32_t id = tern_route_id(n->address[self]);
+        uint32_t id = ROUTING_ID(n->address[self]);
         if (id != old && node_of(n, id) == UINT32_MAX) {
             n->id[self] = id;
             break;
@@ -1135,7 +1148,7 @@ static void *router_create(struct tsim_node *node, const void *config) {
     tern_route_numbering_from(&r->route, first, first);
 #endif
 #ifdef TSIM_FIRMWARE_SIGNED
-    tern_route_auth(&r->route, &(struct tern_route_auth){.address = r->net->address[self],
+    tern_route_auth(&r->route, &(struct tern_route_auth){.AUTH_KEY = r->net->address[self],
                                                          .sign = sign_nothing,
                                                          .verify = verify_anything});
 #endif
