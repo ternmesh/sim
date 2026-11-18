@@ -113,6 +113,8 @@ struct router {
     /* Whether a routing frame has gone on the air since the node started, as the firmware keeps
      * it: until one has, announce numbers are stored ahead one at a time. */
     bool route_on_air;
+    /* Routing ids that change: when this node next takes a new one. */
+    struct tsim_timer *rotate_timer;
 };
 
 /* What the nodes of one network keep that is not on the air: who they are, what a board keeps
@@ -146,6 +148,11 @@ struct network {
     bool *has_number; /* [node] */
     uint32_t *sender; /* [message number] */
     size_t cap;
+    /* For routing ids that change (rotate_s): each node's router while it is powered, so that a
+     * retirement reaches the neighbours that hold the old id, and how many times each has
+     * rotated. */
+    struct router **routers; /* [node], NULL while powered down */
+    uint32_t *epoch;         /* [node] */
 };
 
 static int by_id_cmp(const void *a, const void *b) {
@@ -162,6 +169,8 @@ static void network_free(void *shared) {
     free(n->number);
     free(n->has_number);
     free(n->sender);
+    free(n->routers);
+    free(n->epoch);
     free(n);
 }
 
@@ -173,7 +182,10 @@ static bool network_name(struct network *n) {
     n->seq = calloc(n->count, sizeof *n->seq);
     n->number = calloc(n->count, sizeof *n->number);
     n->has_number = calloc(n->count, sizeof *n->has_number);
-    if (!n->address || !n->id || !n->by_id || !n->seq || !n->number || !n->has_number) {
+    n->routers = calloc(n->count, sizeof *n->routers);
+    n->epoch = calloc(n->count, sizeof *n->epoch);
+    if (!n->address || !n->id || !n->by_id || !n->seq || !n->number || !n->has_number ||
+        !n->routers || !n->epoch) {
         return false;
     }
     for (uint32_t i = 0; i < n->count; i++) {
@@ -412,6 +424,15 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
 #endif
     if (c->reattach > 1) {
         return "reattach must be 0 or 1";
+    }
+#ifndef TSIM_FIRMWARE_LEARNING
+    if (c->rotate_learn) {
+        return "rotate_learn needs a firmware with a learning allowance";
+    }
+#endif
+    if (c->rotate_leaves > 1 || c->rotate_spread > 1 || c->rotate_retire > 1 ||
+        c->rotate_learn > 1) {
+        return "rotate_leaves, rotate_spread, rotate_retire and rotate_learn must be 0 or 1";
     }
     if (c->announce_ppm > 1000000 || c->address_after > 255 || c->address_every > 255 ||
         c->learn_ppm > 1000000) {
@@ -695,6 +716,130 @@ static void service(struct router *r) {
 
 static void router_fire(void *ctx) { service(ctx); }
 
+/* --- Routing ids that change (rotate_s; an experiment, not the firmware's) --- */
+
+/* Whether this node rotates at all. */
+static bool rotates(const struct router *r) {
+    return r->config.rotate_s &&
+           !(r->config.rotate_leaves && tsim_core_relay(&r->config, tsim_node_index(r->node)));
+}
+
+/* A node's phase within rotate_s: 0 when every node rotates at once. */
+static tsim_time rotate_phase(const struct router *r) {
+    if (!r->config.rotate_spread) {
+        return 0;
+    }
+    uint64_t x = (uint64_t)tsim_node_index(r->node) * 0x9E3779B97F4A7C15u + 0x632BE59BD9B4E019u;
+    x ^= x >> 31;
+    x *= 0xBF58476D1CE4E5B9u;
+    x ^= x >> 29;
+    return (tsim_time)(x % ((uint64_t)r->config.rotate_s * 1000)) * TSIM_MS(1);
+}
+
+/* Sets the timer for the next multiple of rotate_s, from the node's phase. */
+static void rotate_schedule(struct router *r) {
+    tsim_time period = TSIM_S((int64_t)r->config.rotate_s), now = tsim_node_now(r->node);
+    tsim_time phase = rotate_phase(r);
+    tsim_time k = now < phase ? 0 : (now - phase) / period + 1;
+    tsim_time at = phase + k * period;
+    tsim_timer_start(r->rotate_timer, at > now ? at - now : TSIM_MS(1));
+}
+
+/* A new address and id for `self`, made from its index and how many times it has rotated, and
+ * unlike every id the network's nodes have now. */
+static void rotate_name(struct network *n, uint32_t self) {
+    uint32_t old = n->id[self];
+    n->epoch[self]++;
+    for (uint32_t attempt = 0;; attempt++) {
+        static const uint8_t label[] = "tsim rotated address";
+        uint8_t in[sizeof label - 1 + 12];
+        memcpy(in, label, sizeof label - 1);
+        for (int b = 0; b < 4; b++) {
+            in[sizeof label - 1 + b] = (uint8_t)(self >> (24 - 8 * b));
+            in[sizeof label + 3 + b] = (uint8_t)(n->epoch[self] >> (24 - 8 * b));
+            in[sizeof label + 7 + b] = (uint8_t)(attempt >> (24 - 8 * b));
+        }
+        struct tern_sha256 c;
+        tern_sha256_init(&c);
+        tern_sha256_update(&c, in, sizeof in);
+        tern_sha256_final(&c, n->address[self]);
+        uint32_t id = tern_route_id(n->address[self]);
+        if (id != old && node_of(n, id) == UINT32_MAX) {
+            n->id[self] = id;
+            break;
+        }
+    }
+    for (uint32_t i = 0; i < n->count; i++) {
+        if (n->by_id[i].node == self) {
+            n->by_id[i].id = n->id[self];
+        }
+    }
+    qsort(n->by_id, n->count, sizeof *n->by_id, by_id_cmp);
+}
+
+static void rotate_fire(void *ctx) {
+    struct router *r = ctx;
+    struct network *n = r->net;
+    uint32_t self = tsim_node_index(r->node);
+    tsim_time now = tsim_node_now(r->node);
+    if (r->handle != 0 || r->len != 0) {
+        /* A frame made under the old id has still to go: no announce under it may follow. */
+        tsim_timer_start(r->rotate_timer, TSIM_MS(100));
+        return;
+    }
+    uint32_t old = n->id[self];
+    rotate_name(n, self);
+    if (r->config.rotate_retire) {
+        /* Every neighbour that holds the old id forgets it, and every route through it, as on
+         * frames lost (tern_route_lost()) with DEAD_HOPS of 1. */
+        for (uint32_t k = 0; k < n->count; k++) {
+            struct router *o = n->routers[k];
+            if (!o || k == self) {
+                continue;
+            }
+            for (uint32_t i = 0; i < o->config.neighbours; i++) {
+                if (o->neighbours[i].used && o->neighbours[i].id == old) {
+                    uint8_t dead = o->route.config.dead_hops;
+                    o->neighbours[i].lost = 0;
+                    o->route.config.dead_hops = 1;
+                    tern_route_lost(&o->route, now, old);
+                    o->route.config.dead_hops = dead;
+                    service(o);
+                    break;
+                }
+            }
+        }
+    }
+    /* The node keeps what it holds; only its id changes. Its next announces carry the new address,
+     * and Trickle starts again from its shortest interval, as on an inconsistency. */
+    r->route.id = n->id[self];
+    r->route.now = now;
+    r->route.address_owed = r->route.config.address_after;
+#ifdef TSIM_FIRMWARE_LEARNING
+    if (r->config.rotate_learn) {
+        r->route.learn_until = now + r->route.config.learn_for;
+    }
+#endif
+    if (r->route.interval > r->route.config.i_min) {
+        r->route.interval = r->route.config.i_min;
+    }
+    {
+        tsim_time half = r->route.interval / 2;
+        uint64_t x = (uint64_t)now ^ ((uint64_t)self << 32) ^ n->epoch[self];
+        x ^= x >> 33;
+        x *= 0xFF51AFD7ED558CCDu;
+        x ^= x >> 33;
+        r->route.heard = 0;
+        r->route.fired = false;
+        r->route.fire_at = now + half + (tsim_time)(x % (uint64_t)(r->route.interval - half));
+        r->route.interval_end = now + r->route.interval;
+    }
+    service(r);
+    if (!r->config.rotate_count || n->epoch[self] < r->config.rotate_count) {
+        rotate_schedule(r);
+    }
+}
+
 /* A frame that follows routes: for the core to pass on, or for this node. */
 static void frame_rx(struct router *r, const struct tsim_rx *rx, int16_t snr_q) {
     tsim_time now = tsim_node_now(r->node);
@@ -895,6 +1040,12 @@ static void router_destroy(void *self) {
         return;
     }
     tsim_timer_destroy(r->timer);
+    if (r->rotate_timer) {
+        tsim_timer_destroy(r->rotate_timer);
+    }
+    if (r->net && r->net->routers[tsim_node_index(r->node)] == r) {
+        r->net->routers[tsim_node_index(r->node)] = NULL;
+    }
     free(r->neighbours);
     free(r->dests);
     free(r->slots);
@@ -995,6 +1146,15 @@ static void *router_create(struct tsim_node *node, const void *config) {
 #endif
     tern_flood_init(&r->flood, &flc, &r->route, r->flood_slots, c->flood_frames, r->flood_seen,
                     TERN_FLOOD_SEEN, tsim_rng_next(&rng), tsim_node_now(node));
+    r->net->routers[self] = r;
+    if (rotates(r)) {
+        r->rotate_timer = tsim_timer_create(node, rotate_fire, r);
+        if (!r->rotate_timer) {
+            router_destroy(r);
+            return NULL;
+        }
+        rotate_schedule(r);
+    }
     return r;
 }
 

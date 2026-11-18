@@ -539,6 +539,41 @@ struct tsim_core_config {
      * "Leaves that move"): 1 by default with a firmware that has it, and 0 for the core as it was
      * before. Needs a firmware that has it to be 1. */
     uint32_t reattach; /* 0 or 1 */
+    /* Routing ids that change (an experiment for the specification's metadata-privacy analysis,
+     * not anything the firmware or the specification has): every `rotate_s` seconds a node takes
+     * a new address and the routing id made from it, 0 for never. It keeps everything it holds -
+     * its neighbours, its routes, their feasibility distances, its numbers and its seq - and only
+     * its own id changes, as a node whose id is made from an epoch would. Its next announces carry
+     * the new address (ADDRESS_AFTER of them) and Trickle starts again from I_MIN, so its
+     * neighbours learn it at once, as a node just found.
+     *
+     * `rotate_leaves` 1 rotates only leaves, relays keeping theirs. `rotate_spread` 0 rotates
+     * every node at the same moment, each multiple of rotate_s; 1 gives each node its own phase
+     * within rotate_s. `rotate_retire` 1 has every neighbour that holds the old id forget it, and
+     * every route through it, the moment the node rotates: an announce that says "this id is
+     * retired", heard by every neighbour (the best case; a real one could be lost, and the
+     * neighbour then falls back on 0's behaviour). 0 leaves the old id to be forgotten as any
+     * silent neighbour is, after SILENT_MAX and two promises, or after DEAD_HOPS frames lost.
+     * A node does not rotate while a routing frame of its is in the queue: it waits for it to go,
+     * so no announce under the old id follows the retirement.
+     *
+     * Measured with tools/rotate.py (1000 nodes, 200 relays, the traffic density.py gives the
+     * core, seeds 1 and 2, every node rotating at once 8 h in, retired): with the board's 1024
+     * destinations, unicast on time is 3 to 10% for the five hours after, against 96.5% (fast)
+     * and 98.5% (US915), and does not recover: every relay needs a place for each old id until its
+     * retraction has run its course, and the new ids find none. With 2048 places (the same, to
+     * the digit, as 4096) it is 85% five hours on and back within a point and a half by 11 to 15.
+     * Averaged over an epoch, rotating daily gives 83.4% and 87.6%, weekly 94.6% and 96.9%. */
+    uint32_t rotate_s;      /* 0 for never */
+    uint32_t rotate_leaves; /* 0 or 1 */
+    uint32_t rotate_spread; /* 0 or 1 */
+    uint32_t rotate_retire; /* 0 or 1 */
+    /* `rotate_count` stops a node after that many rotations, 0 for never: for measuring the hours
+     * after one. `rotate_learn` 1 opens the learning allowance (learn_ppm) again at each rotation,
+     * for LEARN_FOR, as if the relay had just started: what a rotation's new names need told is a
+     * table's worth, as at a start. Needs a firmware with the allowance. */
+    uint32_t rotate_count; /* 0 for no limit */
+    uint32_t rotate_learn; /* 0 or 1 */
 };
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,
