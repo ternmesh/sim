@@ -31,6 +31,11 @@ struct tsim_node {
     struct tsim_timer *timers; /* every timer its plugins hold, so destroy can free them */
     bool off;                  /* powered down: no plugins, no radio (MSH-59) */
     bool air_orphaned;         /* the frame on the air was sent before a power cycle */
+    /* Its radio put to sleep by its routing (tsim_node_radio()), since radio_since; and how long
+     * it has slept before that, over every nap. */
+    bool radio_asleep;
+    tsim_time radio_since;
+    tsim_time radio_slept;
     /* Duty cycle: its frames that may still count in the hour, oldest first, from sent[sent_at];
      * and the kick waiting for the frame it held back. */
     struct burst *sent;
@@ -296,6 +301,10 @@ bool tsim_net_power(struct tsim_net *net, uint32_t node, bool on) {
     if (!on) {
         /* Nothing survives a power cycle: plugins, their timers, the queue, what it held. */
         tsim_phy_power(net->phy, node, false);
+        if (nd->radio_asleep) { /* the nap ends with the power: it comes back up awake */
+            nd->radio_slept += tsim_sched_now(net->sched) - nd->radio_since;
+            nd->radio_asleep = false;
+        }
         nd->off = true;
         nd->air_orphaned = nd->sending;
         tsim_sched_cancel(net->sched, nd->duty_kick);
@@ -678,6 +687,9 @@ uint64_t tsim_node_send(struct tsim_node *nd, const struct tsim_tx *tx) {
         nd->queue = grown;
         nd->queue_cap = cap;
     }
+    /* A frame queued wakes a radio its routing put to sleep, as a board powers its radio to send.
+     */
+    tsim_node_radio(nd, true);
     size_t at = insert_at(nd, tx);
     uint64_t handle = net->next_handle++;
     memmove(&nd->queue[at + 1], &nd->queue[at], (nd->queue_len - at) * sizeof *nd->queue);
@@ -1181,4 +1193,39 @@ void **tsim_node_routing_shared(struct tsim_node *nd) { return &nd->net->routing
 
 tsim_time tsim_node_rx_whole_airtime(const struct tsim_node *nd) {
     return tsim_phy_stats(nd->net->phy, nd->index)->rx_whole_airtime;
+}
+
+bool tsim_node_radio(struct tsim_node *nd, bool on) {
+    if (nd->off) {
+        return false;
+    }
+    if (nd->radio_asleep == !on) {
+        return true;
+    }
+    tsim_time t = tsim_sched_now(nd->net->sched);
+    if (on) {
+        nd->radio_slept += t - nd->radio_since;
+    } else {
+        nd->radio_since = t;
+    }
+    nd->radio_asleep = !on;
+    tsim_phy_power(nd->net->phy, nd->index, on);
+    if (on) {
+        kick(nd);
+    }
+    return true;
+}
+
+bool tsim_node_radio_on(const struct tsim_node *nd) { return !nd->off && !nd->radio_asleep; }
+
+tsim_time tsim_net_radio_slept(const struct tsim_net *net, uint32_t node) {
+    if (node >= net->n) {
+        return 0;
+    }
+    const struct tsim_node *nd = &net->nodes[node];
+    tsim_time t = nd->radio_slept;
+    if (nd->radio_asleep && !nd->off) {
+        t += tsim_sched_now(net->sched) - nd->radio_since;
+    }
+    return t;
 }

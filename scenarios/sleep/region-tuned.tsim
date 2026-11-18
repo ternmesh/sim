@@ -1,0 +1,45 @@
+# Leaves that sleep on the region, as region.tsim, with what docs/sleeping.md recommends of the
+# draft (draft/sleeping.md): a keeper's answers paid as acknowledgements are, not from the
+# requests' share of the cap; six polls unanswered before a leaf takes another keeper, not three;
+# a leaf asleep while its own message waits for its acknowledgement, which its keeper holds; and
+# an announce every 10 minutes, each with a new seq.
+nodes     = 1000
+placement = uniform
+area      = 18000 x 18000
+
+radio.sf       = 7
+radio.bw       = 125000
+radio.cr       = 1
+radio.preamble = 16
+radio.tx_dbm   = 10
+
+routing             = distvec
+mac                 = meshcore
+routing.relay_pick  = cds
+routing.relay_count = 200
+sites.sf            = 7
+sites.bw            = 125000
+
+routing.sleep          = 0.5
+routing.wake           = 300 s
+routing.answer_capped  = no
+routing.poll_tries     = 6
+routing.ack_awake      = no
+routing.sleep_announce = 600 s
+routing.sleep_seq      = yes
+
+duty_cycle = 10%
+
+traffic.interval  = 30 min
+traffic.len       = 16..64
+traffic.broadcast = 0.25
+
+# As the region: six hours to settle, the traffic for the last three, an hour measured. The
+# deadline is how long the run goes on after the window, long enough for a message held through
+# two of the longest wakes measured to arrive; what arrives within 60 s, and within a wake and
+# 60 s, the report's sleep section counts apart. The headline's on time is against it, so read
+# the sleep section, not the headline, for a run with sleepers.
+warmup       = 6 h
+traffic.lead = 3 h
+duration     = 1 h
+deadline     = 3 h

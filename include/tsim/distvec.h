@@ -483,7 +483,31 @@
  * What it measured is in docs/airtime.md.
  *
  * Not yet here, and left out of MSH-41 for an issue of its own: the store-and-forward floor,
- * which only shows its worth under mobility and churn. */
+ * which only shows its worth under mobility and churn.
+ *
+ * Leaves that sleep (the specification's draft/sleeping.md, ternmesh/spec#62), with sleep above 0.
+ * A leaf picked to sleep takes its anchor as its keeper half an hour after it starts, raising its
+ * seq, and from then on has its radio off (tsim_node_radio()) but for `listen` after each frame it
+ * sends. It sends everything to its keeper, and every `wake` polls it:
+ *
+ *     type 0x0F | leaf 4 | keeper 4 | id 2 | wake 2 | listen 1 | power 1
+ *
+ * which the keeper answers, out of the requests' share of its cap with answer_capped:
+ *
+ *     type 0x10 | keeper 4 | leaf 4 | id 2 | margin 1 | held 1 | power 1
+ *
+ * then hands over what it holds. It announces only with its polls, every sleep_announce at most,
+ * with flag bit 1 set; with sleep_seq each raises its seq, since a seqno request cannot reach it
+ * asleep. Other relays do not use a leaf that says it sleeps; its keeper, which it learns from its
+ * polls, holds the frames for it, up to hold_leaf for 2 wake + 60 s, and tells the node before:
+ *
+ *     type 0x11 | type held 1 | source 4 | id 4 | hops 1 | destination 4
+ *
+ * which takes it as the frame passed on. A source waits wake + listen longer for a message to a
+ * leaf that sleeps, as the draft's end-to-end notice would tell it - here a table every node
+ * shares - and without ack_awake a sleeper waits its own wake longer too, asleep, its keeper
+ * holding the acknowledgement. poll_tries polls unanswered in a row take the keeper out of use,
+ * and the leaf takes its next anchor. docs/sleeping.md has what this measured. */
 
 #define TSIM_DISTVEC_METRIC_INF 0xFFFF
 #define TSIM_DISTVEC_NO_PARENT 0xFFFFFFFFu
@@ -729,6 +753,24 @@ struct tsim_distvec_config {
     uint8_t leaf_tries;   /* seqno requests a relay makes for a leaf it has lost, 0 or more */
     double here_window;
     uint8_t here_cancel;
+    /* Leaves that sleep (the specification's draft/sleeping.md, below): the share of leaves that
+     * do, 0 for none; how long each sleeps between polls at most, and listens after each frame it
+     * sends; the frames a keeper holds for each, at least; polls unanswered in a row before a leaf
+     * takes another keeper, and how soon it polls again after one; and the longest between its
+     * announces. */
+    double sleep;
+    tsim_time wake;
+    tsim_time listen;
+    uint8_t hold_leaf;
+    uint8_t poll_tries;
+    tsim_time poll_retry;
+    tsim_time sleep_announce;
+    bool answer_capped; /* a keeper's answers paid from the requests' share of the cap, as the
+                         * draft has it; otherwise as an acknowledgement is, never held */
+    bool ack_awake;     /* a leaf that sleeps listens while a message of its own waits for its
+                         * acknowledgement, as the draft has it; otherwise it sleeps, its keeper
+                         * holds the acknowledgement, and it waits its own wake longer for it */
+    bool sleep_seq;     /* a leaf that sleeps raises its seq with every announce */
     const struct tsim_distvec_oracle
         *oracle_routes; /* with either: set by the driver, never parsed */
 };
@@ -1022,6 +1064,25 @@ struct tsim_distvec_config tsim_distvec_default(uint16_t channel, const struct t
 
 /* Why `config` would be refused, or NULL if it would not. */
 const char *tsim_distvec_check(const struct tsim_distvec_config *config);
+
+/* What a node did as a leaf that sleeps, or as a keeper for one (draft/sleeping.md). */
+struct tsim_distvec_sleep {
+    bool sleeper;          /* a leaf picked to sleep */
+    bool sleeping;         /* sleeping now: it has a keeper */
+    tsim_time slept_since; /* when it last began to sleep, or -1 */
+    uint64_t polls;        /* as a leaf: polls that went on the air */
+    uint64_t answered;     /* ... that its keeper answered */
+    uint64_t keepers;      /* keepers it has taken, its first included */
+    uint64_t answers;      /* as a keeper: poll answers queued */
+    uint64_t held;         /* frames it held for a leaf asleep */
+    uint64_t held_full;    /* ... dropped, the leaf's share of room full */
+    uint64_t held_expired; /* ... dropped, held past 2 w + 60 s */
+    uint64_t handed;       /* ... handed over at a poll */
+    uint64_t released;     /* ... passed on to the leaf's new keeper */
+    uint64_t notices;      /* held notices queued */
+    uint32_t held_peak;    /* the most it held for one leaf at once */
+};
+void tsim_distvec_sleep(const void *self, struct tsim_distvec_sleep *out);
 
 extern const struct tsim_routing tsim_distvec;
 

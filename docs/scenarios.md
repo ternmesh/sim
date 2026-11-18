@@ -252,6 +252,16 @@ default.
 | `routing.leaf_tries` (`distvec`) | 1 | with `routing.reattach`: seqno requests a relay makes for a leaf it has lost its route to, the first a `routing.request_interval` after; it retracts the route if none brings one back, 0 to 254 |
 | `routing.here_window` (`distvec`) | 16 | with `routing.reattach`: the airtimes of its answer a relay not asked after waits at most before answering a solicit |
 | `routing.here_cancel` (`distvec`) | 3 | with `routing.reattach`: answers to the same solicit a relay not asked after hears that cancel its own; 0 never |
+| `routing.sleep` (`distvec`) | 0 | leaves that sleep (the specification's `draft/sleeping.md`, ternmesh/spec#62): the share of leaves picked to, by node number, 0 for none. Wants `routing.links` strength with `routing.reattach`, routed leaves, proactive routes and relays not elected. A sleeper takes its anchor as keeper half an hour after it starts, polls it every `routing.wake`, and has its radio off but for `routing.listen` after each frame it sends; the keeper holds what comes for it and hands it over at a poll. Adds a `sleep` section to the report. See [docs/sleeping.md](sleeping.md) |
+| `routing.wake` (`distvec`) | 300 s | with `routing.sleep`: the longest between a sleeper's polls, 1 s to a day |
+| `routing.listen` (`distvec`) | 2 s | with `routing.sleep`: how long a sleeper listens after each frame it sends, 0.1 to 255 s |
+| `routing.hold_leaf` (`distvec`) | 8 | with `routing.sleep`: frames a keeper holds for each sleeper; one more is dropped |
+| `routing.poll_tries` (`distvec`) | 3 | with `routing.sleep`: polls unanswered in a row before a sleeper takes another keeper (6 recommended: see docs/sleeping.md) |
+| `routing.poll_retry` (`distvec`) | 10 s | with `routing.sleep`: how soon a sleeper polls again after a poll unanswered |
+| `routing.sleep_announce` (`distvec`) | 3600 s | with `routing.sleep`: the longest between a sleeper's announces, which go with its polls (600 s recommended) |
+| `routing.sleep_seq` (`distvec`) | `no` | with `routing.sleep`: a sleeper raises its seq with every announce, so routes to it that starved come back without a request it is asleep for (recommended) |
+| `routing.answer_capped` (`distvec`) | `yes` | with `routing.sleep`: a keeper pays for its poll answers from the requests' share of the cap, as the draft has it; `no` charges them as acknowledgements, never held (recommended) |
+| `routing.ack_awake` (`distvec`) | `yes` | with `routing.sleep`: a sleeper listens while its own message waits for its acknowledgement, as the draft has it; `no` sleeps, its keeper holding the acknowledgement, and waits its own wake longer (recommended) |
 | `routing.oracle_margin` (`distvec`) | 3 | dB above the floor, at `radio.tx_dbm` by the mean loss, that both ends of a link the oracle uses must have, 0 to 60; for `routing.links` oracle too |
 | `routing.relay_pick`, `routing.relay_count` (`core`) | `list`, 0 | relays picked as `distvec`'s infrastructure is (above), so both run over the same sites; `list` makes every node a relay. The core has nothing that chooses relays, and `elect` is not offered |
 | `routing.tx_min_dbm` (`core`) | -9 | the least a node sends at; its most is `radio.tx_dbm`. Both are rounded to a whole dBm, as a radio takes them |

@@ -928,6 +928,36 @@ static const char *distvec_set(void *config, const char *key, const char *value)
     if (strcmp(key, "oracle_margin") == 0) {
         return distvec_factor(value, 0, 60, &c->oracle_margin_db);
     }
+    if (strcmp(key, "sleep") == 0) {
+        return parse_fraction(value, &c->sleep) ? NULL : "expected a fraction from 0 to 1";
+    }
+    if (strcmp(key, "wake") == 0) {
+        return distvec_time(value, false, &c->wake);
+    }
+    if (strcmp(key, "listen") == 0) {
+        return distvec_time(value, false, &c->listen);
+    }
+    if (strcmp(key, "hold_leaf") == 0) {
+        return distvec_count(value, 1, UINT8_MAX, &c->hold_leaf);
+    }
+    if (strcmp(key, "poll_tries") == 0) {
+        return distvec_count(value, 1, UINT8_MAX, &c->poll_tries);
+    }
+    if (strcmp(key, "poll_retry") == 0) {
+        return distvec_time(value, false, &c->poll_retry);
+    }
+    if (strcmp(key, "sleep_seq") == 0) {
+        return parse_yes_no(value, &c->sleep_seq) ? NULL : "expected yes or no";
+    }
+    if (strcmp(key, "ack_awake") == 0) {
+        return parse_yes_no(value, &c->ack_awake) ? NULL : "expected yes or no";
+    }
+    if (strcmp(key, "answer_capped") == 0) {
+        return parse_yes_no(value, &c->answer_capped) ? NULL : "expected yes or no";
+    }
+    if (strcmp(key, "sleep_announce") == 0) {
+        return distvec_time(value, false, &c->sleep_announce);
+    }
     return "is not a setting of distvec";
 }
 
@@ -2581,6 +2611,7 @@ struct window {
     struct announces *announces;              /* with report.announces */
     struct costs *costs;                      /* with the core and a firmware that counts */
     struct floods *floods;                    /* with report.floods */
+    struct sleepers *sleepers;                /* with distvec's sleep */
     bool failed;
     tsim_time begun;
     struct tsim_distvec_stats stats;
@@ -2655,6 +2686,180 @@ static void elected(struct window *w) {
     }
 }
 
+/* Leaves that sleep: each node's books as the window begins, against which its end is read. */
+struct sleepers {
+    tsim_time *slept; /* as the window begins */
+    tsim_time *air;
+    struct tsim_distvec_sleep *st;
+    tsim_time *slept_end; /* and as it ends */
+    tsim_time *air_end;
+    struct tsim_distvec_sleep *st_end;
+};
+
+static void sleepers_free(struct sleepers *z) {
+    free(z->slept);
+    free(z->air);
+    free(z->st);
+    free(z->slept_end);
+    free(z->air_end);
+    free(z->st_end);
+}
+
+static void sleepers_snap(struct tsim_net *net, tsim_time *slept, tsim_time *air,
+                          struct tsim_distvec_sleep *st) {
+    for (uint32_t i = 0; i < tsim_net_nodes(net); i++) {
+        struct tsim_ledger l;
+        tsim_net_ledger_now(net, i, &l);
+        air[i] = tsim_ledger_airtime(&l);
+        slept[i] = tsim_net_radio_slept(net, i);
+        const void *r = tsim_net_routing(net, i);
+        st[i] = (struct tsim_distvec_sleep){0};
+        if (r) {
+            tsim_distvec_sleep(r, &st[i]);
+        }
+    }
+}
+
+static int by_time(const void *a, const void *b) {
+    tsim_time x = *(const tsim_time *)a, y = *(const tsim_time *)b;
+    return (x > y) - (x < y);
+}
+
+static void sleep_add(struct tsim_sleep_delivery *d, const struct tsim_message_record *rec,
+                      tsim_time wake, tsim_time *lat, size_t *n) {
+    d->wanted++;
+    if (!rec->delivered) {
+        d->lost[rec->drop.cause <= TSIM_DROP_COUNT ? rec->drop.cause : TSIM_DROP_COUNT]++;
+        return;
+    }
+    tsim_time l = rec->first - rec->msg.created;
+    d->delivered++;
+    d->in_60s += l <= TSIM_S(60);
+    d->in_wake += l <= wake + TSIM_S(60);
+    lat[(*n)++] = l;
+}
+
+static void sleep_latency(struct tsim_sleep_delivery *d, tsim_time *lat, size_t n) {
+    if (!n) {
+        return;
+    }
+    qsort(lat, n, sizeof *lat, by_time);
+    d->latency_p50 = lat[n / 2];
+    d->latency_p95 = lat[(size_t)((double)(n - 1) * 0.95)];
+    d->latency_max = lat[n - 1];
+}
+
+static void sleepers_end(struct tsim_sched *sched, void *ctx);
+
+static bool sleep_report(const struct sleepers *z, struct tsim_net *net, tsim_time begun,
+                         tsim_time end, const struct tsim_distvec_config *dv,
+                         struct tsim_sleep_report *out) {
+    uint32_t n = tsim_net_nodes(net);
+    tsim_time *slept = z->slept_end, *air = z->air_end;
+    struct tsim_distvec_sleep *st = z->st_end;
+    uint8_t *kind = calloc(n, 1); /* 0 relay, 1 a leaf that sleeps, 2 one that listens */
+    uint64_t count = tsim_net_message_count(net);
+    tsim_time *lat[4] = {0};
+    size_t lat_n[4] = {0};
+    for (int k = 0; k < 4; k++) {
+        lat[k] = malloc((count ? count : 1) * sizeof **lat);
+    }
+    bool ok = slept && air && st && kind && lat[0] && lat[1] && lat[2] && lat[3];
+    if (ok) {
+        *out = (struct tsim_sleep_report){.present = true, .wake = dv->wake};
+        double span = (double)(end - begun), on[2] = {0}, tx[2] = {0}, all_air = 0, polls = 0,
+               answered = 0, keepers = 0, poll_air = 0;
+        struct tsim_lora l = dv->lora;
+        double poll_ns = (double)tsim_lora_airtime(&l, 15),
+               answer_ns = (double)tsim_lora_airtime(&l, 14);
+        for (uint32_t i = 0; i < n; i++) {
+            const void *r = tsim_net_routing(net, i);
+            double a = (double)(air[i] - z->air[i]);
+            all_air += a;
+            poll_air += (double)(st[i].polls - z->st[i].polls) * poll_ns +
+                        (double)(st[i].answers - z->st[i].answers) * answer_ns;
+            out->polls += st[i].polls - z->st[i].polls;
+            out->answers += st[i].answers - z->st[i].answers;
+            out->held += st[i].held - z->st[i].held;
+            out->held_full += st[i].held_full - z->st[i].held_full;
+            out->held_expired += st[i].held_expired - z->st[i].held_expired;
+            out->handed += st[i].handed - z->st[i].handed;
+            out->released += st[i].released - z->st[i].released;
+            out->notices += st[i].notices - z->st[i].notices;
+            out->held_peak = st[i].held_peak > out->held_peak ? st[i].held_peak : out->held_peak;
+            if (!r || tsim_distvec_infra(r)) {
+                continue;
+            }
+            int c = st[i].sleeper ? 0 : 1;
+            kind[i] = (uint8_t)(c + 1);
+            double asleep = (double)(slept[i] - z->slept[i]);
+            on[c] += (span - asleep) / span;
+            tx[c] += a / span;
+            if (c == 0) {
+                out->sleepers++;
+                out->sleeping += st[i].sleeping;
+                polls += (double)(st[i].polls - z->st[i].polls);
+                answered += (double)(st[i].answered - z->st[i].answered);
+                keepers += (double)(st[i].keepers - z->st[i].keepers);
+            } else {
+                out->listeners++;
+            }
+        }
+        double hours = span / (double)TSIM_S(3600);
+        for (int c = 0; c < 2; c++) {
+            uint32_t m = c ? out->listeners : out->sleepers;
+            double o = m ? on[c] / m : 0, x = m ? tx[c] / m : 0;
+            /* Radio only, from the SX1262's datasheet: receiving, sending at 22 dBm, asleep. */
+            double ua = 1000 * (x * 118 + (o - x) * 4.6) + (1 - o) * 1.0;
+            *(c ? &out->listener_on : &out->sleeper_on) = o;
+            *(c ? &out->listener_tx : &out->sleeper_tx) = x;
+            *(c ? &out->listener_ua : &out->sleeper_ua) = ua;
+        }
+        out->polls_per_h = out->sleepers ? polls / out->sleepers / hours : 0;
+        out->answered = polls > 0 ? answered / polls : 0;
+        out->keepers_per_h = out->sleepers ? keepers / out->sleepers / hours : 0;
+        out->poll_share = all_air > 0 ? poll_air / all_air : 0;
+        for (uint64_t id = 1; id <= count; id++) {
+            const struct tsim_message_record *rec = tsim_net_message(net, id);
+            if (rec->msg.dst == TSIM_BROADCAST || rec->msg.card || rec->msg.created < begun ||
+                rec->msg.created >= end) {
+                continue;
+            }
+            uint8_t to = kind[rec->msg.dst], from = kind[rec->msg.src];
+            if (to == 1) {
+                sleep_add(&out->to_sleepers, rec, dv->wake, lat[0], &lat_n[0]);
+            } else if (to == 2) {
+                sleep_add(&out->to_listeners, rec, dv->wake, lat[1], &lat_n[1]);
+            }
+            if (from == 1) {
+                sleep_add(&out->from_sleepers, rec, dv->wake, lat[2], &lat_n[2]);
+            } else if (from == 2) {
+                sleep_add(&out->from_listeners, rec, dv->wake, lat[3], &lat_n[3]);
+            }
+        }
+        sleep_latency(&out->to_sleepers, lat[0], lat_n[0]);
+        sleep_latency(&out->to_listeners, lat[1], lat_n[1]);
+        sleep_latency(&out->from_sleepers, lat[2], lat_n[2]);
+        sleep_latency(&out->from_listeners, lat[3], lat_n[3]);
+    }
+    free(kind);
+    for (int k = 0; k < 4; k++) {
+        free(lat[k]);
+    }
+    return ok;
+}
+
+struct sleepers_at {
+    struct sleepers *z;
+    struct tsim_net *net;
+};
+
+static void sleepers_end(struct tsim_sched *sched, void *ctx) {
+    (void)sched;
+    struct sleepers_at *a = ctx;
+    sleepers_snap(a->net, a->z->slept_end, a->z->air_end, a->z->st_end);
+}
+
 static void begin_window(struct tsim_sched *sched, void *ctx) {
     (void)sched;
     struct window *w = ctx;
@@ -2678,6 +2883,9 @@ static void begin_window(struct tsim_sched *sched, void *ctx) {
     }
     if (w->floods && !floods_start(w->floods, w->net)) {
         w->failed = true;
+    }
+    if (w->sleepers) {
+        sleepers_snap(w->net, w->sleepers->slept, w->sleepers->air, w->sleepers->st);
     }
 }
 
@@ -3024,6 +3232,8 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     struct announces announces = {0};
     struct costs costs = {0};
     struct floods floods = {0};
+    struct sleepers sleepers = {0};
+    struct sleepers_at sleepers_at = {0};
     bool *flood_relay = NULL;
     bool ok = false;
     /* The oracle's routes are the driver's to hand down: the plugin is given where they will be,
@@ -3147,6 +3357,22 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         }
         window.dv = dv;
         window.announces = s->report_announces ? &announces : NULL;
+        if (dv->sleep > 0) {
+            sleepers.slept = malloc(s->nodes * sizeof *sleepers.slept);
+            sleepers.air = malloc(s->nodes * sizeof *sleepers.air);
+            sleepers.st = calloc(s->nodes, sizeof *sleepers.st);
+            sleepers.slept_end = malloc(s->nodes * sizeof *sleepers.slept_end);
+            sleepers.air_end = malloc(s->nodes * sizeof *sleepers.air_end);
+            sleepers.st_end = calloc(s->nodes, sizeof *sleepers.st_end);
+            sleepers_at = (struct sleepers_at){&sleepers, net};
+            if (!sleepers.slept || !sleepers.air || !sleepers.st || !sleepers.slept_end ||
+                !sleepers.air_end || !sleepers.st_end ||
+                tsim_sched_at(sched, s->warmup + s->duration, sleepers_end, &sleepers_at).slot ==
+                    0) {
+                goto done;
+            }
+            window.sleepers = &sleepers;
+        }
     }
 #if defined(TSIM_HAVE_CORE) && defined(TSIM_FIRMWARE_ROUTE_COUNTS)
     if (metrics && s->routing->routing == &tsim_core) {
@@ -3268,6 +3494,10 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     if (window.floods && !window.failed && !floods_report(&floods, net, &report->floods)) {
         window.failed = true;
     }
+    if (window.sleepers && !window.failed &&
+        !sleep_report(&sleepers, net, window.begun, s->warmup + s->duration, dv, &report->sleep)) {
+        window.failed = true;
+    }
     ok = !churn.failed && !moving.failed && !window.failed &&
          tsim_phy_links(tsim_net_phy(net), &s->radio.lora, s->radio.tx_dbm, &report->links);
     if (ok && dv && (dv->relay_pick != TSIM_DISTVEC_PICK_LIST || strcmp(dv->relays, "all") != 0)) {
@@ -3297,6 +3527,7 @@ done:
     announces_free(&announces); /* the network that called into it is gone */
     costs_free(&costs);
     floods_free(&floods);
+    sleepers_free(&sleepers);
     free(flood_relay);
     free(window.relay);
     tsim_sched_destroy(sched);

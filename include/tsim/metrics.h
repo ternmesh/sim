@@ -307,6 +307,43 @@ struct tsim_quiet {
     uint64_t broadcast_on_time;
 };
 
+/* Leaves that sleep (distvec's routing.sleep, the specification's draft/sleeping.md), over the
+ * window: unicasts to the leaves picked to sleep and to the leaves that listen, with how many
+ * arrived at all before the run ended, within 60 s, and within the wake and 60 s more; what their
+ * radios did; and what their keepers held. Only tsim_scenario_run() fills it, and only with sleep
+ * above 0. The current is an estimate from datasheet figures for an SX1262 - 4.6 mA receiving,
+ * 118 mA sending at 22 dBm, 1 uA asleep - of the radio alone, not a measurement. */
+struct tsim_sleep_delivery {
+    uint64_t wanted;
+    uint64_t delivered;
+    uint64_t in_60s;
+    uint64_t in_wake;
+    /* Of those never delivered, by the cause of the first drop booked for them (enum tsim_drop),
+     * the last for none. */
+    uint64_t lost[TSIM_DROP_COUNT + 1];
+    tsim_time latency_p50;
+    tsim_time latency_p95;
+    tsim_time latency_max;
+};
+struct tsim_sleep_report {
+    bool present;
+    tsim_time wake;
+    uint32_t sleepers;  /* leaves picked to sleep */
+    uint32_t sleeping;  /* of them, sleeping as the run ends */
+    uint32_t listeners; /* leaves that listen */
+    struct tsim_sleep_delivery to_sleepers, to_listeners, from_sleepers, from_listeners;
+    double sleeper_on, listener_on; /* the window's share their radios were on, on average */
+    double sleeper_tx, listener_tx; /* ... and sending */
+    double sleeper_ua, listener_ua; /* the radio's mean current, estimated */
+    double polls_per_h;             /* each sleeper's */
+    double answered;                /* of its polls, the share its keeper answered */
+    double poll_share;              /* of every node's airtime, polls' and answers' */
+    double keepers_per_h;           /* keepers taken, each sleeper, after the first */
+    uint64_t polls, answers; /* polls sent by every sleeper, answers queued by every keeper */
+    uint64_t held, held_full, held_expired, handed, released, notices;
+    uint32_t held_peak; /* the most one keeper held for one leaf at once, over the run */
+};
+
 struct tsim_report {
     tsim_time elapsed; /* the measured window so far, which every duty cycle is a fraction of */
     tsim_time deadline;
@@ -367,6 +404,7 @@ struct tsim_report {
     struct tsim_losses losses;
     struct tsim_budget_report budget;
     struct tsim_quiet quiet;
+    struct tsim_sleep_report sleep;
     /* With flows (tsim/traffic.h, tsim_metrics_flows()), each one's messages - which are in the
      * unicast and broadcast above as well - and, of a flow's broadcasts with a reach, how many
      * nodes beyond it were reached all the same: the airtime a scope would save, or a flood

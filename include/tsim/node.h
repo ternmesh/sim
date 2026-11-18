@@ -301,4 +301,13 @@ tsim_time tsim_node_rx_whole_airtime(const struct tsim_node *node);
 /* Retunes the receiver; see tsim_phy_tune(). */
 bool tsim_node_tune(struct tsim_node *node, uint16_t channel, const struct tsim_lora *listen);
 
+/* Puts the radio to sleep, or wakes it, keeping everything else: the routing, its timers and the
+ * queue. Asleep, it hears nothing - a frame meant for it is booked deaf - senses no carrier and
+ * sends nothing, and what it was receiving is lost, though a frame it is sending runs to its end;
+ * a frame queued wakes it, as a board powers its radio to send. For a protocol whose nodes sleep:
+ * it can only lose by it, and the time asleep is booked (tsim_net_radio_slept()). Radios start
+ * awake, and a power cycle wakes one. Returns false for a node powered down. */
+bool tsim_node_radio(struct tsim_node *node, bool on);
+bool tsim_node_radio_on(const struct tsim_node *node);
+
 #endif
