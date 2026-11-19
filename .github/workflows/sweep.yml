@@ -1,0 +1,98 @@
+name: Sweep
+
+# Long measurements on GitHub's runners rather than someone's laptop: tools/rotate.py, one job per
+# preset, against a chosen commit of ternmesh/firmware. Each job puts its table in the run's summary
+# and its JSON in an artifact. Run it from the Actions tab once this file is on main, or on a pull
+# request by adding the `sweep` label, which runs the DEFAULT_* settings below as the pull request
+# has them: a pull request that wants a sweep sets those, and the firmware it needs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      firmware_ref:
+        description: ternmesh/firmware commit, branch or tag to build the core from
+        required: true
+      presets:
+        description: JSON list of rotate.py presets (fast, us915, deployed)
+        default: '["fast", "us915", "deployed"]'
+      variants:
+        description: rotate.py --variants, comma-separated; empty for all
+        default: ""
+      seeds:
+        description: rotate.py --seeds
+        default: "2"
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+env:
+  DEFAULT_FIRMWARE_REF: claude/retire-experiment
+  DEFAULT_PRESETS: '["fast", "us915", "deployed"]'
+  DEFAULT_VARIANTS: none,all,epoch,epoch-loss
+  DEFAULT_SEEDS: "2"
+
+jobs:
+  settings:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'sweep'
+    runs-on: ubuntu-24.04
+    outputs:
+      firmware_ref: ${{ steps.s.outputs.firmware_ref }}
+      presets: ${{ steps.s.outputs.presets }}
+      variants: ${{ steps.s.outputs.variants }}
+      seeds: ${{ steps.s.outputs.seeds }}
+    steps:
+      - id: s
+        env:
+          FIRMWARE_REF: ${{ inputs.firmware_ref || env.DEFAULT_FIRMWARE_REF }}
+          PRESETS: ${{ inputs.presets || env.DEFAULT_PRESETS }}
+          VARIANTS: ${{ github.event_name == 'workflow_dispatch' && inputs.variants || env.DEFAULT_VARIANTS }}
+          SEEDS: ${{ inputs.seeds || env.DEFAULT_SEEDS }}
+        run: |
+          {
+            echo "firmware_ref=$FIRMWARE_REF"
+            echo "presets=$PRESETS"
+            echo "variants=$VARIANTS"
+            echo "seeds=$SEEDS"
+          } >> "$GITHUB_OUTPUT"
+
+  rotate:
+    needs: settings
+    name: rotate (${{ matrix.preset }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: ${{ fromJSON(needs.settings.outputs.presets) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ternmesh/firmware
+          ref: ${{ needs.settings.outputs.firmware_ref }}
+          path: firmware
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          -DTSIM_FIRMWARE_DIR=$PWD/firmware -DTSIM_REQUIRE_CORE=ON
+      - run: cmake --build build
+      - name: tools/rotate.py
+        env:
+          PRESET: ${{ matrix.preset }}
+          VARIANTS: ${{ needs.settings.outputs.variants }}
+          SEEDS: ${{ needs.settings.outputs.seeds }}
+        run: |
+          python3 tools/rotate.py --tsim build/tsim --jobs "$(nproc)" --presets "$PRESET" \
+            --seeds "$SEEDS" ${VARIANTS:+--variants "$VARIANTS"} --json "rotate-$PRESET.json" \
+            | tee "rotate-$PRESET.txt"
+          {
+            echo "### rotate.py, $PRESET, firmware ${{ needs.settings.outputs.firmware_ref }}"
+            echo '```'
+            cat "rotate-$PRESET.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rotate-${{ matrix.preset }}
+          path: rotate-${{ matrix.preset }}.*

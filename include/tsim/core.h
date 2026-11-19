@@ -576,11 +576,12 @@ struct tsim_core_config {
      * experiment (tern_route_retire(), TERN_ROUTE_RETIRED; needs a firmware that has it): each
      * neighbour that holds the old id hears the node's retirement, as a signed announce under the
      * old key would bring it, unless it is lost (`retire_loss_ppm`, millionths, each neighbour on
-     * its own); a relay that hears it frees the place at once and passes it on in its announces,
-     * RETRACTS times, and so on across the network, as a listing a relay hears of does. Nothing
-     * else learns of it: what is not heard is forgotten as a silent route is.
-     * `retired_places` is the retirements each node keeps (0: as many as its destinations), and
-     * `retire_for_s` how long it refuses a route to one (0: the firmware's default). */
+     * its own, and with rotate_retire 1 as well); a relay that hears it frees the place at once and
+     * passes it on in its announces, RETRACTS times, and so on across the network, as a listing a
+     * relay hears of does. Nothing else learns of it: what is not heard is forgotten as a silent
+     * route is. `retired_places` is the retirements each node keeps (0: as many as its
+     * destinations), and `retire_for_s` how long it refuses a route to one (0: the firmware's
+     * default). */
     uint32_t retire_loss_ppm; /* 0 to 1000000 */
     uint32_t retired_places;  /* 0 for as many as destinations */
     uint32_t retire_for_s;    /* 0 for the firmware's */

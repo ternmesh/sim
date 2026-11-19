@@ -814,6 +814,16 @@ static void rotate_name(struct network *n, uint32_t self) {
     qsort(n->by_id, n->count, sizeof *n->by_id, by_id_cmp);
 }
 
+/* Whether neighbour `k` misses the retirement of `old`, `retire_loss_ppm` of the time. */
+static bool retirement_lost(const struct router *r, uint32_t k, uint32_t old) {
+    uint64_t x =
+        ((uint64_t)k << 32 ^ old) * 0x9E3779B97F4A7C15u ^ r->net->epoch[tsim_node_index(r->node)];
+    x ^= x >> 29;
+    x *= 0xBF58476D1CE4E5B9u;
+    x ^= x >> 32;
+    return x % 1000000u < r->config.retire_loss_ppm;
+}
+
 static void rotate_fire(void *ctx) {
     struct router *r = ctx;
     struct network *n = r->net;
@@ -842,11 +852,7 @@ static void rotate_fire(void *ctx) {
             }
             for (uint32_t i = 0; i < o->config.neighbours; i++) {
                 if (o->neighbours[i].used && o->neighbours[i].id == old) {
-                    uint64_t x = ((uint64_t)k << 32 ^ old) * 0x9E3779B97F4A7C15u ^ n->epoch[self];
-                    x ^= x >> 29;
-                    x *= 0xBF58476D1CE4E5B9u;
-                    x ^= x >> 32;
-                    if (x % 1000000u >= r->config.retire_loss_ppm) {
+                    if (!retirement_lost(r, k, old)) {
                         tern_route_retire(&o->route, now, old);
                         service(o);
                     }
@@ -866,6 +872,9 @@ static void rotate_fire(void *ctx) {
             }
             for (uint32_t i = 0; i < o->config.neighbours; i++) {
                 if (o->neighbours[i].used && o->neighbours[i].id == old) {
+                    if (retirement_lost(r, k, old)) {
+                        break;
+                    }
                     uint8_t dead = o->route.config.dead_hops;
                     o->neighbours[i].lost = 0;
                     o->route.config.dead_hops = 1;

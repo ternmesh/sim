@@ -38,6 +38,7 @@ tern_route_retire() and tern_route_epoch() in tern/route.h):
   net-once-loss  as net-once, a fifth of the neighbours missing the node's own retirement
   epoch        nothing sent beyond all: each node marks its places old at the epoch's start, and a
                new destination takes one when the table is full
+  epoch-loss   as epoch, a fifth of the neighbours missing the node's own retirement
   epoch-silent the same, without even the neighbours told: nothing at all on the air
   epoch-net    epoch and net-once together
 
@@ -93,6 +94,8 @@ VARIANTS = {
     "net-once-loss": (["routing.rotate_retire=2", "routing.retire_repeats=1",
                        "routing.retire_loss_ppm=200000"] + ONCE, AFTER + [8, 11]),
     "epoch": (["routing.rotate_retire=1", "routing.rotate_epoch=1"] + ONCE, AFTER + [8, 11]),
+    "epoch-loss": (["routing.rotate_retire=1", "routing.rotate_epoch=1",
+                    "routing.retire_loss_ppm=200000"] + ONCE, AFTER + [8, 11]),
     "epoch-silent": (["routing.rotate_retire=0", "routing.rotate_epoch=1"] + ONCE,
                      AFTER + [8, 11]),
     "epoch-net": (["routing.rotate_retire=2", "routing.retire_repeats=1", "routing.rotate_epoch=1"]
