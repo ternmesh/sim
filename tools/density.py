@@ -41,6 +41,16 @@ and, where a run keeps Tern's airtime budget (-s airtime.budget=on or shadow; do
   busy     the same at the ten nodes asked to pass on the most
   hit      of the unicasts with a frame dropped on the way, the share delivered on time all the same
 
+where the firmware's core keeps it (--candidates core -s airtime.budget=on), its own code deciding
+and not the network's model (tsim/core.h, budget_on), in place of those:
+
+  drop     frames passed on that the forwarder dropped for the budget, as a share of those it took
+  fdrop    flooded frames passed on dropped for the flood allowance or the budget, as a share
+
+and, with chatty nodes (-s traffic.chatty), the other nodes' unicast and broadcast on time apart:
+
+  quiet_uni, quiet_bc
+
 churn and move each take a run of their own for every case, so the sweep takes three times as
 long; --quick leaves them out. With -s routing.relay_pick=elect there are no sites when churn and
 movement pick their nodes, so those runs take theirs from every node, as flooding's do.
@@ -101,6 +111,8 @@ FAST = {s: s.replace(".tsim", "-fast.tsim") for _, s in CANDIDATES}
 METRICS = ["unicast", "bcast", "p50", "p95", "b50", "b95", "per_s", "uni_s", "bc_s", "duty",
            "churn", "move", "links", "reach"]
 BUDGET = ["held", "drop", "busy", "hit"]
+CORE_BUDGET = ["drop", "fdrop"]
+QUIET = ["quiet_uni", "quiet_bc"]
 
 # The stresses the scorecard's churn and move columns are measured under: over the sites where
 # there are sites, and the same number of nodes from all of them where there are none.
@@ -158,6 +170,16 @@ def run(tsim, scenario, power, seed, sets):
             "short_acks": bd["short_acks"],
             "wait_mean_s": bd["wait_mean_s"],  # null in shadow mode: no wait is modelled
             "unicast_hit": bd["unicast_hit"],
+        })
+    cb = r.get("core_budget")
+    if cb:
+        # The core keeping the firmware's own budget: frames passed on that its forwarder dropped
+        # for the budget, and those its flooder dropped for its allowance or the budget.
+        out.update({
+            "drop": (100.0 * cb["unpaid"] / cb["passed_on"] if cb["passed_on"] else 0.0),
+            "fdrop": (100.0 * cb["flood_unpaid"] / cb["flood_passed_on"]
+                      if cb["flood_passed_on"] else 0.0),
+            "core_budget": cb,
         })
     return out
 
@@ -269,6 +291,10 @@ def main():
     metrics = [m for m in METRICS if m not in STRESS or m in stresses]
     if any("held" in r for r in runs):
         metrics += BUDGET
+    elif any("fdrop" in r for r in runs):
+        metrics += CORE_BUDGET
+    if any("quiet_uni" in r for r in runs):
+        metrics += QUIET
     width = 14
     print("%-13s %6s" % ("candidate", "dBm") + "".join("%*s" % (width, m) for m in metrics))
     for name, _ in chosen:

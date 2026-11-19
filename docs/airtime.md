@@ -74,9 +74,14 @@ at most 32 of its own frames waiting, a board's companion link's worth (LINK_MES
 is refused. `airtime.budget = shadow` sends everything and counts what would have waited or been
 dropped.
 
-The core is not measured. The firmware's forwarder has no way to drop a frame it was handed to pass
-on: withdrawn, it goes back to the forwarder's queue and is offered again. That is for the firmware
-to add.
+The tables below are candidate 3 with the network's model of the budget. The firmware's core keeps
+its own: since firmware#85 its forwarder drops a frame passed on that its relayed part cannot pay
+for, and with `-s airtime.budget=on` the `core` routing hands each node's forwarder and flooder the
+firmware's budget (`tsim/core.h`, `budget_on`), so that the firmware's code, not this model, holds
+and drops its frames; the network keeps none for it. density.py prints `drop` and `fdrop` for those
+runs. The `Budget` workflow (`.github/workflows/budget.yml`) runs the core with the budget off and
+on, on the fast and deployed presets, at the comparison's load, six times it, and with chatty
+nodes.
 
 ## How it was run
 
@@ -275,7 +280,7 @@ wait, or on how many may, belongs in the specification with the companion protoc
 
 ## Not done
 
-- The core: the firmware's forwarder cannot drop a frame it was given to pass on (above).
+- The core through the firmware's own budget: the `Budget` workflow runs it (above); its results are not yet here.
 - Churn and movement (`--quick` leaves them out), and the windows: `BUDGET_RELAY_WINDOW` and
   `BUDGET_OWN_WINDOW` were not swept.
 - A field workload: the chatty nodes are a stand-in, a fixed share at one fixed rate.

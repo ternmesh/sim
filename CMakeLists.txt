@@ -78,6 +78,16 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
     )
     target_include_directories(terncore PUBLIC ${TSIM_FIRMWARE_DIR}/include)
     target_compile_options(terncore PRIVATE ${TSIM_WARNINGS})
+    # A firmware whose forwarder and flooder keep to an airtime budget (the specification's
+    # draft/airtime.md, firmware#85) has its budget measured: the firmware's own code holds and
+    # drops the core's frames when airtime.budget is on, not the network's model of it.
+    file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/forward.h" TSIM_FORWARD_BUDGET
+         REGEX "tern_forward_budget\\(")
+    if(TSIM_FORWARD_BUDGET AND EXISTS "${TSIM_FIRMWARE_DIR}/src/airtime.c")
+        target_sources(terncore PRIVATE ${TSIM_FIRMWARE_DIR}/src/airtime.c)
+        target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_BUDGET)
+        message(STATUS "Core routing: with the firmware's airtime budget")
+    endif()
     target_sources(ternsim PRIVATE src/core.c)
     target_link_libraries(ternsim PUBLIC terncore)
     target_compile_definitions(ternsim PUBLIC TSIM_HAVE_CORE)
