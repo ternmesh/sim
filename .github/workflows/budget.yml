@@ -66,6 +66,7 @@ jobs:
           B: ${{ matrix.load.b }}
         # Each of the load's settings is one -s argument, spaces and all: "traffic.interval=5 min".
         run: |
+          set -o pipefail
           sets=()
           if [ -n "$A" ]; then sets+=(-s "$A"); fi
           if [ -n "$B" ]; then sets+=(-s "$B"); fi
@@ -74,7 +75,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           for b in off on; do
             python3 tools/density.py --tsim build/tsim --"$PRESET" --quick --candidates core \
-              --seeds "$SEEDS" --power -5,0,20 --jobs "$(nproc)" \
+              --seeds "$SEEDS" --power=-5,0,20 --jobs "$(nproc)" \
               --json "budget-$PRESET-$LOAD-$b.json" -s "airtime.budget=$b" "${sets[@]}" \
               | tee "budget-$PRESET-$LOAD-$b.txt"
             {
