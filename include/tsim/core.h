@@ -571,7 +571,52 @@ struct tsim_core_config {
     uint32_t rotate_s;      /* 0 for never */
     uint32_t rotate_leaves; /* 0 or 1 */
     uint32_t rotate_spread; /* 0 or 1 */
-    uint32_t rotate_retire; /* 0 or 1 */
+    uint32_t rotate_retire; /* 0, 1 or 2 */
+    /* `rotate_retire` 2 retires the old id on the air, with the firmware's retired-destinations
+     * experiment (tern_route_retire(), TERN_ROUTE_RETIRED; needs a firmware that has it): each
+     * neighbour that holds the old id hears the node's retirement, as a signed announce under the
+     * old key would bring it, unless it is lost (`retire_loss_ppm`, millionths, each neighbour on
+     * its own, and with rotate_retire 1 as well); a relay that hears it frees the place at once and
+     * passes it on in its announces, RETRACTS times, and so on across the network, as a listing a
+     * relay hears of does. Nothing else learns of it: what is not heard is forgotten as a silent
+     * route is. `retired_places` is the retirements each node keeps (0: as many as its
+     * destinations), and `retire_for_s` how long it refuses a route to one (0: the firmware's
+     * default). */
+    uint32_t retire_loss_ppm; /* 0 to 1000000 */
+    uint32_t retired_places;  /* 0 for as many as destinations */
+    uint32_t retire_for_s;    /* 0 for the firmware's */
+    /* `retire_repeats`: times each retirement goes on the air, 0 for the firmware's RETRACTS.
+     * `rotate_epoch` 1: at each rotation every node marks the places it holds as made before the
+     * epoch (tern_route_epoch()), and with its table full a new destination takes one of those,
+     * at no cost on the air. Only for every node rotating at once: a node that does not rotate
+     * has its place given up as readily. Both need a firmware with retired destinations. */
+    /*
+     * Measured with tools/rotate.py (as above, board's 1024 places, every node at once, seeds 1
+     * and 2), unicast on time averaged over a weekly epoch, fast, US915 and the slow preset
+     * (deployed, with --interval "4 h" --settle 16), against 97.6%, 98.7% and 96.8% with no
+     * rotation:
+     *                                                            fast  US915   slow
+     *   rotate_retire 1 (neighbours told; the old analysis)      9.0%  25.4%
+     *   rotate_retire 2, retirements sent RETRACTS (3) times     6.6%  42.4%
+     *   rotate_retire 2, retire_repeats 1                       95.5%  96.6%
+     *   the same, a fifth of neighbours missing the node's own  92.3%  56.1%
+     *   rotate_epoch, neighbours told (rotate_retire 1)         96.2%  97.4%  81.6%
+     *   the same, a fifth missing                               85.1%  67.6%
+     *   rotate_epoch, nothing told (rotate_retire 0)            68.9%  61.9%
+     *   rotate_epoch and rotate_retire 2, repeats 1             95.5%  95.4%
+     *   rotate_epoch, epoch_grace_s 300, neighbours told        96.2%  97.4%  81.6%
+     *   the same, a fifth missing                               92.2%  97.4%  80.0%
+     *   the same, nothing told                                  89.4%  96.0%  76.3%
+     * Sent three times, every relay's retirements take hours of its cap, and the new names wait
+     * behind them. Once is enough on its own, but a lost first one leaves the old name for good on
+     * US915's settings. The epoch's places need nothing on the air, and with epoch_grace_s a lost
+     * retirement costs little; the slow preset, which takes 6 to 12 h to learn its routes, is back
+     * to 85% only 11 h after a rotation. */
+    uint32_t retire_repeats; /* 0 to 255 */
+    uint32_t rotate_epoch;   /* 0 or 1 */
+    /* With rotate_epoch: seconds after the epoch starts that every node forgets the neighbours it
+     * has not heard since (config.epoch_grace), 0 for never. */
+    uint32_t epoch_grace_s;
     /* `rotate_count` stops a node after that many rotations, 0 for never: for measuring the hours
      * after one. `rotate_learn` 1 opens the learning allowance (learn_ppm) again at each rotation,
      * for LEARN_FOR, as if the relay had just started: what a rotation's new names need told is a

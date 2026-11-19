@@ -128,6 +128,9 @@ struct router {
     bool route_on_air;
     /* Routing ids that change: when this node next takes a new one. */
     struct tsim_timer *rotate_timer;
+#ifdef TSIM_FIRMWARE_RETIRE
+    struct tern_route_retired *retired; /* rotate_retire 2: the retirements it keeps */
+#endif
 };
 
 /* What the nodes of one network keep that is not on the air: who they are, what a board keeps
@@ -454,9 +457,19 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
         return "rotate_learn needs a firmware with a learning allowance";
     }
 #endif
-    if (c->rotate_leaves > 1 || c->rotate_spread > 1 || c->rotate_retire > 1 ||
-        c->rotate_learn > 1) {
-        return "rotate_leaves, rotate_spread, rotate_retire and rotate_learn must be 0 or 1";
+#ifndef TSIM_FIRMWARE_RETIRE
+    if (c->rotate_retire == 2 || c->rotate_epoch || c->retire_repeats || c->epoch_grace_s) {
+        return "rotate_retire 2 needs a firmware with retired destinations";
+    }
+#endif
+    if (c->rotate_retire > 2 || c->retire_loss_ppm > 1000000 || c->rotate_epoch > 1 ||
+        c->retire_repeats > 255) {
+        return "rotate_retire must be 0, 1 or 2, retire_loss_ppm 0 to 1000000, rotate_epoch 0 or "
+               "1, "
+               "and retire_repeats 0 to 255";
+    }
+    if (c->rotate_leaves > 1 || c->rotate_spread > 1 || c->rotate_learn > 1) {
+        return "rotate_leaves, rotate_spread and rotate_learn must be 0 or 1";
     }
     if (c->announce_ppm > 1000000 || c->address_after > 255 || c->address_every > 255 ||
         c->learn_ppm > 1000000) {
@@ -801,6 +814,16 @@ static void rotate_name(struct network *n, uint32_t self) {
     qsort(n->by_id, n->count, sizeof *n->by_id, by_id_cmp);
 }
 
+/* Whether neighbour `k` misses the retirement of `old`, `retire_loss_ppm` of the time. */
+static bool retirement_lost(const struct router *r, uint32_t k, uint32_t old) {
+    uint64_t x =
+        ((uint64_t)k << 32 ^ old) * 0x9E3779B97F4A7C15u ^ r->net->epoch[tsim_node_index(r->node)];
+    x ^= x >> 29;
+    x *= 0xBF58476D1CE4E5B9u;
+    x ^= x >> 32;
+    return x % 1000000u < r->config.retire_loss_ppm;
+}
+
 static void rotate_fire(void *ctx) {
     struct router *r = ctx;
     struct network *n = r->net;
@@ -812,8 +835,34 @@ static void rotate_fire(void *ctx) {
         return;
     }
     uint32_t old = n->id[self];
+#ifdef TSIM_FIRMWARE_RETIRE
+    if (r->config.rotate_epoch) {
+        tern_route_epoch(&r->route, now);
+    }
+#endif
     rotate_name(n, self);
-    if (r->config.rotate_retire) {
+#ifdef TSIM_FIRMWARE_RETIRE
+    if (r->config.rotate_retire == 2) {
+        /* Each neighbour that holds the old id hears its retirement, unless it is lost; from them
+         * it goes on in their announces. */
+        for (uint32_t k = 0; k < n->count; k++) {
+            struct router *o = n->routers[k];
+            if (!o || k == self) {
+                continue;
+            }
+            for (uint32_t i = 0; i < o->config.neighbours; i++) {
+                if (o->neighbours[i].used && o->neighbours[i].id == old) {
+                    if (!retirement_lost(r, k, old)) {
+                        tern_route_retire(&o->route, now, old);
+                        service(o);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+#endif
+    if (r->config.rotate_retire == 1) {
         /* Every neighbour that holds the old id forgets it, and every route through it, as on
          * frames lost (tern_route_lost()) with DEAD_HOPS of 1. */
         for (uint32_t k = 0; k < n->count; k++) {
@@ -823,6 +872,9 @@ static void rotate_fire(void *ctx) {
             }
             for (uint32_t i = 0; i < o->config.neighbours; i++) {
                 if (o->neighbours[i].used && o->neighbours[i].id == old) {
+                    if (retirement_lost(r, k, old)) {
+                        break;
+                    }
                     uint8_t dead = o->route.config.dead_hops;
                     o->neighbours[i].lost = 0;
                     o->route.config.dead_hops = 1;
@@ -1072,6 +1124,9 @@ static void router_destroy(void *self) {
     }
     free(r->neighbours);
     free(r->dests);
+#ifdef TSIM_FIRMWARE_RETIRE
+    free(r->retired);
+#endif
     free(r->slots);
     free(r->fhandles);
     free(r->wait);
@@ -1130,6 +1185,14 @@ static void *router_create(struct tsim_node *node, const void *config) {
 #ifdef TSIM_FIRMWARE_REATTACH
     rc.reattach = c->reattach != 0;
 #endif
+#ifdef TSIM_FIRMWARE_RETIRE
+    rc.retire = c->rotate_retire == 2 || c->rotate_epoch;
+    rc.retire_repeats = (uint8_t)c->retire_repeats;
+    rc.epoch_grace = TERN_S((int64_t)c->epoch_grace_s);
+    if (c->retire_for_s) {
+        rc.retire_for = TERN_S((int64_t)c->retire_for_s);
+    }
+#endif
 #ifdef TSIM_FIRMWARE_DEFAULT_ROUTE
     rc.default_hops = (uint8_t)c->default_hops;
     rc.default_busy_ppm = c->default_busy_ppm;
@@ -1141,6 +1204,17 @@ static void *router_create(struct tsim_node *node, const void *config) {
     uint64_t seed = tsim_rng_next(&rng);
     tern_route_init(&r->route, &rc, r->net->id[self], r->neighbours, c->neighbours, r->dests, dests,
                     r->net->seq[self], seed, tsim_node_now(node));
+#ifdef TSIM_FIRMWARE_RETIRE
+    if (rc.retire) {
+        size_t kept = c->retired_places ? c->retired_places : dests;
+        r->retired = calloc(kept, sizeof *r->retired);
+        if (!r->retired) {
+            router_destroy(r);
+            return NULL;
+        }
+        tern_route_retired_table(&r->route, r->retired, kept);
+    }
+#endif
 #ifdef TSIM_FIRMWARE_NUMBERING
     /* Its first announce number is the one it stored ahead last time, or any if it stored none;
      * nothing is kept beyond it until something is due. */

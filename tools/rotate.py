@@ -2,6 +2,7 @@
 """Measures what routing ids that change cost the firmware's core (tsim/core.h, rotate_s).
 
     rotate.py --tsim PATH [--seeds N] [--jobs N] [--presets fast,us915] [--json PATH]
+              [--interval "30 min"] [--settle HOURS]
 
 An experiment for the specification's metadata-privacy analysis, not anything the firmware or the
 specification has. A node that rotates takes a new address, and the routing id made from it, and
@@ -27,6 +28,27 @@ Variants:
   spread-24h   every node, each at its own time once a day, retired
   spread-6h    the same every six hours
   all-4096-learn  as all-4096, with the learning allowance opened again at the rotation
+
+Retiring the old ids network-wide, with the board's places (the spec's analysis, "Requirements
+before rotation is turned on"; needs a firmware with the retired-destinations experiment,
+tern_route_retire() and tern_route_epoch() in tern/route.h):
+
+  net          retired on the air: a relay frees the place at once and passes the retirement on,
+               RETRACTS (3) times, as a retraction goes
+  net-once     the same, each retirement passed on once
+  net-once-loss  as net-once, a fifth of the neighbours missing the node's own retirement
+  epoch        nothing sent beyond all: each node marks its places old at the epoch's start, and a
+               new destination takes one when the table is full
+  epoch-loss   as epoch, a fifth of the neighbours missing the node's own retirement
+  epoch-silent the same, without even the neighbours told: nothing at all on the air
+  epoch-forget as epoch, and every node forgets, five minutes into the epoch, the neighbours it
+               has not heard since it began
+  epoch-forget-loss  as epoch-forget, a fifth of the neighbours missing the node's own retirement
+  epoch-forget-silent  as epoch-forget, with no neighbour told: nothing at all on the air
+
+--interval and --settle make the workload lighter and the settling longer, for a preset (the slow
+one, deployed) where 1000 nodes do not carry the default traffic even without a rotation.
+  epoch-net    epoch and net-once together
 
 and each with -4096 or -2048, the same with that many destinations a node has places for, where
 the board has 1024 (ports/node/node.c): with 1000 nodes, 4096 is room for every old id and every
@@ -75,6 +97,24 @@ VARIANTS = {
     "all-2048": (["routing.rotate_retire=1"] + DOUBLE, AFTER),
     "leaves-4096": (["routing.rotate_retire=1", "routing.rotate_leaves=1"] + AMPLE, AFTER),
     "all-4096-learn": (["routing.rotate_retire=1"] + AMPLE + ONCE + LEARN, AFTER + [8]),
+    "net": (["routing.rotate_retire=2"] + ONCE, AFTER),
+    "net-once": (["routing.rotate_retire=2", "routing.retire_repeats=1"] + ONCE, AFTER + [8, 11]),
+    "net-once-loss": (["routing.rotate_retire=2", "routing.retire_repeats=1",
+                       "routing.retire_loss_ppm=200000"] + ONCE, AFTER + [8, 11]),
+    "epoch": (["routing.rotate_retire=1", "routing.rotate_epoch=1"] + ONCE, AFTER + [8, 11]),
+    "epoch-loss": (["routing.rotate_retire=1", "routing.rotate_epoch=1",
+                    "routing.retire_loss_ppm=200000"] + ONCE, AFTER + [8, 11]),
+    "epoch-forget": (["routing.rotate_retire=1", "routing.rotate_epoch=1", "routing.epoch_grace_s=300"]
+                     + ONCE, AFTER + [8, 11]),
+    "epoch-forget-loss": (["routing.rotate_retire=1", "routing.rotate_epoch=1",
+                           "routing.epoch_grace_s=300", "routing.retire_loss_ppm=200000"] + ONCE,
+                          AFTER + [8, 11]),
+    "epoch-forget-silent": (["routing.rotate_retire=0", "routing.rotate_epoch=1",
+                             "routing.epoch_grace_s=300"] + ONCE, AFTER + [8, 11]),
+    "epoch-silent": (["routing.rotate_retire=0", "routing.rotate_epoch=1"] + ONCE,
+                     AFTER + [8, 11]),
+    "epoch-net": (["routing.rotate_retire=2", "routing.retire_repeats=1", "routing.rotate_epoch=1"]
+                  + ONCE, AFTER + [8, 11]),
 }
 # Each node at its own time, measured SETTLE + 4 h on.
 SPREAD = {
@@ -128,6 +168,7 @@ def mean(xs):
 
 
 def main():
+    global SETTLE
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--tsim", required=True)
     p.add_argument("--seeds", type=int, default=2)
@@ -136,7 +177,11 @@ def main():
     p.add_argument("--variants", default="", help="comma-separated; all of them by default")
     p.add_argument("--hours", default="", help="comma-separated hours after; all by default")
     p.add_argument("--json")
+    p.add_argument("--interval", default="30 min", help="traffic.interval: each node's messages")
+    p.add_argument("--settle", type=int, default=SETTLE, help="hours before the rotation")
     a = p.parse_args()
+    SETTLE = a.settle
+    TRAFFIC[0] = "traffic.interval=" + a.interval
     presets = a.presets.split(",")
     only = set(a.variants.split(",")) if a.variants else set()
     hours_only = {int(h) for h in a.hours.split(",")} if a.hours else set()

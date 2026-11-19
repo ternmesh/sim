@@ -159,6 +159,13 @@ if(TSIM_FIRMWARE_NEW_ENOUGH)
     if(TSIM_ROUTE_REATTACH)
         target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_REATTACH)
     endif()
+    # A firmware with the retired-destinations experiment (tern_route_retire(); the spec's
+    # analysis/metadata-privacy.md) can have routing ids that change retired on the air.
+    file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/route.h" TSIM_ROUTE_RETIRE
+         REGEX "void tern_route_retire\\(")
+    if(TSIM_ROUTE_RETIRE)
+        target_compile_definitions(ternsim PUBLIC TSIM_FIRMWARE_RETIRE)
+    endif()
     # A firmware whose router counts what its announces are for (MSH-103) has them reported.
     file(STRINGS "${TSIM_FIRMWARE_DIR}/include/tern/route.h" TSIM_ROUTE_COUNTS
          REGEX "struct tern_route_counts \\{")
