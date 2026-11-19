@@ -403,6 +403,12 @@ struct tsim_report {
     struct tsim_floods floods;
     struct tsim_losses losses;
     struct tsim_budget_report budget;
+    /* With the core keeping the firmware's budget, what it did, every node summed over its life
+     * since it last started (struct tsim_core_budget): the network's own budget report is off. */
+    struct {
+        bool present;
+        uint64_t passed_on, unpaid, flood_passed_on, flood_unpaid;
+    } core_budget;
     struct tsim_quiet quiet;
     struct tsim_sleep_report sleep;
     /* With flows (tsim/traffic.h, tsim_metrics_flows()), each one's messages - which are in the

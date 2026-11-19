@@ -571,6 +571,56 @@ static void the_routing_costs_are_reported(void) {
 #endif
 }
 
+#ifdef TSIM_FIRMWARE_BUDGET
+/* A line of three with the firmware's budget on (budget_on): shares of one in a million fill a
+ * bucket with no more than one 255-byte frame, so a part is spent after a few frames and stays
+ * so. */
+static uint64_t budgeted(uint32_t own_ppm, uint32_t relayed_ppm, bool on, uint64_t *unpaid) {
+    struct rig r;
+    struct tsim_lora l = tsim_lora_default(7, 125000);
+    struct tsim_net_params p = tsim_net_defaults(5);
+    p.queue_limit = 0;
+    r.rc = tsim_core_default(0, &l, 14.0);
+    r.rc.budget_on = on;
+    r.rc.budget_own_ppm = own_ppm;
+    r.rc.budget_relayed_ppm = relayed_ppm;
+    r.mc = tsim_meshcore_mac_default();
+    r.nodes = 3;
+    r.sched = tsim_sched_create();
+    r.net = tsim_net_create(r.sched, &p, 3, &tsim_core, &r.rc, &tsim_meshcore_mac, &r.mc);
+    link(&r, 0, 1);
+    link(&r, 1, 2);
+    tsim_net_start(r.net);
+    run(&r, TSIM_S(600));
+    for (int i = 0; i < 20; i++) {
+        CHECK(message(&r, 0, 2) != 0);
+        run(&r, TSIM_S(610 + 10 * i));
+    }
+    run(&r, TSIM_S(1200));
+    struct tsim_core_budget b;
+    tsim_core_budget_counts(tsim_net_routing(r.net, 1), &b);
+    *unpaid = b.unpaid;
+    uint64_t sent = frames(&r, 0, TSIM_PURPOSE_DATA);
+    rig_close(&r);
+    return sent;
+}
+
+static void the_firmwares_budget_holds_its_own_and_drops_what_it_passes_on(void) {
+    uint64_t unpaid, none;
+    /* Off, every message goes, and nothing is dropped for the budget. */
+    uint64_t off = budgeted(1, 1, false, &none);
+    CHECK(off >= 20);
+    CHECK_EQ_U64(none, 0);
+    /* The relay's part spent: it drops what it is asked to pass on, and says so. */
+    budgeted(20000, 1, true, &unpaid);
+    CHECK(unpaid > 0);
+    /* The source's own part spent: its messages wait, and fewer go than with none. */
+    uint64_t held = budgeted(1, 70000, true, &none);
+    CHECK(held < off);
+    CHECK(held > 0);
+}
+#endif
+
 int main(void) {
     RUN(the_routing_costs_are_reported);
     RUN(a_line_learns_every_route);
@@ -594,5 +644,8 @@ int main(void) {
     RUN(a_node_listens_for_the_answer_before_its_next_frame);
     RUN(a_config_out_of_range_is_refused);
     RUN(floods_count_the_flooders_through_restarts);
+#ifdef TSIM_FIRMWARE_BUDGET
+    RUN(the_firmwares_budget_holds_its_own_and_drops_what_it_passes_on);
+#endif
     return CHECK_DONE();
 }

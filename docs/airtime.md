@@ -74,9 +74,14 @@ at most 32 of its own frames waiting, a board's companion link's worth (LINK_MES
 is refused. `airtime.budget = shadow` sends everything and counts what would have waited or been
 dropped.
 
-The core is not measured. The firmware's forwarder has no way to drop a frame it was handed to pass
-on: withdrawn, it goes back to the forwarder's queue and is offered again. That is for the firmware
-to add.
+The tables below are candidate 3 with the network's model of the budget. The firmware's core keeps
+its own: since firmware#85 its forwarder drops a frame passed on that its relayed part cannot pay
+for, and with `-s airtime.budget=on` the `core` routing hands each node's forwarder and flooder the
+firmware's budget (`tsim/core.h`, `budget_on`), so that the firmware's code, not this model, holds
+and drops its frames; the network keeps none for it. density.py prints `drop` and `fdrop` for those
+runs. The `Budget` workflow (`.github/workflows/budget.yml`) runs the core with the budget off and
+on, on the fast and deployed presets, at the comparison's load, six times it, and with chatty
+nodes.
 
 ## How it was run
 
@@ -256,6 +261,34 @@ The draft says a frame of the node's own waits and nothing in it drops it; for a
 its part that means only stale messages go. A bound on how long a frame of the node's own may
 wait, or on how many may, belongs in the specification with the companion protocol's reason 4.
 
+## Through the firmware's own code
+
+The `Budget` workflow (ternmesh/sim#85, run 44607999049) ran the core with the firmware's own
+budget (firmware main, own 2% and relayed 7%), `density.py --quick --candidates core`, 3 seeds, off
+and on. Unicast on time, at -5 / 0 / 20 dBm:
+
+| | load | off | on | drop | fdrop |
+|---|---|---|---|---|---|
+| fast | comparison | 60.6 / 87.2 / 92.9 | the same | 0 / 0 / 0 | 0 / 0 / 0 |
+| fast | six times | 23.5 / 18.1 / 36.4 | 23.2 / 18.7 / 36.4 | 3.5 / 0.3 / 0 | 0.4 / 0.1 / 0 |
+| deployed | comparison | 17.0 / 21.9 / 11.3 | 17.9 / 21.5 / 11.3 | 7.9 / 3.3 / 1.9 | 2.0 / 1.3 / 0.7 |
+| deployed | six times | 3.1 / 2.4 / 0.2 | 3.1 / 2.7 / 0.4 | 17.4 / 10.6 / 3.2 | 2.9 / 1.8 / 0.4 |
+
+With a twentieth of the nodes writing a message every 10 s, the other nodes' unicast on time
+(`quiet_uni`):
+
+| | off | on |
+|---|---|---|
+| fast | 14.8 / 12.7 / 18.0 | 29.0 / 34.8 / 49.8 |
+| deployed | 7.0 / 7.7 / 3.7 | 13.7 / 15.3 / 7.3 |
+
+The firmware's code does what candidate 3's model of it did: nothing at the comparison's traffic on
+the fast preset, a relay dropping a few percent of what it is asked to pass on on the deployed
+preset with delivery unchanged or a little better, and 2 to 2.8 times the other nodes' unicasts on
+time against nodes that write without pause, the writers' own messages going 10 to 13 minutes
+late. The run was before firmware's fix to the order a node's own floods go in when its allowance
+holds them, which moves no frame's airtime.
+
 ## What it means for the parameters
 
 - `BUDGET_RELAY` 8% binds only at the busiest relays and costs no delivery at any traffic
@@ -275,7 +308,6 @@ wait, or on how many may, belongs in the specification with the companion protoc
 
 ## Not done
 
-- The core: the firmware's forwarder cannot drop a frame it was given to pass on (above).
 - Churn and movement (`--quick` leaves them out), and the windows: `BUDGET_RELAY_WINDOW` and
   `BUDGET_OWN_WINDOW` were not swept.
 - A field workload: the chatty nodes are a stand-in, a fixed share at one fixed rate.

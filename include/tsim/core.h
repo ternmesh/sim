@@ -543,6 +543,21 @@ struct tsim_core_config {
      * "Leaves that move"): 1 by default with a firmware that has it, and 0 for the core as it was
      * before. Needs a firmware that has it to be 1. */
     uint32_t reattach; /* 0 or 1 */
+    /* The airtime budget (the specification's draft/airtime.md) as the firmware keeps it: with
+     * budget_on, each node's forwarder and flooder are handed the firmware's own budget
+     * (tern/airtime.h, tern_forward_budget(), tern_flood_budget()), filled at these shares and
+     * holding these windows, and hold the node's own frames and drop those passed on as a board
+     * does. The scenario sets it from airtime.budget and airtime.own, .own_window, .relayed and
+     * .relayed_window, and keeps the network's own model of the budget (tsim/budget.h) off, so
+     * that only the firmware's code decides. airtime.budget = shadow is not the firmware's and is
+     * refused, and so is airtime.floods = no: the firmware's flooder always keeps its allowances
+     * inside the parts, at routing.flood_own_ppm and .flood_relay_ppm. Needs a firmware that
+     * has it. */
+    uint32_t budget_on; /* 0 or 1 */
+    uint32_t budget_own_ppm;
+    uint32_t budget_relayed_ppm;
+    int64_t budget_own_window;     /* ns */
+    int64_t budget_relayed_window; /* ns */
     /* Routing ids that change (an experiment for the specification's metadata-privacy analysis,
      * not anything the firmware or the specification has): every `rotate_s` seconds a node takes
      * a new address and the routing id made from it, 0 for never. It keeps everything it holds -
@@ -656,6 +671,18 @@ struct tsim_core_floods {
     uint64_t resent; /* and sent again, none heard */
 };
 void tsim_core_flood_counts(const void *router, struct tsim_core_floods *out);
+
+/* What the firmware's budget did at one node since it last started, with budget_on: frames the
+ * forwarder took to pass on and, of them, those it dropped for the budget; and the flooder's
+ * frames taken to pass on and, of them, those dropped for its allowance or the budget, which its
+ * books do not tell apart. `router` is tsim_net_routing()'s. */
+struct tsim_core_budget {
+    uint64_t passed_on;
+    uint64_t unpaid;
+    uint64_t flood_passed_on;
+    uint64_t flood_unpaid;
+};
+void tsim_core_budget_counts(const void *router, struct tsim_core_budget *out);
 
 extern const struct tsim_routing tsim_core;
 

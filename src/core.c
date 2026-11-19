@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef TSIM_FIRMWARE_BUDGET
+#include "tern/airtime.h"
+#endif
 #include "tern/crypto.h"
 #include "tern/flood.h"
 #include "tern/forward.h"
@@ -128,6 +131,11 @@ struct router {
     bool route_on_air;
     /* Routing ids that change: when this node next takes a new one. */
     struct tsim_timer *rotate_timer;
+#ifdef TSIM_FIRMWARE_BUDGET
+    /* With budget_on, the airtime budget its forwarder and flooder keep to, as a board's node.c
+     * keeps one beside the region's account. */
+    struct tern_airtime airtime;
+#endif
 #ifdef TSIM_FIRMWARE_RETIRE
     struct tern_route_retired *retired; /* rotate_retire 2: the retirements it keeps */
 #endif
@@ -335,6 +343,18 @@ void tsim_core_flood_counts(const void *router, struct tsim_core_floods *out) {
     };
 }
 
+void tsim_core_budget_counts(const void *router, struct tsim_core_budget *out) {
+    const struct router *r = router;
+    *out = (struct tsim_core_budget){
+        .passed_on = r->forward.counts.passed_on,
+#ifdef TSIM_FIRMWARE_BUDGET
+        .unpaid = r->forward.counts.unpaid,
+#endif
+        .flood_passed_on = r->flood.counts.passed_on,
+        .flood_unpaid = r->flood.counts.unpaid,
+    };
+}
+
 static struct tern_lora lora_of(const struct tsim_lora *l);
 
 struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lora *lora,
@@ -366,6 +386,11 @@ struct tsim_core_config tsim_core_default(uint16_t channel, const struct tsim_lo
         .flood_own_ppm = tern_flood_defaults().own_ppm,
         .flood_relay_ppm = tern_flood_defaults().relay_ppm,
         .flood_busy_ppm = tern_flood_defaults().busy_ppm,
+        /* Off; the specification's parts for when the scenario turns it on (tsim/budget.h). */
+        .budget_own_ppm = 20000,
+        .budget_relayed_ppm = 70000,
+        .budget_own_window = TSIM_S(600),
+        .budget_relayed_window = TSIM_S(60),
 #ifdef TSIM_FIRMWARE_RESENDS
         .flood_resends = tern_flood_defaults().resends,
         .flood_echo = tern_flood_defaults().echo,
@@ -452,6 +477,11 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
     if (c->reattach > 1) {
         return "reattach must be 0 or 1";
     }
+#ifndef TSIM_FIRMWARE_BUDGET
+    if (c->budget_on) {
+        return "airtime.budget needs a firmware whose forwarder keeps an airtime budget";
+    }
+#endif
 #ifndef TSIM_FIRMWARE_LEARNING
     if (c->rotate_learn) {
         return "rotate_learn needs a firmware with a learning allowance";
@@ -1247,6 +1277,21 @@ static void *router_create(struct tsim_node *node, const void *config) {
 #endif
     tern_flood_init(&r->flood, &flc, &r->route, r->flood_slots, c->flood_frames, r->flood_seen,
                     TERN_FLOOD_SEEN, tsim_rng_next(&rng), tsim_node_now(node));
+#ifdef TSIM_FIRMWARE_BUDGET
+    /* As a board does (ports/node/node.c): every bucket full as it starts, again after being
+     * powered down, a relay's with a relayed part and a leaf's without. */
+    if (c->budget_on) {
+        struct tern_airtime_config ac = {
+            .own_ppm = c->budget_own_ppm,
+            .own_window = c->budget_own_window,
+            .relay_ppm = c->budget_relayed_ppm,
+            .relay_window = c->budget_relayed_window,
+        };
+        tern_airtime_init(&r->airtime, &ac, &lora, tsim_core_relay(c, self), tsim_node_now(node));
+        tern_forward_budget(&r->forward, &r->airtime);
+        tern_flood_budget(&r->flood, &r->airtime);
+    }
+#endif
     r->net->routers[self] = r;
     if (rotates(r)) {
         r->rotate_timer = tsim_timer_create(node, rotate_fire, r);

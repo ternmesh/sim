@@ -327,6 +327,12 @@ static void print_report(const char *path, const struct tsim_scenario *s,
     if (r->budget.mode != TSIM_BUDGET_MODE_OFF) {
         print_budget(&r->budget);
     }
+    if (r->core_budget.present) {
+        printf("  \"core_budget\": {\"passed_on\": %" PRIu64 ", \"unpaid\": %" PRIu64
+               ", \"flood_passed_on\": %" PRIu64 ", \"flood_unpaid\": %" PRIu64 "},\n",
+               r->core_budget.passed_on, r->core_budget.unpaid, r->core_budget.flood_passed_on,
+               r->core_budget.flood_unpaid);
+    }
     if (r->quiet.present) {
         printf("  \"quiet\": {\"unicast_wanted\": %" PRIu64 ", \"unicast_on_time\": %" PRIu64
                ", \"broadcast_wanted\": %" PRIu64 ", \"broadcast_on_time\": %" PRIu64 "},\n",

@@ -1899,6 +1899,27 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     if (ok && s->mac->check && (why = s->mac->check(s->mac_config))) {
         ok = fail(err, 0, "mac %s: %s", s->mac->name, why);
     }
+#ifdef TSIM_HAVE_CORE
+    /* The core keeps the firmware's own budget (tsim_core_config.budget_on), which has no shadow,
+     * and whose flooder keeps its own allowances inside the parts, as airtime.floods = yes has
+     * the network's: they are routing.flood_own_ppm and .flood_relay_ppm, not airtime.flood_*. */
+    if (ok && s->routing->routing == &tsim_core && s->net.budget.mode != TSIM_BUDGET_MODE_OFF) {
+        if (s->net.budget.mode == TSIM_BUDGET_MODE_SHADOW) {
+            ok = fail(err, 0,
+                      "airtime.budget = shadow: core keeps the firmware's budget, on or off");
+        } else if (!s->net.budget.floods) {
+            ok = fail(err, 0,
+                      "airtime.floods = no: core's flooder always keeps its allowances inside "
+                      "the parts (routing.flood_own_ppm, routing.flood_relay_ppm)");
+        } else {
+            struct tsim_core_config c = *(const struct tsim_core_config *)s->routing_config;
+            c.budget_on = 1;
+            if ((why = tsim_core_check(&c))) {
+                ok = fail(err, 0, "airtime.budget: %s", why);
+            }
+        }
+    }
+#endif
     const struct tsim_distvec_config *dv =
         ok && s->routing->routing == &tsim_distvec ? (const void *)s->routing_config : NULL;
     struct picked pk =
@@ -3283,6 +3304,19 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     }
 
     struct tsim_net_params np = s->net;
+#ifdef TSIM_HAVE_CORE
+    /* The core keeps the firmware's budget, and the network keeps none for it. */
+    bool core_budget = s->routing->routing == &tsim_core && np.budget.mode == TSIM_BUDGET_MODE_ON;
+    if (core_budget) {
+        struct tsim_core_config *c = (struct tsim_core_config *)routing_config;
+        c->budget_on = 1;
+        c->budget_own_ppm = np.budget.own_ppm;
+        c->budget_own_window = np.budget.own_window;
+        c->budget_relayed_ppm = np.budget.relayed_ppm;
+        c->budget_relayed_window = np.budget.relayed_window;
+        np.budget.mode = TSIM_BUDGET_MODE_OFF;
+    }
+#endif
     np.channel = s->radio.channel;
     np.listen = s->radio.lora;
     np.seed = s->seed;
@@ -3483,7 +3517,24 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     tsim_net_start(net);
     tsim_sched_run_until(sched, s->warmup + s->duration + s->deadline);
     tsim_metrics_report(metrics, report);
-    report->budget.mode = s->net.budget.mode;
+    report->budget.mode = np.budget.mode;
+#ifdef TSIM_HAVE_CORE
+    if (core_budget) {
+        /* Every node powered at the window's end, its books since it last started. */
+        report->core_budget.present = true;
+        for (uint32_t i = 0; i < s->nodes; i++) {
+            const void *r = tsim_net_routing(net, i);
+            if (r) {
+                struct tsim_core_budget b;
+                tsim_core_budget_counts(r, &b);
+                report->core_budget.passed_on += b.passed_on;
+                report->core_budget.unpaid += b.unpaid;
+                report->core_budget.flood_passed_on += b.flood_passed_on;
+                report->core_budget.flood_unpaid += b.flood_unpaid;
+            }
+        }
+    }
+#endif
     if (s->net.budget.mode == TSIM_BUDGET_MODE_SHADOW) {
         report->budget.wait_mean_s = NAN; /* shadow mode models no wait */
     }
