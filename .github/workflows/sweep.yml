@@ -13,8 +13,10 @@ on:
         description: ternmesh/firmware commit, branch or tag to build the core from
         required: true
       presets:
-        description: JSON list of rotate.py presets (fast, us915, deployed)
-        default: '["fast", "us915", "deployed"]'
+        description: >-
+          JSON list of {"preset", "interval", "settle"}: rotate.py's preset (fast, us915, deployed),
+          and --interval and --settle where not the default
+        default: '[{"preset": "fast"}, {"preset": "us915"}, {"preset": "deployed", "interval": "4 h", "settle": 16}]'
       variants:
         description: rotate.py --variants, comma-separated; empty for all
         default: ""
@@ -29,8 +31,9 @@ permissions:
 
 env:
   DEFAULT_FIRMWARE_REF: claude/retire-experiment
-  DEFAULT_PRESETS: '["fast", "us915", "deployed"]'
-  DEFAULT_VARIANTS: none,all,epoch,epoch-loss
+  DEFAULT_PRESETS: >-
+    [{"preset": "fast"}, {"preset": "us915"}, {"preset": "deployed", "interval": "4 h", "settle": 16}]
+  DEFAULT_VARIANTS: none,epoch,epoch-forget,epoch-forget-loss,epoch-forget-silent
   DEFAULT_SEEDS: "2"
 
 jobs:
@@ -59,13 +62,13 @@ jobs:
 
   rotate:
     needs: settings
-    name: rotate (${{ matrix.preset }})
+    name: rotate (${{ matrix.run.preset }})
     runs-on: ubuntu-24.04
     timeout-minutes: 340
     strategy:
       fail-fast: false
       matrix:
-        preset: ${{ fromJSON(needs.settings.outputs.presets) }}
+        run: ${{ fromJSON(needs.settings.outputs.presets) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -79,20 +82,22 @@ jobs:
       - run: cmake --build build
       - name: tools/rotate.py
         env:
-          PRESET: ${{ matrix.preset }}
+          PRESET: ${{ matrix.run.preset }}
+          INTERVAL: ${{ matrix.run.interval || '30 min' }}
+          SETTLE: ${{ matrix.run.settle || 8 }}
           VARIANTS: ${{ needs.settings.outputs.variants }}
           SEEDS: ${{ needs.settings.outputs.seeds }}
         run: |
           python3 tools/rotate.py --tsim build/tsim --jobs "$(nproc)" --presets "$PRESET" \
-            --seeds "$SEEDS" ${VARIANTS:+--variants "$VARIANTS"} --json "rotate-$PRESET.json" \
+            --seeds "$SEEDS" --interval "$INTERVAL" --settle "$SETTLE" ${VARIANTS:+--variants "$VARIANTS"} --json "rotate-$PRESET.json" \
             | tee "rotate-$PRESET.txt"
           {
-            echo "### rotate.py, $PRESET, firmware ${{ needs.settings.outputs.firmware_ref }}"
+            echo "### rotate.py, $PRESET (a message every $INTERVAL, $SETTLE h to settle), firmware ${{ needs.settings.outputs.firmware_ref }}"
             echo '```'
             cat "rotate-$PRESET.txt"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
-          name: rotate-${{ matrix.preset }}
-          path: rotate-${{ matrix.preset }}.*
+          name: rotate-${{ matrix.run.preset }}
+          path: rotate-${{ matrix.run.preset }}.*

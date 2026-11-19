@@ -458,7 +458,7 @@ const char *tsim_core_check(const struct tsim_core_config *c) {
     }
 #endif
 #ifndef TSIM_FIRMWARE_RETIRE
-    if (c->rotate_retire == 2 || c->rotate_epoch || c->retire_repeats) {
+    if (c->rotate_retire == 2 || c->rotate_epoch || c->retire_repeats || c->epoch_grace_s) {
         return "rotate_retire 2 needs a firmware with retired destinations";
     }
 #endif
@@ -1188,6 +1188,7 @@ static void *router_create(struct tsim_node *node, const void *config) {
 #ifdef TSIM_FIRMWARE_RETIRE
     rc.retire = c->rotate_retire == 2 || c->rotate_epoch;
     rc.retire_repeats = (uint8_t)c->retire_repeats;
+    rc.epoch_grace = TERN_S((int64_t)c->epoch_grace_s);
     if (c->retire_for_s) {
         rc.retire_for = TERN_S((int64_t)c->retire_for_s);
     }

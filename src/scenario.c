@@ -1045,6 +1045,7 @@ static const char *core_set(void *config, const char *key, const char *value) {
         {"retire_for_s", offsetof(struct tsim_core_config, retire_for_s), 0, 7 * 86400},
         {"retire_repeats", offsetof(struct tsim_core_config, retire_repeats), 0, 255},
         {"rotate_epoch", offsetof(struct tsim_core_config, rotate_epoch), 0, 1},
+        {"epoch_grace_s", offsetof(struct tsim_core_config, epoch_grace_s), 0, 86400},
         {"rotate_count", offsetof(struct tsim_core_config, rotate_count), 0, 1000000},
         {"rotate_learn", offsetof(struct tsim_core_config, rotate_learn), 0, 1},
     };

@@ -607,6 +607,9 @@ struct tsim_core_config {
      * hold 87.6% and 90.1%. */
     uint32_t retire_repeats; /* 0 to 255 */
     uint32_t rotate_epoch;   /* 0 or 1 */
+    /* With rotate_epoch: seconds after the epoch starts that every node forgets the neighbours it
+     * has not heard since (config.epoch_grace), 0 for never. */
+    uint32_t epoch_grace_s;
     /* `rotate_count` stops a node after that many rotations, 0 for never: for measuring the hours
      * after one. `rotate_learn` 1 opens the learning allowance (learn_ppm) again at each rotation,
      * for LEARN_FOR, as if the relay had just started: what a rotation's new names need told is a
