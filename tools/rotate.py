@@ -28,6 +28,19 @@ Variants:
   spread-6h    the same every six hours
   all-4096-learn  as all-4096, with the learning allowance opened again at the rotation
 
+Retiring the old ids network-wide, with the board's places (the spec's analysis, "Requirements
+before rotation is turned on"; needs a firmware with the retired-destinations experiment,
+tern_route_retire() and tern_route_epoch() in tern/route.h):
+
+  net          retired on the air: a relay frees the place at once and passes the retirement on,
+               RETRACTS (3) times, as a retraction goes
+  net-once     the same, each retirement passed on once
+  net-once-loss  as net-once, a fifth of the neighbours missing the node's own retirement
+  epoch        nothing sent beyond all: each node marks its places old at the epoch's start, and a
+               new destination takes one when the table is full
+  epoch-silent the same, without even the neighbours told: nothing at all on the air
+  epoch-net    epoch and net-once together
+
 and each with -4096 or -2048, the same with that many destinations a node has places for, where
 the board has 1024 (ports/node/node.c): with 1000 nodes, 4096 is room for every old id and every
 new one at once. A destination the network has forgotten is not dropped from a table until its
@@ -75,6 +88,15 @@ VARIANTS = {
     "all-2048": (["routing.rotate_retire=1"] + DOUBLE, AFTER),
     "leaves-4096": (["routing.rotate_retire=1", "routing.rotate_leaves=1"] + AMPLE, AFTER),
     "all-4096-learn": (["routing.rotate_retire=1"] + AMPLE + ONCE + LEARN, AFTER + [8]),
+    "net": (["routing.rotate_retire=2"] + ONCE, AFTER),
+    "net-once": (["routing.rotate_retire=2", "routing.retire_repeats=1"] + ONCE, AFTER + [8, 11]),
+    "net-once-loss": (["routing.rotate_retire=2", "routing.retire_repeats=1",
+                       "routing.retire_loss_ppm=200000"] + ONCE, AFTER + [8, 11]),
+    "epoch": (["routing.rotate_retire=1", "routing.rotate_epoch=1"] + ONCE, AFTER + [8, 11]),
+    "epoch-silent": (["routing.rotate_retire=0", "routing.rotate_epoch=1"] + ONCE,
+                     AFTER + [8, 11]),
+    "epoch-net": (["routing.rotate_retire=2", "routing.retire_repeats=1", "routing.rotate_epoch=1"]
+                  + ONCE, AFTER + [8, 11]),
 }
 # Each node at its own time, measured SETTLE + 4 h on.
 SPREAD = {
