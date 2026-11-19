@@ -30,7 +30,7 @@ permissions:
   contents: read
 
 env:
-  DEFAULT_FIRMWARE_REF: claude/retire-experiment
+  DEFAULT_FIRMWARE_REF: main
   DEFAULT_PRESETS: >-
     [{"preset": "fast"}, {"preset": "us915"}, {"preset": "deployed", "interval": "4 h", "settle": 16}]
   DEFAULT_VARIANTS: none,epoch,epoch-forget,epoch-forget-loss,epoch-forget-silent

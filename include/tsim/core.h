@@ -592,19 +592,26 @@ struct tsim_core_config {
      * has its place given up as readily. Both need a firmware with retired destinations. */
     /*
      * Measured with tools/rotate.py (as above, board's 1024 places, every node at once, seeds 1
-     * and 2), unicast on time averaged over a weekly epoch, fast and US915, against 97.6% and
-     * 98.7% with no rotation:
-     *   rotate_retire 1 (neighbours told; the old analysis)         9.0%  25.4%
-     *   rotate_retire 2, retirements sent RETRACTS (3) times         6.6%  42.4%
-     *   rotate_retire 2, retire_repeats 1                           95.5%  96.6%
-     *   the same, a fifth of neighbours missing the node's own      92.3%  56.1%
-     *   rotate_epoch, neighbours told (rotate_retire 1)             96.2%  97.4%
-     *   rotate_epoch, nothing told (rotate_retire 0)                68.9%  61.9%
-     *   rotate_epoch and rotate_retire 2, repeats 1                 95.5%  95.4%
+     * and 2), unicast on time averaged over a weekly epoch, fast, US915 and the slow preset
+     * (deployed, with --interval "4 h" --settle 16), against 97.6%, 98.7% and 96.8% with no
+     * rotation:
+     *                                                            fast  US915   slow
+     *   rotate_retire 1 (neighbours told; the old analysis)      9.0%  25.4%
+     *   rotate_retire 2, retirements sent RETRACTS (3) times     6.6%  42.4%
+     *   rotate_retire 2, retire_repeats 1                       95.5%  96.6%
+     *   the same, a fifth of neighbours missing the node's own  92.3%  56.1%
+     *   rotate_epoch, neighbours told (rotate_retire 1)         96.2%  97.4%  81.6%
+     *   the same, a fifth missing                               85.1%  67.6%
+     *   rotate_epoch, nothing told (rotate_retire 0)            68.9%  61.9%
+     *   rotate_epoch and rotate_retire 2, repeats 1             95.5%  95.4%
+     *   rotate_epoch, epoch_grace_s 300, neighbours told        96.2%  97.4%  81.6%
+     *   the same, a fifth missing                               92.2%  97.4%  80.0%
+     *   the same, nothing told                                  89.4%  96.0%  76.3%
      * Sent three times, every relay's retirements take hours of its cap, and the new names wait
      * behind them. Once is enough on its own, but a lost first one leaves the old name for good on
-     * US915's settings. The epoch's places need nothing on the air, and with a daily epoch still
-     * hold 87.6% and 90.1%. */
+     * US915's settings. The epoch's places need nothing on the air, and with epoch_grace_s a lost
+     * retirement costs little; the slow preset, which takes 6 to 12 h to learn its routes, is back
+     * to 85% only 11 h after a rotation. */
     uint32_t retire_repeats; /* 0 to 255 */
     uint32_t rotate_epoch;   /* 0 or 1 */
     /* With rotate_epoch: seconds after the epoch starts that every node forgets the neighbours it
