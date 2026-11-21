@@ -61,7 +61,8 @@ def run(tsim, which, seed):
     gave_up = r["losses"]["drops"]["retries"]
     return {"sent": u["messages"], "delivered": u["delivered"], "on_time": u["on_time"],
             "gave_up": gave_up,
-            "lost_ack": max(0, u["delivered"] - (u["messages"] - gave_up))}, r["losses"]
+            "lost_ack": max(0, u["delivered"] - (u["messages"] - gave_up))}, {
+                "losses": r["losses"], "routing_costs": r.get("routing_costs")}
 
 
 def summary(tsim, seeds):
