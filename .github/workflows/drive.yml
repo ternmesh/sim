@@ -1,0 +1,84 @@
+name: Drive
+
+# The first field test's drive (scenarios/core/drive.tsim, ternmesh/spec#81), run through the
+# firmware's core at two commits: one before a change and one after. tools/drive.py runs it over
+# seeds, each way apart, and the run's summary holds both tables; their JSON is kept as an artifact.
+# On GitHub's runners rather than someone's laptop. It runs on a pull request that changes the
+# scenario, this file or tools/drive.py, and from the Actions tab with any two commits.
+
+on:
+  workflow_dispatch:
+    inputs:
+      before:
+        description: ternmesh/firmware commit, branch or tag before the change
+        required: true
+        default: main
+      after:
+        description: ternmesh/firmware commit, branch or tag after it
+        required: true
+        default: claude/silent-leaves
+      seeds:
+        description: drive.py --seeds
+        default: "10"
+  pull_request:
+    paths:
+      - scenarios/core/drive.*
+      - tools/drive.py
+      - .github/workflows/drive.yml
+
+permissions:
+  contents: read
+
+jobs:
+  drive:
+    name: drive (${{ matrix.side }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [before, after]
+    env:
+      REF: ${{ matrix.side == 'before' && (inputs.before || 'main') || (inputs.after || 'claude/silent-leaves') }}
+      SEEDS: ${{ inputs.seeds || '10' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ternmesh/firmware
+          ref: ${{ env.REF }}
+          path: firmware
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          -DTSIM_FIRMWARE_DIR=$PWD/firmware -DTSIM_REQUIRE_CORE=ON
+      - run: cmake --build build
+      - name: tools/drive.py
+        env:
+          SIDE: ${{ matrix.side }}
+        run: |
+          set -o pipefail
+          label="$SIDE: firmware $REF ($(git -C firmware rev-parse --short HEAD)), $SEEDS seeds"
+          python3 tools/drive.py --tsim build/tsim --seeds "$SEEDS" --label "$label" \
+            --json "drive-$SIDE.json" | tee "drive-$SIDE.txt"
+          { echo '```'; cat "drive-$SIDE.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drive-${{ matrix.side }}
+          path: drive-${{ matrix.side }}.*
+
+  compare:
+    needs: drive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drive-*
+          merge-multiple: true
+      - name: Before and after
+        run: |
+          set -o pipefail
+          python3 tools/drive.py --compare drive-before.json drive-after.json | tee compare.txt
+          { echo '### The drive, before and after'; echo '```'; cat compare.txt; echo '```'; } \
+            >> "$GITHUB_STEP_SUMMARY"

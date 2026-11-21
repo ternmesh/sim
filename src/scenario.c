@@ -1191,6 +1191,53 @@ static const char *parse_send(struct tsim_scenario *s, const char *v) {
     return NULL;
 }
 
+/* "30 min, 0, 5, 160" or "30 min, 0, 5, 160, 150": when, the two nodes, and the loss from the first
+ * to the second in dB, and back if it differs. Each adds one; whether its nodes exist is checked
+ * once nodes is known. */
+static const char *parse_link_set(struct tsim_scenario *s, const char *v) {
+    static const char *const why =
+        "expected a time, two nodes and a loss in dB, and a loss back if "
+        "it differs, as 30 min, 0, 5, 160";
+    char buf[128];
+    char *field[5];
+    int n = 0;
+    if (strlen(v) >= sizeof buf) {
+        return why;
+    }
+    strcpy(buf, v);
+    for (char *at = buf; n < 5;) {
+        char *comma = strchr(at, ',');
+        if (comma) {
+            *comma = '\0';
+        }
+        field[n++] = trim(at);
+        if (!comma) {
+            break;
+        }
+        at = comma + 1;
+        if (n == 5) {
+            return why;
+        }
+    }
+    struct tsim_link_set set;
+    uint64_t a, b;
+    if (n < 4 || !parse_time(field[0], &set.at) || !parse_u64(field[1], UINT32_MAX - 1, &a) ||
+        !parse_u64(field[2], UINT32_MAX - 1, &b) || !parse_double(field[3], &set.there) ||
+        set.there < 0 || !(n < 5 || (parse_double(field[4], &set.back) && set.back >= 0))) {
+        return why;
+    }
+    if (n < 5) {
+        set.back = set.there;
+    }
+    if (s->link_set_count == TSIM_LINK_SETS_MAX) {
+        return "is one more link.set than the 64 a scenario can hold";
+    }
+    set.a = (uint32_t)a;
+    set.b = (uint32_t)b;
+    s->link_sets[s->link_set_count++] = set;
+    return NULL;
+}
+
 /* NULL if the setting took, or what was wrong with it. */
 /* airtime.*: the budget (tsim/budget.h), its parts' shares and windows. */
 static const char *set_budget(struct tsim_budget_params *b, const char *key, const char *v) {
@@ -1570,6 +1617,9 @@ static const char *set_core(struct tsim_scenario *s, const char *key, const char
     if (strcmp(key, "traffic.send") == 0) {
         return parse_send(s, v);
     }
+    if (strcmp(key, "link.set") == 0) {
+        return parse_link_set(s, v);
+    }
     if (strcmp(key, "traffic.len") == 0) {
         return parse_range(v, TSIM_FRAME_MAX, &s->len_min, &s->len_max)
                    ? NULL
@@ -1823,6 +1873,18 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
             ok = fail(err, 0, "traffic.send %" PRIu32 " is from a node to itself", i + 1);
         }
     }
+    for (uint32_t i = 0; ok && i < s->link_set_count; i++) {
+        const struct tsim_link_set *l = &s->link_sets[i];
+        if (l->a >= s->nodes || l->b >= s->nodes) {
+            ok = fail(err, 0, "link.set %" PRIu32 " names a node past the %" PRIu32 " there are",
+                      i + 1, s->nodes);
+        } else if (l->a == l->b) {
+            ok = fail(err, 0, "link.set %" PRIu32 " is from a node to itself", i + 1);
+        }
+    }
+    if (ok && s->link_set_count && s->move_share > 0) {
+        ok = fail(err, 0, "link.set and move.share both set losses: choose one");
+    }
     if (ok && s->peers > s->nodes - 1) {
         ok = fail(err, 0, "traffic.peers is %" PRIu32 ", more than the %" PRIu32 " other nodes",
                   s->peers, s->nodes - 1);
@@ -1865,6 +1927,11 @@ bool tsim_scenario_parse(struct tsim_scenario *s, const char *text,
     }
     if (ok && s->lead > s->warmup) {
         ok = fail(err, 0, "traffic.lead is longer than the warmup");
+    }
+    for (uint32_t i = 0; ok && i < s->link_set_count; i++) {
+        if (s->link_sets[i].at >= s->warmup + s->duration + s->deadline) {
+            ok = fail(err, 0, "link.set %" PRIu32 " is at or after the end of the run", i + 1);
+        }
     }
     for (uint32_t i = 0; ok && i < s->send_count; i++) {
         if (s->sends[i].at >= s->warmup + s->duration + s->deadline) {
@@ -3225,6 +3292,33 @@ static void move_free(struct moving *mv) {
     free(mv->own);
 }
 
+/* --- Links that change at set times --- */
+
+struct link_setting {
+    struct tsim_phy *phy;
+    const struct tsim_link_set *set;
+};
+
+static void link_set(struct tsim_sched *sched, void *ctx) {
+    const struct link_setting *ls = ctx;
+    (void)sched;
+    tsim_phy_set_loss_from(ls->phy, ls->set->a, ls->set->b, ls->set->there);
+    tsim_phy_set_loss_from(ls->phy, ls->set->b, ls->set->a, ls->set->back);
+}
+
+/* Schedules each link.set; `ls` holds one for each, kept by the caller for the run. */
+static bool link_sets_start(struct link_setting *ls, const struct tsim_scenario *s,
+                            struct tsim_sched *sched, struct tsim_phy *phy) {
+    tsim_phy_keep_losses(phy, true);
+    for (uint32_t i = 0; i < s->link_set_count; i++) {
+        ls[i] = (struct link_setting){phy, &s->link_sets[i]};
+        if (tsim_sched_at(sched, s->link_sets[i].at, link_set, &ls[i]).slot == 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Sets every link's loss as the scenario says: from its links file, or the channel model. */
 static bool lay_links(struct tsim_phy *phy, const struct tsim_scenario *s,
                       const struct tsim_pos *pos) {
@@ -3256,6 +3350,7 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
     struct window window = {0};
     struct churn churn = {0};
     struct moving moving = {0};
+    struct link_setting *link_settings = NULL;
     struct announces announces = {0};
     struct costs costs = {0};
     struct floods floods = {0};
@@ -3514,6 +3609,11 @@ bool tsim_scenario_run(const struct tsim_scenario *s, struct tsim_report *report
         !move_start(&moving, s, routing_config, sched, tsim_net_phy(net), pos)) {
         goto done;
     }
+    if (s->link_set_count &&
+        (!(link_settings = malloc(s->link_set_count * sizeof *link_settings)) ||
+         !link_sets_start(link_settings, s, sched, tsim_net_phy(net)))) {
+        goto done;
+    }
     tsim_net_start(net);
     tsim_sched_run_until(sched, s->warmup + s->duration + s->deadline);
     tsim_metrics_report(metrics, report);
@@ -3581,6 +3681,7 @@ done:
     free(relay_set);
     free(churn.churners);
     move_free(&moving);
+    free(link_settings);
     announces_free(&announces); /* the network that called into it is gone */
     costs_free(&costs);
     floods_free(&floods);

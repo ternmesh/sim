@@ -57,6 +57,18 @@ struct tsim_link {
 
 #define TSIM_SENDS_MAX 64
 
+/* A link whose loss changes at a set time (`link.set`): from `a` to `b` it becomes `there`, and
+ * from `b` to `a` `back`. */
+struct tsim_link_set {
+    tsim_time at;
+    uint32_t a;
+    uint32_t b;
+    double there;
+    double back;
+};
+
+#define TSIM_LINK_SETS_MAX 64
+
 /* What a plugin's radio settings start from. */
 struct tsim_radio {
     uint16_t channel;
@@ -152,6 +164,10 @@ struct tsim_scenario {
     bool report_floods;    /* struct tsim_floods: slow */
     struct tsim_send sends[TSIM_SENDS_MAX];
     uint32_t send_count;
+    /* Links whose losses change at set times, in the order given: a node carried somewhere else at
+     * once, as a board driven away is, with every other link as it was. */
+    struct tsim_link_set link_sets[TSIM_LINK_SETS_MAX];
+    uint32_t link_set_count;
 
     tsim_time warmup;
     tsim_time duration;

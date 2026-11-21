@@ -229,6 +229,19 @@ static void problems_say_where_they_are(void) {
         {"nodes = 2\nrouting = flood\nmac = aloha\nwarmup = 1 min\n"
          "traffic.send = 30 s, 0, all, 40\n",
          0, "traffic.send 1 is during the warmup"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nlink.set = 1 s, 0, 1\n", 4,
+         "as 30 min, 0, 5, 160"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nlink.set = 1 s, 0, 1, 160, 150, 3\n", 4,
+         "as 30 min, 0, 5, 160"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nlink.set = 1 s, 0, 1, -1\n", 4,
+         "as 30 min, 0, 5, 160"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nlink.set = 1 s, 0, 2, 160\n", 0,
+         "link.set 1 names a node past the 2"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nlink.set = 1 s, 1, 1, 160\n", 0,
+         "link.set 1 is from a node to itself"},
+        {"nodes = 2\nrouting = flood\nmac = aloha\nduration = 1 min\ndeadline = 1 min\n"
+         "link.set = 2 min, 0, 1, 160\n",
+         0, "link.set 1 is at or after the end"},
         {"nodes = 2\nrouting = flood\nmac = aloha\nwarmup = 1 h\ntraffic.lead = 2 h\n", 0,
          "traffic.lead is longer than the warmup"},
         {"nodes = 2\nrouting = flood\nmac = aloha\ntraffic.lead = soon\n", 4, "expected a time"},
@@ -738,6 +751,33 @@ static void meshcore_settings_read(void) {
     CHECK(meshcore_of(&s)->estimate_cr == 0);
 }
 
+/* Two nodes in earshot: a message before their link is cut arrives, and one after does not. */
+static void a_link_set_changes_a_loss_at_its_time(void) {
+    struct tsim_scenario s;
+    struct tsim_report rep;
+    static const char *const base = "nodes = 2\nplacement = line\nspacing = 100\n"
+                                    "channel.sigma = 0\nrouting = flood\nmac = aloha\n"
+                                    "traffic.interval = none\nwarmup = 1 min\nduration = 5 min\n"
+                                    "deadline = 1 min\ntraffic.send = 2 min, 0, 1, 20\n";
+    char text[512];
+    snprintf(text, sizeof text, "%slink.set = 3 min, 0, 1, 300\n", base);
+    CHECK(parse(&s, text));
+    CHECK_EQ_U64(s.link_set_count, 1);
+    CHECK(s.link_sets[0].at == TSIM_S(180) && s.link_sets[0].a == 0 && s.link_sets[0].b == 1 &&
+          s.link_sets[0].there == 300 && s.link_sets[0].back == 300);
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK_EQ_U64(rep.unicast.delivered, 1);
+    snprintf(text, sizeof text, "%slink.set = 90 s, 0, 1, 300, 80\n", base);
+    CHECK(parse(&s, text));
+    CHECK(s.link_sets[0].there == 300 && s.link_sets[0].back == 80);
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK_EQ_U64(rep.unicast.delivered, 0); /* 0 can no longer reach 1 */
+    snprintf(text, sizeof text, "%slink.set = 90 s, 1, 0, 300, 80\n", base);
+    CHECK(parse(&s, text));
+    CHECK(tsim_scenario_run(&s, &rep));
+    CHECK_EQ_U64(rep.unicast.delivered, 1); /* only 1 to 0 is cut */
+}
+
 static void sends_add_up_and_interval_none_stops_the_process(void) {
     struct tsim_scenario s;
     CHECK(parse(&s, "nodes = 3\nrouting = flood\nmac = aloha\ntraffic.interval = none\n"
@@ -1206,6 +1246,7 @@ int main(void) {
     RUN(a_run_keeps_the_airtime_budget);
     RUN(chatty_nodes_are_reported_apart);
     RUN(sends_add_up_and_interval_none_stops_the_process);
+    RUN(a_link_set_changes_a_loss_at_its_time);
     RUN(links_read_from_text);
     RUN(a_run_with_links_uses_them);
     RUN(a_run_placed_from_a_file_uses_its_positions);
