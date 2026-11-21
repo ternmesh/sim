@@ -14,7 +14,9 @@
 # messages reach the desk through the patio, and the desk, not having heard of a newer seq,
 # answers direct. What is measured is unicast delivered each way, and how many of the leaf's
 # messages it gave up on though they arrived: their acknowledgements lost. The Drive workflow
-# (.github/workflows/drive.yml, tools/drive.py) runs this against two firmware commits.
+# (.github/workflows/drive.yml, tools/drive.py) runs this against two firmware commits. Three
+# changes are measured with it (spec#81): acknowledgements the way the message came, a try never
+# heard at its first hop sent another way next, and worse samples from frames that follow routes.
 nodes  = 6
 links  = drive.links
 
