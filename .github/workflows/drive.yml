@@ -39,7 +39,7 @@ jobs:
       matrix:
         side: [before, after]
     env:
-      REF: ${{ matrix.side == 'before' && (inputs.before || 'claude/silent-leaves') || (inputs.after || 'claude/silent-leaves-one-promise') }}
+      REF: ${{ matrix.side == 'before' && (inputs.before || 'main') || (inputs.after || 'claude/silent-leaves') }}
       SEEDS: ${{ inputs.seeds || '10' }}
     steps:
       - uses: actions/checkout@v4
