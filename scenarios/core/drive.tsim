@@ -1,7 +1,7 @@
 # The first field test's drive (2026-11-21, firmware v0.7.0-alpha.3). Every board starts in one
 # house, every link strong (drive.links). Ten minutes in, the relays go to their places: the desk
 # relay (0) stays, the patio relay (1) is a few hundred yards off, and three more (2 to 4) are
-# further up the hill. At the end of the warmup the leaf (5) is driven away: out of reach of the
+# further up the hill, which reach the desk only through the patio. At the end of the warmup the leaf (5) is driven away: out of reach of the
 # desk and of the hill, and still heard well by the patio relay alone. Then the leaf and the desk
 # write to each other, a message every four minutes each way, for 100 minutes.
 #
@@ -22,17 +22,22 @@ routing.relay_pick = degree
 routing.relay_count = 5
 mac                = listen
 
-# The relays go to their places.
+# The relays go to their places: the patio relay a few hundred yards from the house, the hill's
+# further on, out of the desk's reach indoors and in the leaf's, which is still outside the house.
 link.set = 10 min, 0, 1, 110
-link.set = 10 min, 0, 2, 135
-link.set = 10 min, 0, 3, 138
-link.set = 10 min, 0, 4, 140
+link.set = 10 min, 0, 2, 160
+link.set = 10 min, 0, 3, 162
+link.set = 10 min, 0, 4, 165
 link.set = 10 min, 1, 2, 112
 link.set = 10 min, 1, 3, 118
 link.set = 10 min, 1, 4, 120
 link.set = 10 min, 2, 3, 105
 link.set = 10 min, 2, 4, 108
 link.set = 10 min, 3, 4, 104
+link.set = 10 min, 5, 1, 110
+link.set = 10 min, 5, 2, 120
+link.set = 10 min, 5, 3, 122
+link.set = 10 min, 5, 4, 125
 # The leaf drives away: the patio relay alone still hears it.
 link.set = 40 min, 5, 0, 170
 link.set = 40 min, 5, 1, 125

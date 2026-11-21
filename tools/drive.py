@@ -61,18 +61,21 @@ def run(tsim, which, seed):
     gave_up = r["losses"]["drops"]["retries"]
     return {"sent": u["messages"], "delivered": u["delivered"], "on_time": u["on_time"],
             "gave_up": gave_up,
-            "lost_ack": max(0, u["delivered"] - (u["messages"] - gave_up))}
+            "lost_ack": max(0, u["delivered"] - (u["messages"] - gave_up))}, r["losses"]
 
 
 def summary(tsim, seeds):
-    out = {}
+    """The totals each way, and every run's losses as tsim reports them, for looking into."""
+    out, losses = {}, {}
     for which in ("both", "up", "down"):
         tot = {"sent": 0, "delivered": 0, "on_time": 0, "gave_up": 0, "lost_ack": 0}
         for seed in range(1, seeds + 1):
-            for k, v in run(tsim, which, seed).items():
+            counts, lost = run(tsim, which, seed)
+            for k, v in counts.items():
                 tot[k] += v
+            losses[f"{which}/{seed}"] = lost
         out[which] = tot
-    return out
+    return out, losses
 
 
 def table(label, s):
@@ -103,11 +106,12 @@ def main():
         return
     if not a.tsim:
         sys.exit("--tsim is needed")
-    s = summary(a.tsim, a.seeds)
+    s, losses = summary(a.tsim, a.seeds)
     print(table(a.label, s))
     if a.json:
         with open(a.json, "w", encoding="utf-8") as f:
-            json.dump({"label": a.label, "seeds": a.seeds, "summary": s}, f, indent=2)
+            json.dump({"label": a.label, "seeds": a.seeds, "summary": s, "losses": losses}, f,
+                      indent=2)
 
 
 if __name__ == "__main__":
