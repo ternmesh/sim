@@ -1,0 +1,98 @@
+# The first field test's drive (2026-11-21, firmware v0.7.0-alpha.3). Every board starts in one
+# house, every link strong (drive.links). Ten minutes in, the relays go to their places: the desk
+# relay (0) stays, the patio relay (1) is a few hundred yards off, and three more (2 to 4) are
+# further up the hill. At the end of the warmup the leaf (5) is driven away: out of reach of the
+# desk and of the hill, and still heard well by the patio relay alone. Then the leaf and the desk
+# write to each other, a message every four minutes each way, for 100 minutes.
+#
+# On the boards the desk kept the leaf in use for 35 minutes and more, sent it everything direct,
+# and sent the acknowledgement of a message that came through another relay back direct, where it
+# was lost (ternmesh/spec#81). What is measured is unicast delivered each way, and how many of the
+# leaf's messages it gave up on though they arrived: their acknowledgements lost. The drive.yml
+# workflow runs this against two firmware commits, each way apart, and prints both.
+nodes  = 6
+links  = drive.links
+
+radio.sf     = 9
+radio.bw     = 500000
+radio.tx_dbm = 22
+
+routing            = core
+routing.relay_pick = degree
+routing.relay_count = 5
+mac                = listen
+
+# The relays go to their places.
+link.set = 10 min, 0, 1, 110
+link.set = 10 min, 0, 2, 135
+link.set = 10 min, 0, 3, 138
+link.set = 10 min, 0, 4, 140
+link.set = 10 min, 1, 2, 112
+link.set = 10 min, 1, 3, 118
+link.set = 10 min, 1, 4, 120
+link.set = 10 min, 2, 3, 105
+link.set = 10 min, 2, 4, 108
+link.set = 10 min, 3, 4, 104
+# The leaf drives away: the patio relay alone still hears it.
+link.set = 40 min, 5, 0, 170
+link.set = 40 min, 5, 1, 125
+link.set = 40 min, 5, 2, 170
+link.set = 40 min, 5, 3, 170
+link.set = 40 min, 5, 4, 170
+
+traffic.interval  = none
+traffic.broadcast = 0
+traffic.send = 42 min, 5, 0, 20
+traffic.send = 44 min, 0, 5, 20
+traffic.send = 46 min, 5, 0, 20
+traffic.send = 48 min, 0, 5, 20
+traffic.send = 50 min, 5, 0, 20
+traffic.send = 52 min, 0, 5, 20
+traffic.send = 54 min, 5, 0, 20
+traffic.send = 56 min, 0, 5, 20
+traffic.send = 58 min, 5, 0, 20
+traffic.send = 60 min, 0, 5, 20
+traffic.send = 62 min, 5, 0, 20
+traffic.send = 64 min, 0, 5, 20
+traffic.send = 66 min, 5, 0, 20
+traffic.send = 68 min, 0, 5, 20
+traffic.send = 70 min, 5, 0, 20
+traffic.send = 72 min, 0, 5, 20
+traffic.send = 74 min, 5, 0, 20
+traffic.send = 76 min, 0, 5, 20
+traffic.send = 78 min, 5, 0, 20
+traffic.send = 80 min, 0, 5, 20
+traffic.send = 82 min, 5, 0, 20
+traffic.send = 84 min, 0, 5, 20
+traffic.send = 86 min, 5, 0, 20
+traffic.send = 88 min, 0, 5, 20
+traffic.send = 90 min, 5, 0, 20
+traffic.send = 92 min, 0, 5, 20
+traffic.send = 94 min, 5, 0, 20
+traffic.send = 96 min, 0, 5, 20
+traffic.send = 98 min, 5, 0, 20
+traffic.send = 100 min, 0, 5, 20
+traffic.send = 102 min, 5, 0, 20
+traffic.send = 104 min, 0, 5, 20
+traffic.send = 106 min, 5, 0, 20
+traffic.send = 108 min, 0, 5, 20
+traffic.send = 110 min, 5, 0, 20
+traffic.send = 112 min, 0, 5, 20
+traffic.send = 114 min, 5, 0, 20
+traffic.send = 116 min, 0, 5, 20
+traffic.send = 118 min, 5, 0, 20
+traffic.send = 120 min, 0, 5, 20
+traffic.send = 122 min, 5, 0, 20
+traffic.send = 124 min, 0, 5, 20
+traffic.send = 126 min, 5, 0, 20
+traffic.send = 128 min, 0, 5, 20
+traffic.send = 130 min, 5, 0, 20
+traffic.send = 132 min, 0, 5, 20
+traffic.send = 134 min, 5, 0, 20
+traffic.send = 136 min, 0, 5, 20
+traffic.send = 138 min, 5, 0, 20
+traffic.send = 140 min, 0, 5, 20
+
+warmup   = 40 min
+duration = 100 min
+deadline = 10 min
